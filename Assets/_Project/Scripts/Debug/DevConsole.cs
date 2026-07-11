@@ -61,6 +61,11 @@ public sealed class DevConsole : MonoBehaviour
     {
         if (Keyboard.current != null && Keyboard.current.f2Key.wasPressedThisFrame)
         {
+            if (GameplayInputGate.InventoryOpen)
+            {
+                return;
+            }
+
             visible = !visible;
             DevSettings.ConsoleOpen = visible;
             ApplyCursorState();

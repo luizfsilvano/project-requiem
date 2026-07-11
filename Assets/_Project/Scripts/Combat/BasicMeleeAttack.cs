@@ -80,7 +80,7 @@ public sealed class BasicMeleeAttack : MonoBehaviour
 
     private void Update()
     {
-        if (DevSettings.ConsoleOpen)
+        if (GameplayInputGate.IsBlocked)
         {
             return;
         }
@@ -95,6 +95,11 @@ public sealed class BasicMeleeAttack : MonoBehaviour
 
     public bool TryAttack()
     {
+        if (GameplayInputGate.IsBlocked)
+        {
+            return false;
+        }
+
         if (IsAttacking)
         {
             if (CanQueueCombo())

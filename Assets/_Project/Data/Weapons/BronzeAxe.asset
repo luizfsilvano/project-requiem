@@ -13,8 +13,13 @@ MonoBehaviour:
   m_Name: BronzeAxe
   m_EditorClassIdentifier: Assembly-CSharp::WeaponData
   definitionId: weapon.bronze_axe
+  description: A heavy bronze axe. Slower than the sword, with stronger damage and
+    poise pressure.
+  icon: {fileID: 0}
+  category: 0
   maxStackSize: 1
   defaultMaxDurability: 100
+  acceptedEquipmentSlots: 3
   displayName: Bronze Axe
   equippedPrefab: {fileID: 8883732843551113796, guid: 4cc7f13e681918b4f9265b93240f9f13, type: 3}
   maxComboSteps: 3

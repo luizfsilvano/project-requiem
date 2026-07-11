@@ -171,9 +171,34 @@ MonoBehaviour:
   weaponLocalPosition: {x: 0.0016, y: 0.0762, z: 0.0382}
   weaponLocalEuler: {x: 331.20502, y: 264.55527, z: 281.52643}
   weaponLocalScale: {x: 100, y: 100, z: 100}
-  primaryItemInstanceId: 
-  secondaryItemInstanceId: 
+  slots:
+  - slotType: 0
+    itemInstanceId: 
+  - slotType: 1
+    itemInstanceId: 
+  - slotType: 2
+    itemInstanceId: 
+  - slotType: 3
+    itemInstanceId: 
+  - slotType: 4
+    itemInstanceId: 
+  - slotType: 5
+    itemInstanceId: 
+  - slotType: 6
+    itemInstanceId: 
+  - slotType: 7
+    itemInstanceId: 
+  - slotType: 8
+    itemInstanceId: 
+  - slotType: 9
+    itemInstanceId: 
+  - slotType: 10
+    itemInstanceId: 
+  - slotType: 11
+    itemInstanceId: 
   activeSlot: 0
+  legacyPrimaryItemInstanceId: 
+  legacySecondaryItemInstanceId: 
 --- !u!114 &6409660377452784229
 MonoBehaviour:
   m_ObjectHideFlags: 0

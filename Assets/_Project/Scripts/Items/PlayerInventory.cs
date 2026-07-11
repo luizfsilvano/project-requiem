@@ -18,6 +18,7 @@ public sealed class PlayerInventory : MonoBehaviour, IItemContainer
     [SerializeField, HideInInspector] private int legacyEquippedWeaponIndex = -1;
 
     private readonly List<WeaponData> weaponDefinitionsView = new();
+    private readonly HashSet<ItemInstance> subscribedItems = new();
 
     public event Action InventoryChanged;
 
@@ -44,12 +45,13 @@ public sealed class PlayerInventory : MonoBehaviour, IItemContainer
         }
     }
 
+    public PlayerEquipment Equipment => equipment;
     public ItemInstance EquippedItem => equipment != null ? equipment.EquippedItem : null;
     public WeaponData EquippedWeapon => equipment != null ? equipment.EquippedWeapon : null;
     public string EquippedWeaponName => equipment != null ? equipment.EquippedWeaponName : "Unarmed";
     public string PrimaryWeaponName => equipment != null ? equipment.PrimaryWeaponName : "Empty";
     public string SecondaryWeaponName => equipment != null ? equipment.SecondaryWeaponName : "Empty";
-    public WeaponEquipmentSlot ActiveWeaponSlot => equipment != null ? equipment.ActiveSlot : WeaponEquipmentSlot.Primary;
+    public EquipmentSlotType ActiveWeaponSlot => equipment != null ? equipment.ActiveSlot : EquipmentSlotType.MainHand;
     public bool CanChangeWeapon => equipment != null
         ? equipment.CanChangeWeapon
         : (meleeAttack == null || !meleeAttack.IsAttacking) && (movement == null || !movement.IsDodging);
@@ -76,6 +78,7 @@ public sealed class PlayerInventory : MonoBehaviour, IItemContainer
 
         equipment?.BindInventory(this);
         MigrateLegacyWeapons();
+        SubscribeToAllItems();
         AssignAvailableWeaponSlots();
     }
 
@@ -83,24 +86,30 @@ public sealed class PlayerInventory : MonoBehaviour, IItemContainer
     {
         itemContainer?.NormalizeContents();
         equipment?.BindInventory(this);
+        SubscribeToAllItems();
+    }
+
+    private void OnDisable()
+    {
+        UnsubscribeFromAllItems();
     }
 
     private void Update()
     {
-        if (DevSettings.ConsoleOpen || Keyboard.current == null)
+        if (GameplayInputGate.IsBlocked || Keyboard.current == null)
         {
             return;
         }
 
         if (Keyboard.current.digit1Key.wasPressedThisFrame || Keyboard.current.numpad1Key.wasPressedThisFrame)
         {
-            TryActivateWeaponSlot(WeaponEquipmentSlot.Primary);
+            TryActivateWeaponSlot(EquipmentSlotType.MainHand);
             return;
         }
 
         if (Keyboard.current.digit2Key.wasPressedThisFrame || Keyboard.current.numpad2Key.wasPressedThisFrame)
         {
-            TryActivateWeaponSlot(WeaponEquipmentSlot.Secondary);
+            TryActivateWeaponSlot(EquipmentSlotType.OffHand);
             return;
         }
 
@@ -117,14 +126,15 @@ public sealed class PlayerInventory : MonoBehaviour, IItemContainer
             return false;
         }
 
+        SubscribeToItem(item);
         bool activatedWeapon = false;
         if (autoAssignWeapon
             && item.Definition is WeaponData
             && equipment != null
-            && TryGetEmptyWeaponSlot(out WeaponEquipmentSlot slot))
+            && TryGetEmptyWeaponSlot(out EquipmentSlotType slotType))
         {
             bool makeActive = equipAfterPickup && CanChangeWeapon;
-            equipment.TryAssignWeapon(item, slot, makeActive);
+            equipment.TryEquip(item, slotType, makeActive, out _);
             activatedWeapon = makeActive
                 && equipment.EquippedItem != null
                 && equipment.EquippedItem.InstanceId == item.InstanceId;
@@ -186,15 +196,14 @@ public sealed class PlayerInventory : MonoBehaviour, IItemContainer
         return true;
     }
 
-    public bool TryActivateWeaponSlot(WeaponEquipmentSlot slot)
+    public bool TryActivateWeaponSlot(EquipmentSlotType slotType)
     {
-        if (equipment == null || !equipment.TryActivateSlot(slot))
+        if (equipment == null || !equipment.TryActivateSlot(slotType))
         {
             return false;
         }
 
         CombatFeedbackAudio.PlayEquip(transform.position);
-        InventoryChanged?.Invoke();
         return true;
     }
 
@@ -206,7 +215,6 @@ public sealed class PlayerInventory : MonoBehaviour, IItemContainer
         }
 
         CombatFeedbackAudio.PlayEquip(transform.position);
-        InventoryChanged?.Invoke();
         return true;
     }
 
@@ -220,26 +228,25 @@ public sealed class PlayerInventory : MonoBehaviour, IItemContainer
 
         if (equipment.PrimaryWeapon?.InstanceId == item.InstanceId)
         {
-            return TryActivateWeaponSlot(WeaponEquipmentSlot.Primary);
+            return TryActivateWeaponSlot(EquipmentSlotType.MainHand);
         }
 
         if (equipment.SecondaryWeapon?.InstanceId == item.InstanceId)
         {
-            return TryActivateWeaponSlot(WeaponEquipmentSlot.Secondary);
+            return TryActivateWeaponSlot(EquipmentSlotType.OffHand);
         }
 
-        WeaponEquipmentSlot targetSlot = equipment.PrimaryWeapon == null
-            ? WeaponEquipmentSlot.Primary
+        EquipmentSlotType targetSlot = equipment.PrimaryWeapon == null
+            ? EquipmentSlotType.MainHand
             : equipment.SecondaryWeapon == null
-                ? WeaponEquipmentSlot.Secondary
+                ? EquipmentSlotType.OffHand
                 : equipment.ActiveSlot;
-        if (!equipment.TryAssignWeapon(item, targetSlot, makeActive: true))
+        if (!equipment.TryEquip(item, targetSlot, makeActive: true, out _))
         {
             return false;
         }
 
         CombatFeedbackAudio.PlayEquip(transform.position);
-        InventoryChanged?.Invoke();
         return true;
     }
 
@@ -271,6 +278,7 @@ public sealed class PlayerInventory : MonoBehaviour, IItemContainer
             return false;
         }
 
+        UnsubscribeFromItem(removedItem);
         InventoryChanged?.Invoke();
         return true;
     }
@@ -279,7 +287,8 @@ public sealed class PlayerInventory : MonoBehaviour, IItemContainer
     {
         if (destination == null
             || ReferenceEquals(destination, this)
-            || (equipment != null && equipment.IsItemSlotted(instanceId)))
+            || (equipment != null && equipment.IsItemSlotted(instanceId))
+            || !itemContainer.TryGet(instanceId, out ItemInstance item))
         {
             return false;
         }
@@ -289,6 +298,7 @@ public sealed class PlayerInventory : MonoBehaviour, IItemContainer
             return false;
         }
 
+        UnsubscribeFromItem(item);
         InventoryChanged?.Invoke();
         return true;
     }
@@ -303,9 +313,9 @@ public sealed class PlayerInventory : MonoBehaviour, IItemContainer
         foreach (WeaponData weaponData in legacyWeapons)
         {
             ItemInstance item = ItemInstance.Create(weaponData);
-            if (item != null)
+            if (item != null && itemContainer.TryAdd(item))
             {
-                itemContainer.TryAdd(item);
+                SubscribeToItem(item);
             }
         }
 
@@ -326,12 +336,12 @@ public sealed class PlayerInventory : MonoBehaviour, IItemContainer
                 continue;
             }
 
-            if (!TryGetEmptyWeaponSlot(out WeaponEquipmentSlot slot))
+            if (!TryGetEmptyWeaponSlot(out EquipmentSlotType slotType))
             {
                 break;
             }
 
-            equipment.TryAssignWeapon(item, slot, makeActive: false);
+            equipment.TryEquip(item, slotType, makeActive: false, out _);
         }
 
         if (equipment.EquippedItem != null || !CanChangeWeapon)
@@ -343,23 +353,23 @@ public sealed class PlayerInventory : MonoBehaviour, IItemContainer
         ItemInstance legacyEquippedItem = GetWeaponAtIndex(legacyEquippedWeaponIndex);
         if (legacyEquippedItem != null && equipment.SecondaryWeapon?.InstanceId == legacyEquippedItem.InstanceId)
         {
-            equipment.TryActivateSlot(WeaponEquipmentSlot.Secondary);
+            equipment.TryActivateSlot(EquipmentSlotType.OffHand);
         }
         else if (equipment.PrimaryWeapon != null)
         {
-            equipment.TryActivateSlot(WeaponEquipmentSlot.Primary);
+            equipment.TryActivateSlot(EquipmentSlotType.MainHand);
         }
         else if (equipment.SecondaryWeapon != null)
         {
-            equipment.TryActivateSlot(WeaponEquipmentSlot.Secondary);
+            equipment.TryActivateSlot(EquipmentSlotType.OffHand);
         }
 
         legacyEquippedWeaponIndex = -1;
     }
 
-    private bool TryGetEmptyWeaponSlot(out WeaponEquipmentSlot slot)
+    private bool TryGetEmptyWeaponSlot(out EquipmentSlotType slotType)
     {
-        slot = WeaponEquipmentSlot.Primary;
+        slotType = EquipmentSlotType.MainHand;
         if (equipment == null)
         {
             return false;
@@ -370,7 +380,7 @@ public sealed class PlayerInventory : MonoBehaviour, IItemContainer
             return true;
         }
 
-        slot = WeaponEquipmentSlot.Secondary;
+        slotType = EquipmentSlotType.OffHand;
         return equipment.SecondaryWeapon == null;
     }
 
@@ -412,5 +422,52 @@ public sealed class PlayerInventory : MonoBehaviour, IItemContainer
         }
 
         return count;
+    }
+
+    private void SubscribeToAllItems()
+    {
+        if (itemContainer == null)
+        {
+            return;
+        }
+
+        foreach (ItemInstance item in itemContainer.Items)
+        {
+            SubscribeToItem(item);
+        }
+    }
+
+    private void UnsubscribeFromAllItems()
+    {
+        foreach (ItemInstance item in subscribedItems)
+        {
+            if (item != null)
+            {
+                item.Changed -= HandleItemChanged;
+            }
+        }
+
+        subscribedItems.Clear();
+    }
+
+    private void SubscribeToItem(ItemInstance item)
+    {
+        if (item != null && subscribedItems.Add(item))
+        {
+            item.Changed += HandleItemChanged;
+        }
+    }
+
+    private void UnsubscribeFromItem(ItemInstance item)
+    {
+        if (item != null && subscribedItems.Remove(item))
+        {
+            item.Changed -= HandleItemChanged;
+        }
+    }
+
+    private void HandleItemChanged(ItemInstance item)
+    {
+        InventoryChanged?.Invoke();
     }
 }

@@ -1,11 +1,7 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
-
-public enum WeaponEquipmentSlot
-{
-    Primary,
-    Secondary
-}
+using UnityEngine.Serialization;
 
 [DefaultExecutionOrder(-10)]
 public sealed class PlayerEquipment : MonoBehaviour
@@ -18,28 +14,33 @@ public sealed class PlayerEquipment : MonoBehaviour
     [SerializeField] private Vector3 weaponLocalEuler = new(-80f, 180f, 0f);
     [SerializeField] private Vector3 weaponLocalScale = Vector3.one * 100f;
 
-    [SerializeField, HideInInspector] private string primaryItemInstanceId;
-    [SerializeField, HideInInspector] private string secondaryItemInstanceId;
-    [SerializeField, HideInInspector] private WeaponEquipmentSlot activeSlot = WeaponEquipmentSlot.Primary;
+    [SerializeField, HideInInspector] private List<EquipmentSlotState> slots = new();
+    [SerializeField, HideInInspector] private EquipmentSlotType activeSlot = EquipmentSlotType.MainHand;
+    [FormerlySerializedAs("primaryItemInstanceId")]
+    [SerializeField, HideInInspector] private string legacyPrimaryItemInstanceId;
+    [FormerlySerializedAs("secondaryItemInstanceId")]
+    [SerializeField, HideInInspector] private string legacySecondaryItemInstanceId;
 
     private PlayerInventory inventory;
-    private ItemInstance primaryWeaponInstance;
-    private ItemInstance secondaryWeaponInstance;
     private ItemInstance equippedItemInstance;
     private GameObject equippedWeaponInstance;
     private readonly ItemContainer standaloneEquipmentItems = new();
 
-    public bool HasWeapon => equippedWeaponInstance != null;
+    public event Action EquipmentChanged;
+    public event Action<ItemInstance> ActiveWeaponChanged;
+
+    public bool HasWeapon => equippedWeaponInstance != null && EquippedWeapon != null;
     public bool CanChangeWeapon => (meleeAttack == null || !meleeAttack.IsAttacking)
         && (movement == null || !movement.IsDodging);
-    public ItemInstance PrimaryWeapon => ResolveSlotItem(WeaponEquipmentSlot.Primary);
-    public ItemInstance SecondaryWeapon => ResolveSlotItem(WeaponEquipmentSlot.Secondary);
+    public IReadOnlyList<EquipmentSlotState> Slots => slots;
+    public ItemInstance PrimaryWeapon => GetItem(EquipmentSlotType.MainHand);
+    public ItemInstance SecondaryWeapon => GetItem(EquipmentSlotType.OffHand);
     public ItemInstance EquippedItem => equippedItemInstance;
     public WeaponData EquippedWeapon { get; private set; }
     public string EquippedWeaponName { get; private set; } = "Unarmed";
-    public string PrimaryWeaponName => GetWeaponName(PrimaryWeapon);
-    public string SecondaryWeaponName => GetWeaponName(SecondaryWeapon);
-    public WeaponEquipmentSlot ActiveSlot => activeSlot;
+    public string PrimaryWeaponName => GetItemName(PrimaryWeapon);
+    public string SecondaryWeaponName => GetItemName(SecondaryWeapon);
+    public EquipmentSlotType ActiveSlot => activeSlot;
 
     private void Awake()
     {
@@ -59,138 +60,308 @@ public sealed class PlayerEquipment : MonoBehaviour
         }
 
         inventory = GetComponent<PlayerInventory>();
+        NormalizeSlots();
         EnsureWeaponSocket();
+    }
+
+    private void OnValidate()
+    {
+        NormalizeSlots();
     }
 
     public void BindInventory(PlayerInventory owner)
     {
         inventory = owner;
-        primaryWeaponInstance = ResolveFromInventory(primaryItemInstanceId);
-        secondaryWeaponInstance = ResolveFromInventory(secondaryItemInstanceId);
-    }
+        NormalizeSlots();
 
-    public bool TryAssignWeapon(ItemInstance item, WeaponEquipmentSlot slot, bool makeActive)
-    {
-        if (!TryGetWeaponData(item, out _))
+        foreach (EquipmentSlotState state in slots)
         {
-            return false;
-        }
-
-        if (inventory != null
-            && (!inventory.TryGetItem(item.InstanceId, out ItemInstance ownedItem)
-                || !ReferenceEquals(ownedItem, item)))
-        {
-            return false;
-        }
-
-        WeaponEquipmentSlot otherSlot = slot == WeaponEquipmentSlot.Primary
-            ? WeaponEquipmentSlot.Secondary
-            : WeaponEquipmentSlot.Primary;
-        ItemInstance otherItem = ResolveSlotItem(otherSlot);
-        if (otherItem != null && otherItem.InstanceId == item.InstanceId)
-        {
-            return false;
-        }
-
-        ItemInstance previousItem = ResolveSlotItem(slot);
-        bool replacesActiveItem = activeSlot == slot
-            && previousItem != null
-            && previousItem.InstanceId != item.InstanceId
-            && equippedItemInstance != null;
-        if (replacesActiveItem && !CanChangeWeapon)
-        {
-            return false;
-        }
-
-        SetSlotItem(slot, item);
-
-        if (makeActive || replacesActiveItem)
-        {
-            if (!TryActivateSlot(slot))
+            if (!state.IsEmpty && ResolveOwnedItem(state.ItemInstanceId) == null)
             {
-                SetSlotItem(slot, previousItem);
-                return false;
+                state.ClearInvalidReference();
             }
         }
-
-        return true;
     }
 
-    public bool TryActivateSlot(WeaponEquipmentSlot slot)
+    public ItemInstance GetItem(EquipmentSlotType slotType)
     {
-        if (!CanChangeWeapon || !TryGetWeaponData(ResolveSlotItem(slot), out WeaponData weaponData))
+        EquipmentSlotState state = GetSlotState(slotType);
+        if (state == null || state.IsEmpty)
         {
-            return false;
+            return null;
         }
 
-        ItemInstance item = ResolveSlotItem(slot);
-        if (activeSlot == slot
-            && equippedItemInstance != null
-            && equippedItemInstance.InstanceId == item.InstanceId
-            && equippedWeaponInstance != null)
+        ItemInstance item = ResolveOwnedItem(state.ItemInstanceId);
+        if (item == null)
         {
-            return true;
+            state.ClearInvalidReference();
         }
 
-        if (!EquipVisual(weaponData.equippedPrefab, weaponData.displayName))
-        {
-            return false;
-        }
-
-        activeSlot = slot;
-        equippedItemInstance = item;
-        EquippedWeapon = weaponData;
-        EquippedWeaponName = weaponData.displayName;
-        return true;
+        return item;
     }
 
-    public bool TryToggleActiveSlot()
+    public bool TryGetSlotOf(string instanceId, out EquipmentSlotType slotType)
     {
-        WeaponEquipmentSlot target = activeSlot == WeaponEquipmentSlot.Primary
-            ? WeaponEquipmentSlot.Secondary
-            : WeaponEquipmentSlot.Primary;
-        return TryActivateSlot(target);
-    }
-
-    public bool IsItemSlotted(string instanceId)
-    {
+        slotType = EquipmentSlotType.MainHand;
         if (string.IsNullOrWhiteSpace(instanceId))
         {
             return false;
         }
 
-        return primaryItemInstanceId == instanceId || secondaryItemInstanceId == instanceId;
+        foreach (EquipmentSlotState state in slots)
+        {
+            if (string.Equals(state.ItemInstanceId, instanceId, StringComparison.Ordinal))
+            {
+                slotType = state.SlotType;
+                return true;
+            }
+        }
+
+        return false;
     }
 
-    public bool TryClearItem(string instanceId)
+    public bool IsItemSlotted(string instanceId)
     {
-        if (!CanChangeWeapon || !IsItemSlotted(instanceId))
+        return TryGetSlotOf(instanceId, out _);
+    }
+
+    public bool CanEquip(ItemInstance item, EquipmentSlotType slotType, out EquipmentChangeFailure failure)
+    {
+        failure = EquipmentChangeFailure.None;
+        if (item == null || item.Definition == null || !item.IsValid)
+        {
+            failure = EquipmentChangeFailure.InvalidItem;
+            return false;
+        }
+
+        if (!Owns(item))
+        {
+            failure = EquipmentChangeFailure.NotOwned;
+            return false;
+        }
+
+        if (!item.Definition.AcceptsSlot(slotType))
+        {
+            failure = EquipmentChangeFailure.IncompatibleSlot;
+            return false;
+        }
+
+        if (IsWeaponSlot(slotType)
+            && (item.Definition is not WeaponData weaponData || weaponData.equippedPrefab == null))
+        {
+            failure = EquipmentChangeFailure.MissingVisual;
+            return false;
+        }
+
+        if (IsWeaponSlot(slotType) && !CanChangeWeapon)
+        {
+            failure = EquipmentChangeFailure.ActionLocked;
+            return false;
+        }
+
+        return true;
+    }
+
+    public bool TryEquip(ItemInstance item, EquipmentSlotType slotType, bool makeActive, out EquipmentChangeFailure failure)
+    {
+        if (!CanEquip(item, slotType, out failure))
         {
             return false;
         }
 
-        bool removedActiveItem = equippedItemInstance != null && equippedItemInstance.InstanceId == instanceId;
-        if (primaryItemInstanceId == instanceId)
+        if (TryGetSlotOf(item.InstanceId, out EquipmentSlotType currentSlot))
         {
-            SetSlotItem(WeaponEquipmentSlot.Primary, null);
+            if (currentSlot == slotType)
+            {
+                if (makeActive && IsWeaponSlot(slotType))
+                {
+                    return TryActivateSlot(slotType, out failure);
+                }
+
+                return true;
+            }
+
+            return TryMoveOrSwap(currentSlot, slotType, makeActive, out failure);
         }
 
-        if (secondaryItemInstanceId == instanceId)
+        EquipmentSlotState targetState = GetSlotState(slotType);
+        ItemInstance previousItem = GetItem(slotType);
+        targetState.SetItem(item);
+
+        bool shouldActivate = IsWeaponSlot(slotType) && (makeActive || activeSlot == slotType);
+        if (shouldActivate && !ApplyActiveWeapon(slotType, out failure))
         {
-            SetSlotItem(WeaponEquipmentSlot.Secondary, null);
+            targetState.SetItem(previousItem);
+            return false;
         }
 
-        if (!removedActiveItem)
+        NotifyEquipmentChanged(shouldActivate);
+        return true;
+    }
+
+    public bool TryAssignWeapon(ItemInstance item, EquipmentSlotType slotType, bool makeActive)
+    {
+        return TryEquip(item, slotType, makeActive, out _);
+    }
+
+    public bool TryUnequip(EquipmentSlotType slotType, out EquipmentChangeFailure failure)
+    {
+        failure = EquipmentChangeFailure.None;
+        EquipmentSlotState state = GetSlotState(slotType);
+        ItemInstance item = GetItem(slotType);
+        if (state == null || item == null)
+        {
+            failure = EquipmentChangeFailure.SlotEmpty;
+            return false;
+        }
+
+        if (IsWeaponSlot(slotType) && !CanChangeWeapon)
+        {
+            failure = EquipmentChangeFailure.ActionLocked;
+            return false;
+        }
+
+        bool removedActiveWeapon = IsWeaponSlot(slotType)
+            && equippedItemInstance != null
+            && string.Equals(equippedItemInstance.InstanceId, item.InstanceId, StringComparison.Ordinal);
+        state.SetItem(null);
+
+        if (removedActiveWeapon)
+        {
+            UnequipVisual();
+            EquipmentSlotType fallbackSlot = OtherWeaponSlot(slotType);
+            if (GetItem(fallbackSlot)?.Definition is WeaponData)
+            {
+                ApplyActiveWeapon(fallbackSlot, out _);
+            }
+        }
+
+        NotifyEquipmentChanged(removedActiveWeapon);
+        return true;
+    }
+
+    public bool TryMoveOrSwap(
+        EquipmentSlotType fromSlot,
+        EquipmentSlotType toSlot,
+        bool makeMovedItemActive,
+        out EquipmentChangeFailure failure)
+    {
+        failure = EquipmentChangeFailure.None;
+        if (fromSlot == toSlot)
+        {
+            return makeMovedItemActive && IsWeaponSlot(toSlot)
+                ? TryActivateSlot(toSlot, out failure)
+                : GetItem(fromSlot) != null;
+        }
+
+        ItemInstance sourceItem = GetItem(fromSlot);
+        if (sourceItem == null)
+        {
+            failure = EquipmentChangeFailure.SlotEmpty;
+            return false;
+        }
+
+        if (!CanEquip(sourceItem, toSlot, out failure))
+        {
+            return false;
+        }
+
+        ItemInstance targetItem = GetItem(toSlot);
+        if (targetItem != null && !targetItem.Definition.AcceptsSlot(fromSlot))
+        {
+            failure = EquipmentChangeFailure.IncompatibleSlot;
+            return false;
+        }
+
+        if ((IsWeaponSlot(fromSlot) || IsWeaponSlot(toSlot)) && !CanChangeWeapon)
+        {
+            failure = EquipmentChangeFailure.ActionLocked;
+            return false;
+        }
+
+        EquipmentSlotState sourceState = GetSlotState(fromSlot);
+        EquipmentSlotState targetState = GetSlotState(toSlot);
+        EquipmentSlotType previousActiveSlot = activeSlot;
+        sourceState.SetItem(targetItem);
+        targetState.SetItem(sourceItem);
+
+        EquipmentSlotType desiredActiveSlot = previousActiveSlot;
+        if (makeMovedItemActive || previousActiveSlot == fromSlot)
+        {
+            desiredActiveSlot = toSlot;
+        }
+        else if (previousActiveSlot == toSlot && targetItem != null)
+        {
+            desiredActiveSlot = fromSlot;
+        }
+
+        bool activeWeaponChanged = IsWeaponSlot(fromSlot) || IsWeaponSlot(toSlot);
+        if (activeWeaponChanged && !ApplyActiveWeapon(desiredActiveSlot, out failure))
+        {
+            sourceState.SetItem(sourceItem);
+            targetState.SetItem(targetItem);
+            activeSlot = previousActiveSlot;
+            ApplyActiveWeapon(previousActiveSlot, out _);
+            return false;
+        }
+
+        NotifyEquipmentChanged(activeWeaponChanged);
+        return true;
+    }
+
+    public bool TryActivateSlot(EquipmentSlotType slotType)
+    {
+        return TryActivateSlot(slotType, out _);
+    }
+
+    public bool TryActivateSlot(EquipmentSlotType slotType, out EquipmentChangeFailure failure)
+    {
+        failure = EquipmentChangeFailure.None;
+        if (!IsWeaponSlot(slotType))
+        {
+            failure = EquipmentChangeFailure.IncompatibleSlot;
+            return false;
+        }
+
+        if (!CanChangeWeapon)
+        {
+            failure = EquipmentChangeFailure.ActionLocked;
+            return false;
+        }
+
+        ItemInstance item = GetItem(slotType);
+        if (item == null)
+        {
+            failure = EquipmentChangeFailure.SlotEmpty;
+            return false;
+        }
+
+        if (activeSlot == slotType
+            && equippedItemInstance != null
+            && equippedWeaponInstance != null
+            && string.Equals(equippedItemInstance.InstanceId, item.InstanceId, StringComparison.Ordinal))
         {
             return true;
         }
 
-        UnequipVisual();
-        WeaponEquipmentSlot fallbackSlot = activeSlot == WeaponEquipmentSlot.Primary
-            ? WeaponEquipmentSlot.Secondary
-            : WeaponEquipmentSlot.Primary;
-        TryActivateSlot(fallbackSlot);
+        if (!ApplyActiveWeapon(slotType, out failure))
+        {
+            return false;
+        }
+
+        NotifyEquipmentChanged(activeWeaponChanged: true);
         return true;
+    }
+
+    public bool TryToggleActiveSlot()
+    {
+        return TryActivateSlot(OtherWeaponSlot(activeSlot));
+    }
+
+    public bool TryClearItem(string instanceId)
+    {
+        return TryGetSlotOf(instanceId, out EquipmentSlotType slotType)
+            && TryUnequip(slotType, out _);
     }
 
     public bool Equip(GameObject weaponPrefab, string weaponName)
@@ -203,6 +374,7 @@ public sealed class PlayerEquipment : MonoBehaviour
         equippedItemInstance = null;
         EquippedWeapon = null;
         EquippedWeaponName = weaponName;
+        NotifyEquipmentChanged(activeWeaponChanged: true);
         return true;
     }
 
@@ -224,13 +396,13 @@ public sealed class PlayerEquipment : MonoBehaviour
             return false;
         }
 
-        WeaponEquipmentSlot slot = PrimaryWeapon == null
-            ? WeaponEquipmentSlot.Primary
+        EquipmentSlotType slotType = PrimaryWeapon == null
+            ? EquipmentSlotType.MainHand
             : SecondaryWeapon == null
-                ? WeaponEquipmentSlot.Secondary
+                ? EquipmentSlotType.OffHand
                 : activeSlot;
-        ItemInstance replacedItem = ResolveSlotItem(slot);
-        if (!TryAssignWeapon(item, slot, makeActive: true))
+        ItemInstance replacedItem = GetItem(slotType);
+        if (!TryEquip(item, slotType, makeActive: true, out _))
         {
             standaloneEquipmentItems.TryRemove(item.InstanceId, out _);
             return false;
@@ -261,67 +433,127 @@ public sealed class PlayerEquipment : MonoBehaviour
         return true;
     }
 
-    private ItemInstance ResolveSlotItem(WeaponEquipmentSlot slot)
+    private bool ApplyActiveWeapon(EquipmentSlotType slotType, out EquipmentChangeFailure failure)
     {
-        string instanceId = slot == WeaponEquipmentSlot.Primary ? primaryItemInstanceId : secondaryItemInstanceId;
-        ItemInstance cachedItem = slot == WeaponEquipmentSlot.Primary ? primaryWeaponInstance : secondaryWeaponInstance;
-
-        if (cachedItem != null && cachedItem.InstanceId == instanceId)
+        failure = EquipmentChangeFailure.None;
+        ItemInstance item = GetItem(slotType);
+        if (item?.Definition is not WeaponData weaponData || weaponData.equippedPrefab == null)
         {
-            if (inventory == null
-                || (inventory.TryGetItem(instanceId, out ItemInstance ownedItem)
-                    && ReferenceEquals(ownedItem, cachedItem)))
-            {
-                return cachedItem;
-            }
+            failure = EquipmentChangeFailure.MissingVisual;
+            return false;
         }
 
-        ItemInstance resolvedItem = ResolveFromInventory(instanceId);
-        if (slot == WeaponEquipmentSlot.Primary)
+        if (!EquipVisual(weaponData.equippedPrefab, weaponData.displayName))
         {
-            primaryWeaponInstance = resolvedItem;
-        }
-        else
-        {
-            secondaryWeaponInstance = resolvedItem;
+            failure = EquipmentChangeFailure.MissingVisual;
+            return false;
         }
 
-        if (resolvedItem == null && inventory != null)
-        {
-            if (slot == WeaponEquipmentSlot.Primary)
-            {
-                primaryItemInstanceId = string.Empty;
-            }
-            else
-            {
-                secondaryItemInstanceId = string.Empty;
-            }
-        }
-
-        return resolvedItem;
+        activeSlot = slotType;
+        equippedItemInstance = item;
+        EquippedWeapon = weaponData;
+        EquippedWeaponName = weaponData.displayName;
+        return true;
     }
 
-    private ItemInstance ResolveFromInventory(string instanceId)
+    private ItemInstance ResolveOwnedItem(string instanceId)
     {
-        if (inventory != null && inventory.TryGetItem(instanceId, out ItemInstance item))
+        if (string.IsNullOrWhiteSpace(instanceId))
         {
-            return item;
+            return null;
+        }
+
+        if (inventory != null && inventory.TryGetItem(instanceId, out ItemInstance inventoryItem))
+        {
+            return inventoryItem;
+        }
+
+        if (inventory == null && standaloneEquipmentItems.TryGet(instanceId, out ItemInstance standaloneItem))
+        {
+            return standaloneItem;
         }
 
         return null;
     }
 
-    private void SetSlotItem(WeaponEquipmentSlot slot, ItemInstance item)
+    private bool Owns(ItemInstance item)
     {
-        if (slot == WeaponEquipmentSlot.Primary)
+        ItemInstance ownedItem = ResolveOwnedItem(item.InstanceId);
+        return ReferenceEquals(ownedItem, item);
+    }
+
+    private EquipmentSlotState GetSlotState(EquipmentSlotType slotType)
+    {
+        NormalizeSlots();
+        for (int i = 0; i < slots.Count; i++)
         {
-            primaryWeaponInstance = item;
-            primaryItemInstanceId = item != null ? item.InstanceId : string.Empty;
+            if (slots[i].SlotType == slotType)
+            {
+                return slots[i];
+            }
         }
-        else
+
+        return null;
+    }
+
+    private void NormalizeSlots()
+    {
+        slots ??= new List<EquipmentSlotState>();
+        List<EquipmentSlotState> normalized = new();
+        HashSet<string> usedInstanceIds = new(StringComparer.Ordinal);
+
+        foreach (EquipmentSlotType slotType in Enum.GetValues(typeof(EquipmentSlotType)))
         {
-            secondaryWeaponInstance = item;
-            secondaryItemInstanceId = item != null ? item.InstanceId : string.Empty;
+            EquipmentSlotState state = slots.Find(candidate => candidate != null && candidate.SlotType == slotType)
+                ?? new EquipmentSlotState(slotType);
+            if (!state.IsEmpty && !usedInstanceIds.Add(state.ItemInstanceId))
+            {
+                state.ClearInvalidReference();
+            }
+
+            normalized.Add(state);
+        }
+
+        slots = normalized;
+        MigrateLegacySlot(EquipmentSlotType.MainHand, ref legacyPrimaryItemInstanceId);
+        MigrateLegacySlot(EquipmentSlotType.OffHand, ref legacySecondaryItemInstanceId);
+
+        usedInstanceIds.Clear();
+        foreach (EquipmentSlotState state in slots)
+        {
+            if (!state.IsEmpty && !usedInstanceIds.Add(state.ItemInstanceId))
+            {
+                state.ClearInvalidReference();
+            }
+        }
+
+        if (!IsWeaponSlot(activeSlot))
+        {
+            activeSlot = EquipmentSlotType.MainHand;
+        }
+    }
+
+    private void MigrateLegacySlot(EquipmentSlotType slotType, ref string legacyInstanceId)
+    {
+        if (string.IsNullOrWhiteSpace(legacyInstanceId)
+            || (inventory == null && standaloneEquipmentItems.Count == 0))
+        {
+            return;
+        }
+
+        EquipmentSlotState state = slots.Find(candidate => candidate.SlotType == slotType);
+        if (state != null && state.IsEmpty)
+        {
+            ItemInstance item = ResolveOwnedItem(legacyInstanceId);
+            if (item != null)
+            {
+                state.SetItem(item);
+            }
+        }
+
+        if (state != null && !state.IsEmpty)
+        {
+            legacyInstanceId = string.Empty;
         }
     }
 
@@ -338,17 +570,24 @@ public sealed class PlayerEquipment : MonoBehaviour
             return false;
         }
 
+        GameObject nextWeapon = Instantiate(weaponPrefab, weaponSocket);
+        if (nextWeapon == null)
+        {
+            return false;
+        }
+
+        nextWeapon.name = weaponName;
+        nextWeapon.transform.localPosition = weaponLocalPosition;
+        nextWeapon.transform.localRotation = Quaternion.Euler(weaponLocalEuler);
+        nextWeapon.transform.localScale = weaponLocalScale;
+        DisableEquippedPhysics(nextWeapon);
+
         if (equippedWeaponInstance != null)
         {
             Destroy(equippedWeaponInstance);
         }
 
-        equippedWeaponInstance = Instantiate(weaponPrefab, weaponSocket);
-        equippedWeaponInstance.name = weaponName;
-        equippedWeaponInstance.transform.localPosition = weaponLocalPosition;
-        equippedWeaponInstance.transform.localRotation = Quaternion.Euler(weaponLocalEuler);
-        equippedWeaponInstance.transform.localScale = weaponLocalScale;
-        DisableEquippedPhysics(equippedWeaponInstance);
+        equippedWeaponInstance = nextWeapon;
         return true;
     }
 
@@ -386,28 +625,44 @@ public sealed class PlayerEquipment : MonoBehaviour
         weaponSocket = socketObject.transform;
     }
 
-    private static bool TryGetWeaponData(ItemInstance item, out WeaponData weaponData)
+    private void NotifyEquipmentChanged(bool activeWeaponChanged)
     {
-        weaponData = item != null ? item.Definition as WeaponData : null;
-        return weaponData != null && weaponData.equippedPrefab != null;
+        EquipmentChanged?.Invoke();
+        if (activeWeaponChanged)
+        {
+            ActiveWeaponChanged?.Invoke(equippedItemInstance);
+        }
     }
 
-    private static string GetWeaponName(ItemInstance item)
+    private static bool IsWeaponSlot(EquipmentSlotType slotType)
     {
-        return item?.Definition is WeaponData weaponData ? weaponData.displayName : "Empty";
+        return slotType == EquipmentSlotType.MainHand || slotType == EquipmentSlotType.OffHand;
+    }
+
+    private static EquipmentSlotType OtherWeaponSlot(EquipmentSlotType slotType)
+    {
+        return slotType == EquipmentSlotType.MainHand
+            ? EquipmentSlotType.OffHand
+            : EquipmentSlotType.MainHand;
+    }
+
+    private static string GetItemName(ItemInstance item)
+    {
+        return item?.Definition != null ? item.Definition.DisplayName : "Empty";
     }
 
     private static void DisableEquippedPhysics(GameObject weapon)
     {
-        foreach (Collider collider in weapon.GetComponentsInChildren<Collider>())
+        foreach (Collider collider in weapon.GetComponentsInChildren<Collider>(true))
         {
             collider.enabled = false;
         }
 
-        foreach (Rigidbody body in weapon.GetComponentsInChildren<Rigidbody>())
+        foreach (Rigidbody body in weapon.GetComponentsInChildren<Rigidbody>(true))
         {
             body.isKinematic = true;
             body.useGravity = false;
+            body.detectCollisions = false;
         }
     }
 }

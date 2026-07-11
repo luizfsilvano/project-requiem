@@ -16,6 +16,10 @@ public sealed class WeaponData : ItemDefinition
 
     public bool HasWeaponPrefab => equippedPrefab != null;
     public override string DisplayName => displayName;
+    public override ItemCategory Category => ItemCategory.Weapon;
+    public override EquipmentSlotMask AcceptedEquipmentSlots => base.AcceptedEquipmentSlots == EquipmentSlotMask.None
+        ? EquipmentSlotMask.WeaponHands
+        : base.AcceptedEquipmentSlots;
 
     public WeaponAttackData GetAttack(int comboStep)
     {

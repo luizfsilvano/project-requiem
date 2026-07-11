@@ -37,17 +37,16 @@ public sealed class PlayerLockOnController : MonoBehaviour
 
     private void Update()
     {
-        if (DevSettings.ConsoleOpen)
-        {
-            return;
-        }
-
-        if (Keyboard.current != null && Keyboard.current.tabKey.wasPressedThisFrame)
+        bool inputBlocked = GameplayInputGate.IsBlocked;
+        if (!inputBlocked && Keyboard.current != null && Keyboard.current.tabKey.wasPressedThisFrame)
         {
             ToggleLockOn();
         }
 
-        UpdateMouseRetarget();
+        if (!inputBlocked)
+        {
+            UpdateMouseRetarget();
+        }
 
         if (HasTarget && Vector3.Distance(transform.position, currentTarget.position) > retargetGraceDistance)
         {

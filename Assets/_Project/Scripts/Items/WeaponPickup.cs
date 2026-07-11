@@ -28,6 +28,7 @@ public sealed class WeaponPickup : MonoBehaviour
         }
 
         if ((nearbyInventory == null && nearbyEquipment == null)
+            || GameplayInputGate.IsBlocked
             || Keyboard.current == null
             || !Keyboard.current.eKey.wasPressedThisFrame)
         {

@@ -13,8 +13,13 @@ MonoBehaviour:
   m_Name: BronzeSword
   m_EditorClassIdentifier: Assembly-CSharp::WeaponData
   definitionId: weapon.bronze_sword
+  description: A balanced bronze sword. Reliable reach and a quick three-hit combat
+    pattern.
+  icon: {fileID: 0}
+  category: 0
   maxStackSize: 1
   defaultMaxDurability: 100
+  acceptedEquipmentSlots: 3
   displayName: Bronze Sword
   equippedPrefab: {fileID: 695757031399475120, guid: 866a04eb59d86214db4874ee843dce28, type: 3}
   maxComboSteps: 3

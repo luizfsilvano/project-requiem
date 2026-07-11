@@ -63,10 +63,15 @@ public sealed class ThirdPersonCameraController : MonoBehaviour
 
     private void Update()
     {
-        if (DevSettings.ConsoleOpen)
+        if (DevSettings.ConsoleOpen || GameplayInputGate.InventoryOpen)
         {
             Cursor.lockState = CursorLockMode.None;
             Cursor.visible = true;
+            return;
+        }
+
+        if (GameplayInputGate.IsBlocked)
+        {
             return;
         }
 

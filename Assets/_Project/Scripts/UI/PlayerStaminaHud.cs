@@ -88,13 +88,9 @@ public sealed class PlayerStaminaHud : MonoBehaviour
         Canvas canvas = GetComponentInParent<Canvas>();
         if (canvas == null)
         {
-            canvas = FindFirstObjectByType<Canvas>();
-        }
-
-        if (canvas == null)
-        {
             canvas = gameObject.AddComponent<Canvas>();
             canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+            canvas.sortingOrder = 0;
             gameObject.AddComponent<CanvasScaler>();
             gameObject.AddComponent<GraphicRaycaster>();
         }

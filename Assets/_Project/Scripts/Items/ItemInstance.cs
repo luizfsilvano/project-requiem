@@ -37,6 +37,8 @@ public sealed class ItemInstance
 
     [NonSerialized] private ItemContainer owner;
 
+    public event Action<ItemInstance> Changed;
+
     public string InstanceId => instanceId;
     public ItemDefinition Definition => definition;
     public int Quantity => quantity;
@@ -104,7 +106,13 @@ public sealed class ItemInstance
             return false;
         }
 
+        if (quantity == newQuantity)
+        {
+            return true;
+        }
+
         quantity = newQuantity;
+        Changed?.Invoke(this);
         return true;
     }
 
@@ -115,8 +123,15 @@ public sealed class ItemInstance
             return false;
         }
 
+        if (Mathf.Approximately(maxDurability, newMaxDurability)
+            && Mathf.Approximately(currentDurability, newCurrentDurability))
+        {
+            return true;
+        }
+
         maxDurability = newMaxDurability;
         currentDurability = newCurrentDurability;
+        Changed?.Invoke(this);
         return true;
     }
 

@@ -581,3 +581,75 @@ Validacao realizada:
 Continuam fora de escopo: consumo/reparo de durabilidade, regras de qualidade/raridade, afinidade, roubo, crafting, save, banco de dados, multiplayer, loja, peso, loot de cadaver e UI completa.
 
 Observacao de manutencao: `CombatSandboxSceneBuilder` continua legado e nao conhece todos os assets atuais. Nao executar `Tools/Combat Sandbox/Rebuild CombatSandbox Scene` sem modernizar o builder completo; ele nao foi acionado nem teve sua versao alterada nesta migracao.
+
+## Atualizacao 2026-07-11 - Tela de Personagem, Inventario e Equipamento
+
+A segunda etapa do sistema de itens adicionou uma tela funcional de personagem sobre o dominio de instancias, sem mover regras de inventario para os componentes visuais.
+
+Arquitetura atual:
+
+- `EquipmentSlotType` centraliza os 12 slots estruturais: `MainHand`, `OffHand`, `Head`, `Chest`, `Hands`, `Legs`, `Feet`, `Accessory1`, `Accessory2`, `AxeTool`, `PickaxeTool` e `KnifeTool`;
+- `EquipmentSlotMask` permite que cada `ItemDefinition` declare exatamente os slots aceitos;
+- `ItemDefinition` agora tambem possui descricao, icone opcional e `ItemCategory` para filtros;
+- Bronze Sword e Bronze Axe sao categoria `Weapon` e aceitam apenas `MainHand | OffHand`;
+- `WeaponData` continua sendo a unica fonte de prefab equipado, dano, combo, stamina, poise, lunge e hitbox; esses dados nao foram duplicados na UI;
+- `PlayerEquipment` guarda uma lista serializavel de `EquipmentSlotState`, e cada slot referencia apenas o ID de uma `ItemInstance` que continua pertencendo ao `PlayerInventory`;
+- o mesmo ID nao pode ocupar dois slots; equipar, substituir, mover, trocar e desequipar validam ownership e compatibilidade antes da mutacao;
+- operacoes envolvendo arma continuam bloqueadas durante `BasicMeleeAttack.IsAttacking` ou `PlayerCameraRelativeMovement.IsDodging`;
+- `OffHand` representa nesta fase a antiga arma secundaria alternavel: somente a arma ativa e instanciada no socket direito e participa do combate; dual wield, shield e uma mao esquerda simultanea continuam futuros;
+- `PlayerEquipment.EquipmentChanged` e `ActiveWeaponChanged` notificam a tela e o preview;
+- `ItemInstance.Changed` notifica mudancas de quantidade/durabilidade, e `PlayerInventory.InventoryChanged` retransmite as mudancas das instancias possuidas;
+- a UI nunca escreve na lista interna do container nem nos IDs dos slots; ela chama somente as APIs publicas do inventario/equipamento.
+
+Tela e interacoes:
+
+- `I` abre e fecha a tela; `Tab` continua exclusivo do lock-on e `F2` continua abrindo o dev console;
+- inventario e dev console sao modais exclusivos para nao disputar o cursor;
+- ao abrir, a tela captura o estado anterior do cursor, usa `None/visible` e ativa `GameplayInputGate.InventoryOpen`;
+- enquanto aberta, movimento, corrida, ataque, dodge, lock-on, mouse da camera, `1`, `2`, `Q` e coleta por `E` ficam bloqueados, mas `Time.timeScale` nao muda e o mundo continua rodando;
+- ao fechar, o cursor anterior e restaurado e a entrada de gameplay fica suprimida ate o frame seguinte, evitando ataque/relock pelo clique de fechamento;
+- a coluna esquerda possui grid e filtros `All`, `Weapons`, `Armor`, `Consumables`, `Materials`, `Tools` e `Other`;
+- os cards mostram monograma quando nao ha icone, quantidade, raridade, qualidade, durabilidade e badge de equipado;
+- a coluna direita agrupa corpo, armas, acessorios e ferramentas usando `EquipmentSlotType`, sem strings como identidade de slot;
+- apenas `MainHand` e `OffHand` possuem gameplay completo agora; os demais aparecem vazios e preparados para definicoes futuras compativeis;
+- selecionar atualiza nome, descricao, tipo, raridade/qualidade, quantidade, durabilidade, resumo de dano/combo e metadados opcionais quando preenchidos;
+- existem acoes de equipar, ativar, desequipar e descartar;
+- duplo clique executa a acao padrao;
+- drag-and-drop funciona de inventario para equipamento, entre slots e de equipamento de volta para o inventario;
+- durante o drag, todos os slots recebem highlight valido/invalido; uma tentativa incompativel falha sem perder ou duplicar a instancia;
+- `PlayerStaminaHud` voltou a criar/usar seu proprio Canvas, evitando que o HUD antigo seja anexado ao Canvas da nova tela.
+
+Preview e assets:
+
+- `Assets/_Project/Prefabs/UI/CharacterInventoryScreen.prefab` e a tela reutilizavel em uGUI;
+- `Assets/_Project/Prefabs/UI/InventoryItemSlot.prefab` e o card reutilizavel do grid;
+- `Assets/_Project/Prefabs/UI/CharacterPreviewRig.prefab` contem apenas Y Bot, Animator, tres luzes e uma camera dedicada, sem scripts de gameplay e sem `AudioListener`;
+- `Assets/_Project/UI/CharacterPreview.renderTexture` recebe a camera dedicada e e exibida por `RawImage`;
+- a layer `CharacterPreview` isola modelo, arma, camera e luzes; a Main Camera e as luzes do mundo excluem essa layer;
+- o preview instancia somente o `equippedPrefab` da arma ativa e reaproveita a pose real exposta por `PlayerEquipment.TryGetEquippedWeaponPose`;
+- arrastar o preview rotaciona o personagem e a roda do mouse aplica zoom limitado;
+- `CombatSandbox` possui exatamente um `UIEventSystem` com `InputSystemUIInputModule`;
+- `Tools/Combat Sandbox/Build Character Inventory UI` reconstrói somente os assets desta tela e sua integracao, sem executar o `CombatSandboxSceneBuilder` legado.
+
+Validacao realizada:
+
+- a tecla `I` foi exercitada pelo Input System para abrir/fechar, com cursor `Locked/hidden -> None/visible -> Locked/hidden`;
+- fechar e tentar atacar no mesmo frame retornou `false` com o gate de supressao ativo;
+- `W`, `Shift`, `Tab`, `1`, `Q`, `E` e clique esquerdo mantidos durante a tela aberta nao moveram o player, nao atacaram, nao iniciaram dodge, nao criaram lock-on e nao trocaram a arma;
+- os pickups reais adicionaram duas instancias distintas, quantidade `1` e durabilidade `100/100`;
+- os 12 slots foram confirmados; espada no `Head` falhou com `IncompatibleSlot`;
+- swap, move, desequipar e reequipar preservaram duas instancias possuidas e exatamente um slot por ID;
+- uma mudanca de durabilidade para `73/100` gerou exatamente um evento de inventario e atualizou automaticamente os detalhes;
+- equipar durante ataque e durante dodge falhou com `ActionLocked`;
+- `1`, `2` e `Q` continuaram ativando `MainHand`, `OffHand` e toggle com a tela fechada;
+- `F2` continuou funcionando, e `I` foi ignorado enquanto o dev console estava aberto;
+- preview rotacionou `37` graus, alterou o zoom de `4.35` para `3.85` e refletiu a arma ativa;
+- filtros mostraram `2` armas e `0` armaduras sem criar itens falsos;
+- `Full HD (1920x1080)` e `WXGA (1366x768)` mantiveram as tres colunas sem sobreposicao e o personagem centralizado;
+- Skeleton manteve controller e hitbox validos; Golem chegou a `Recovery` com controller e duas hitboxes validos;
+- 20 prefabs e 725 GameObjects de prefab foram varridos com `0` scripts ausentes e `0` referencias quebradas; a cena tambem terminou com `0` scripts ausentes;
+- foi confirmado exatamente `1` AudioListener, `1` EventSystem e a Main Camera excluindo `CharacterPreview`;
+- Play Mode terminou com `0 errors` e `0 warnings`; o Editor ficou fora de Play Mode, cena limpa e Console vazio;
+- `Assets/SazenGames` continua presente e nao foi alterada.
+
+Continuam fora de escopo: armaduras/acessorios/ferramentas reais, stats e bonus desses slots, dual wield, consumo/reparo de durabilidade, afinidade funcional, roubo, crafting, save, banco de dados, multiplayer, peso, lojas, bancos/bau, loot de cadaver, gamepad completo e arte/audio/VFX finais.

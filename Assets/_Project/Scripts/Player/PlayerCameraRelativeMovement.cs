@@ -96,10 +96,20 @@ public sealed class PlayerCameraRelativeMovement : MonoBehaviour
             dodgeTimer -= Time.deltaTime;
         }
 
-        Vector2 input = ReadMovementInput();
+        bool inputBlocked = GameplayInputGate.IsBlocked;
+        Vector2 input = inputBlocked ? Vector2.zero : ReadMovementInput();
         Vector3 moveDirection = GetCameraRelativeDirection(input);
-        UpdateSpaceRun();
-        UpdateDodgeInput(moveDirection);
+        if (inputBlocked)
+        {
+            IsRunning = false;
+            isTrackingSpaceHold = false;
+            spaceHeldTime = 0f;
+        }
+        else
+        {
+            UpdateSpaceRun();
+            UpdateDodgeInput(moveDirection);
+        }
 
         if (characterController.isGrounded && verticalVelocity < 0f)
         {
@@ -108,13 +118,13 @@ public sealed class PlayerCameraRelativeMovement : MonoBehaviour
 
         verticalVelocity += gravity * Time.deltaTime;
 
-        Vector3 horizontalVelocity = GetHorizontalVelocity(moveDirection);
+        Vector3 horizontalVelocity = inputBlocked ? Vector3.zero : GetHorizontalVelocity(moveDirection);
         CurrentPlanarSpeed = horizontalVelocity.magnitude;
         Vector3 velocity = horizontalVelocity;
         velocity.y = verticalVelocity;
         characterController.Move(velocity * Time.deltaTime);
 
-        bool canRotateWhileLocked = meleeAttack != null && meleeAttack.CanRotateDuringAttack;
+        bool canRotateWhileLocked = !inputBlocked && meleeAttack != null && meleeAttack.CanRotateDuringAttack;
         Vector3 facingDirection = GetFacingDirection(horizontalVelocity, moveDirection, canRotateWhileLocked);
         if (facingDirection.sqrMagnitude > 0.001f)
         {
@@ -224,7 +234,11 @@ public sealed class PlayerCameraRelativeMovement : MonoBehaviour
 
     public bool TryStartDodge(Vector3 moveDirection)
     {
-        if (dodgeCooldownTimer <= 0f && dodgeTimer <= 0f && !IsActionLocked && CanSpendDodge())
+        if (!GameplayInputGate.IsBlocked
+            && dodgeCooldownTimer <= 0f
+            && dodgeTimer <= 0f
+            && !IsActionLocked
+            && CanSpendDodge())
         {
             stamina?.TrySpendDodge();
             dodgeDirection = moveDirection.sqrMagnitude > 0.001f ? moveDirection : transform.forward;
