@@ -61,19 +61,14 @@ public sealed class DevConsole : MonoBehaviour
     {
         if (Keyboard.current != null && Keyboard.current.f2Key.wasPressedThisFrame)
         {
-            if (GameplayInputGate.InventoryOpen)
+            if (visible)
             {
-                return;
+                CloseConsole();
             }
-
-            visible = !visible;
-            DevSettings.ConsoleOpen = visible;
-            ApplyCursorState();
-        }
-
-        if (visible)
-        {
-            ApplyCursorState();
+            else
+            {
+                OpenConsole();
+            }
         }
 
         EnsurePlayer();
@@ -81,9 +76,11 @@ public sealed class DevConsole : MonoBehaviour
 
     private void OnDestroy()
     {
-        if (DevSettings.ConsoleOpen)
+        visible = false;
+        DevSettings.ConsoleOpen = false;
+        if (GameplayInputGate.IsOwnedBy(GameplayModalMode.DevConsole, this))
         {
-            DevSettings.ConsoleOpen = false;
+            GameplayInputGate.TryCloseModal(GameplayModalMode.DevConsole, this);
         }
     }
 
@@ -255,10 +252,22 @@ public sealed class DevConsole : MonoBehaviour
         return GUILayout.HorizontalSlider(value, min, max);
     }
 
-    private void ApplyCursorState()
+    private void OpenConsole()
     {
-        Cursor.lockState = visible ? CursorLockMode.None : CursorLockMode.Locked;
-        Cursor.visible = visible;
+        if (!GameplayInputGate.TryOpenModal(GameplayModalMode.DevConsole, this))
+        {
+            return;
+        }
+
+        visible = true;
+        DevSettings.ConsoleOpen = true;
+    }
+
+    private void CloseConsole()
+    {
+        visible = false;
+        DevSettings.ConsoleOpen = false;
+        GameplayInputGate.TryCloseModal(GameplayModalMode.DevConsole, this);
     }
 
     private void EnsurePlayer()

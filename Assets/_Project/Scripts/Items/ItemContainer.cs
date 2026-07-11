@@ -125,6 +125,8 @@ public sealed class ItemContainer : IItemContainer, ISerializationCallbackReceiv
             return false;
         }
 
+        int sourceIndex = items.IndexOf(item);
+        string originalInstanceId = item.InstanceId;
         if (!TryRemove(instanceId, out ItemInstance removedItem))
         {
             return false;
@@ -135,7 +137,19 @@ public sealed class ItemContainer : IItemContainer, ISerializationCallbackReceiv
             return true;
         }
 
-        TryAdd(removedItem);
+        if (destination.TryGet(originalInstanceId, out ItemInstance destinationItem)
+            && ReferenceEquals(destinationItem, removedItem))
+        {
+            return true;
+        }
+
+        if (!RestoreRemovedItem(removedItem, originalInstanceId, sourceIndex))
+        {
+            Debug.LogError(
+                $"Item transfer rollback failed for '{originalInstanceId}'. "
+                + "The source or destination container violated the IItemContainer ownership contract.");
+        }
+
         return false;
     }
 
@@ -173,6 +187,22 @@ public sealed class ItemContainer : IItemContainer, ISerializationCallbackReceiv
         }
 
         return Capacity == 0 || items.Count < Capacity;
+    }
+
+    private bool RestoreRemovedItem(ItemInstance item, string originalInstanceId, int sourceIndex)
+    {
+        if (item == null
+            || !string.Equals(item.InstanceId, originalInstanceId, StringComparison.Ordinal)
+            || Contains(originalInstanceId)
+            || !item.TryAttachTo(this))
+        {
+            return false;
+        }
+
+        int safeIndex = Mathf.Clamp(sourceIndex, 0, items.Count);
+        items.Insert(safeIndex, item);
+        return TryGet(originalInstanceId, out ItemInstance restoredItem)
+            && ReferenceEquals(restoredItem, item);
     }
 
     public void OnBeforeSerialize()

@@ -12,7 +12,7 @@ GameObject:
   - component: {fileID: 8721544473886016986}
   - component: {fileID: 3975047021832656605}
   - component: {fileID: 1532832284563779632}
-  m_Layer: 0
+  m_Layer: 29
   m_Name: BronzeAxePickup
   m_TagString: Untagged
   m_Icon: {fileID: 0}
@@ -95,6 +95,11 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 573d4a5049dd91d4fb6e36478ce12f53, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::WeaponPickup
+  displayName: Bronze Axe
+  description: Coletar o machado de bronze.
+  priority: 30
+  interactionRange: 3.5
+  interactionPoint: {fileID: 7902411587354098575}
   weaponData: {fileID: 11400000, guid: b346403760954224dbe0116c7f3390b0, type: 2}
   equippedWeaponPrefab: {fileID: 8883732843551113796, guid: 4cc7f13e681918b4f9265b93240f9f13, type: 3}
   weaponName: Bronze Axe
@@ -164,6 +169,10 @@ PrefabInstance:
     - target: {fileID: 8883732843551113796, guid: 4cc7f13e681918b4f9265b93240f9f13, type: 3}
       propertyPath: m_Name
       value: Visual
+      objectReference: {fileID: 0}
+    - target: {fileID: 8883732843551113796, guid: 4cc7f13e681918b4f9265b93240f9f13, type: 3}
+      propertyPath: m_Layer
+      value: 29
       objectReference: {fileID: 0}
     m_RemovedComponents: []
     m_RemovedGameObjects: []

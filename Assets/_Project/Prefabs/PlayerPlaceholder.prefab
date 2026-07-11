@@ -17,6 +17,7 @@ GameObject:
   - component: {fileID: 6409660377452784229}
   - component: {fileID: 6825579895974506997}
   - component: {fileID: 3787728588524257526}
+  - component: {fileID: 7409539807314245206}
   m_Layer: 0
   m_Name: PlayerPlaceholder
   m_TagString: Untagged
@@ -261,6 +262,32 @@ MonoBehaviour:
     items: []
   legacyWeapons: []
   legacyEquippedWeaponIndex: -1
+--- !u!114 &7409539807314245206
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2907621798093756314}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 4812e122033f6204da9a213ca82a824d, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: Assembly-CSharp::PlayerInteractor
+  cameraTransform: {fileID: 0}
+  searchRange: 4
+  searchRadius: 1.35
+  maxInteractionAngle: 75
+  originHeight: 1
+  searchInterval: 0.08
+  interactionMask:
+    serializedVersion: 2
+    m_Bits: 536870912
+  meleeAttack: {fileID: 7473062904022722828}
+  movement: {fileID: 5679640867013821910}
+  promptView: {fileID: 0}
+  containerScreen: {fileID: 0}
+  dialoguePanel: {fileID: 0}
 --- !u!1 &6772202266386334792
 GameObject:
   m_ObjectHideFlags: 0

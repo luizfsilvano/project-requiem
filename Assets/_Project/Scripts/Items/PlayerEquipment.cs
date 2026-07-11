@@ -186,9 +186,16 @@ public sealed class PlayerEquipment : MonoBehaviour
 
         EquipmentSlotState targetState = GetSlotState(slotType);
         ItemInstance previousItem = GetItem(slotType);
+        bool replacesDisplayedWeapon = IsWeaponSlot(slotType)
+            && previousItem != null
+            && equippedItemInstance != null
+            && string.Equals(
+                previousItem.InstanceId,
+                equippedItemInstance.InstanceId,
+                StringComparison.Ordinal);
         targetState.SetItem(item);
 
-        bool shouldActivate = IsWeaponSlot(slotType) && (makeActive || activeSlot == slotType);
+        bool shouldActivate = IsWeaponSlot(slotType) && (makeActive || replacesDisplayedWeapon);
         if (shouldActivate && !ApplyActiveWeapon(slotType, out failure))
         {
             targetState.SetItem(previousItem);
@@ -267,9 +274,8 @@ public sealed class PlayerEquipment : MonoBehaviour
         }
 
         ItemInstance targetItem = GetItem(toSlot);
-        if (targetItem != null && !targetItem.Definition.AcceptsSlot(fromSlot))
+        if (targetItem != null && !CanEquip(targetItem, fromSlot, out failure))
         {
-            failure = EquipmentChangeFailure.IncompatibleSlot;
             return false;
         }
 
@@ -282,20 +288,32 @@ public sealed class PlayerEquipment : MonoBehaviour
         EquipmentSlotState sourceState = GetSlotState(fromSlot);
         EquipmentSlotState targetState = GetSlotState(toSlot);
         EquipmentSlotType previousActiveSlot = activeSlot;
+        bool displayedWeaponWasSource = equippedItemInstance != null
+            && string.Equals(equippedItemInstance.InstanceId, sourceItem.InstanceId, StringComparison.Ordinal);
+        bool displayedWeaponWasTarget = targetItem != null
+            && equippedItemInstance != null
+            && string.Equals(equippedItemInstance.InstanceId, targetItem.InstanceId, StringComparison.Ordinal);
         sourceState.SetItem(targetItem);
         targetState.SetItem(sourceItem);
 
         EquipmentSlotType desiredActiveSlot = previousActiveSlot;
-        if (makeMovedItemActive || previousActiveSlot == fromSlot)
+        bool activeWeaponChanged = false;
+        if (makeMovedItemActive && IsWeaponSlot(toSlot))
         {
             desiredActiveSlot = toSlot;
+            activeWeaponChanged = true;
         }
-        else if (previousActiveSlot == toSlot && targetItem != null)
+        else if (displayedWeaponWasSource && IsWeaponSlot(toSlot))
+        {
+            desiredActiveSlot = toSlot;
+            activeWeaponChanged = true;
+        }
+        else if (displayedWeaponWasTarget && IsWeaponSlot(fromSlot))
         {
             desiredActiveSlot = fromSlot;
+            activeWeaponChanged = true;
         }
 
-        bool activeWeaponChanged = IsWeaponSlot(fromSlot) || IsWeaponSlot(toSlot);
         if (activeWeaponChanged && !ApplyActiveWeapon(desiredActiveSlot, out failure))
         {
             sourceState.SetItem(sourceItem);

@@ -5,7 +5,7 @@ using UnityEngine.InputSystem;
 using UnityEngine.UI;
 
 [DefaultExecutionOrder(-5)]
-public sealed class CharacterInventoryScreen : MonoBehaviour
+public sealed class CharacterInventoryScreen : MonoBehaviour, IItemSlotViewHost
 {
     [Header("Screen")]
     [SerializeField] private GameObject screenRoot;
@@ -51,9 +51,6 @@ public sealed class CharacterInventoryScreen : MonoBehaviour
     private ItemInstance selectedItem;
     private ItemInstance draggedItem;
     private EquipmentSlotType? dragOriginSlot;
-    private CursorLockMode previousCursorLockMode;
-    private bool previousCursorVisible;
-    private bool ownsCursorOverride;
     private bool listenersBound;
 
     public bool IsOpen { get; private set; }
@@ -97,9 +94,9 @@ public sealed class CharacterInventoryScreen : MonoBehaviour
     {
         UnsubscribeFromDomainEvents();
         UnbindButtonListeners();
-        if (IsOpen || GameplayInputGate.InventoryOpen)
+        if (GameplayInputGate.IsOwnedBy(GameplayModalMode.Inventory, this))
         {
-            GameplayInputGate.ResetInventoryState();
+            GameplayInputGate.TryCloseModal(GameplayModalMode.Inventory, this);
         }
     }
 
@@ -111,31 +108,20 @@ public sealed class CharacterInventoryScreen : MonoBehaviour
             {
                 CloseScreen();
             }
-            else if (!DevSettings.ConsoleOpen)
+            else
             {
                 OpenScreen();
             }
-        }
-
-        if (IsOpen)
-        {
-            Cursor.lockState = CursorLockMode.None;
-            Cursor.visible = true;
         }
     }
 
     public void OpenScreen()
     {
-        if (IsOpen || !GameplayInputGate.TrySetInventoryOpen(true))
+        if (IsOpen || !GameplayInputGate.TryOpenModal(GameplayModalMode.Inventory, this))
         {
             return;
         }
 
-        previousCursorLockMode = Cursor.lockState;
-        previousCursorVisible = Cursor.visible;
-        ownsCursorOverride = true;
-        Cursor.lockState = CursorLockMode.None;
-        Cursor.visible = true;
         IsOpen = true;
 
         if (screenRoot != null)
@@ -164,15 +150,7 @@ public sealed class CharacterInventoryScreen : MonoBehaviour
             screenRoot.SetActive(false);
         }
 
-        GameplayInputGate.TrySetInventoryOpen(false);
-        GameplayInputGate.SuppressForFrames(1);
-
-        if (ownsCursorOverride)
-        {
-            Cursor.lockState = previousCursorLockMode;
-            Cursor.visible = previousCursorVisible;
-            ownsCursorOverride = false;
-        }
+        GameplayInputGate.TryCloseModal(GameplayModalMode.Inventory, this);
     }
 
     public void SetFilter(InventoryFilterType filterType)
@@ -200,6 +178,52 @@ public sealed class CharacterInventoryScreen : MonoBehaviour
     public bool IsEquipped(ItemInstance item)
     {
         return item != null && equipment != null && equipment.IsItemSlotted(item.InstanceId);
+    }
+
+    bool IItemSlotViewHost.IsSelected(ItemInstance item, IItemContainer source)
+    {
+        return IsSelected(item);
+    }
+
+    bool IItemSlotViewHost.IsEquipped(ItemInstance item)
+    {
+        return IsEquipped(item);
+    }
+
+    void IItemSlotViewHost.SelectItem(ItemInstance item, IItemContainer source)
+    {
+        SelectItem(item);
+    }
+
+    void IItemSlotViewHost.ExecuteDefaultAction(ItemInstance item, IItemContainer source)
+    {
+        ExecuteDefaultAction(item);
+    }
+
+    void IItemSlotViewHost.BeginItemDrag(
+        ItemInstance item,
+        IItemContainer source,
+        Vector2 screenPosition)
+    {
+        BeginDrag(item, null, screenPosition);
+    }
+
+    void IItemSlotViewHost.UpdateItemDrag(Vector2 screenPosition)
+    {
+        UpdateDrag(screenPosition);
+    }
+
+    void IItemSlotViewHost.EndItemDrag()
+    {
+        EndDrag();
+    }
+
+    void IItemSlotViewHost.DropItemOnContainer(IItemContainer destination)
+    {
+        if (inventory != null && ReferenceEquals(destination, inventory.Container))
+        {
+            TryDropOnInventory();
+        }
     }
 
     public void ExecuteDefaultAction(ItemInstance item)
@@ -558,7 +582,10 @@ public sealed class CharacterInventoryScreen : MonoBehaviour
             itemSlotPool[i].gameObject.SetActive(visible);
             if (visible)
             {
-                itemSlotPool[i].Bind(this, i < filteredItems.Count ? filteredItems[i] : null);
+                itemSlotPool[i].Bind(
+                    this,
+                    inventory.Container,
+                    i < filteredItems.Count ? filteredItems[i] : null);
             }
         }
     }
@@ -580,37 +607,17 @@ public sealed class CharacterInventoryScreen : MonoBehaviour
     {
         bool hasItem = selectedItem?.Definition != null;
         SetText(detailName, hasItem ? selectedItem.Definition.DisplayName : "Select an item");
-        SetText(detailDescription, hasItem
-            ? (string.IsNullOrWhiteSpace(selectedItem.Definition.Description)
-                ? "No description has been written for this item yet."
-                : selectedItem.Definition.Description)
-            : "Choose an item from the inventory or an equipment slot to inspect it.");
-        SetText(detailType, hasItem ? $"TYPE  {selectedItem.Definition.Category}" : "TYPE  —");
-        SetText(detailRarity, hasItem
-            ? $"RARITY  {selectedItem.Rarity}    QUALITY  {selectedItem.Quality}"
-            : "RARITY  —    QUALITY  —");
-        SetText(detailQuantity, hasItem ? $"QUANTITY  {selectedItem.Quantity}" : "QUANTITY  —");
-        SetText(detailDurability, hasItem && selectedItem.MaxDurability > 0f
-            ? $"DURABILITY  {selectedItem.CurrentDurability:0}/{selectedItem.MaxDurability:0}"
-            : "DURABILITY  —");
-        SetText(detailDamage, hasItem && selectedItem.Definition is WeaponData weaponData
-            ? GetWeaponDamageSummary(weaponData)
-            : string.Empty);
-
-        string metadata = string.Empty;
-        if (hasItem && !string.IsNullOrWhiteSpace(selectedItem.CreatorId))
-        {
-            metadata = $"CREATOR  {selectedItem.CreatorId}";
-        }
-
-        if (hasItem && !string.IsNullOrWhiteSpace(selectedItem.AffinityId))
-        {
-            metadata += string.IsNullOrEmpty(metadata)
-                ? $"AFFINITY  {selectedItem.AffinityId}"
-                : $"    AFFINITY  {selectedItem.AffinityId}";
-        }
-
-        SetText(detailMetadata, metadata);
+        SetText(
+            detailDescription,
+            ItemUiPresentation.GetDescription(
+                selectedItem,
+                "Choose an item from the inventory or an equipment slot to inspect it."));
+        SetText(detailType, ItemUiPresentation.GetTypeText(selectedItem));
+        SetText(detailRarity, ItemUiPresentation.GetRarityQualityText(selectedItem));
+        SetText(detailQuantity, ItemUiPresentation.GetQuantityText(selectedItem));
+        SetText(detailDurability, ItemUiPresentation.GetDurabilityText(selectedItem));
+        SetText(detailDamage, ItemUiPresentation.GetDamageText(selectedItem));
+        SetText(detailMetadata, ItemUiPresentation.GetMetadataText(selectedItem));
 
         EquipmentSlotType selectedSlot = EquipmentSlotType.MainHand;
         bool slotted = hasItem
@@ -716,37 +723,6 @@ public sealed class CharacterInventoryScreen : MonoBehaviour
         };
     }
 
-    private static string GetWeaponDamageSummary(WeaponData weaponData)
-    {
-        if (weaponData?.attacks == null || weaponData.attacks.Length == 0)
-        {
-            return "DAMAGE  —";
-        }
-
-        int minDamage = int.MaxValue;
-        int maxDamage = int.MinValue;
-        int attackCount = 0;
-        foreach (WeaponAttackData attack in weaponData.attacks)
-        {
-            if (attack == null)
-            {
-                continue;
-            }
-
-            minDamage = Mathf.Min(minDamage, attack.damage);
-            maxDamage = Mathf.Max(maxDamage, attack.damage);
-            attackCount++;
-        }
-
-        if (attackCount == 0)
-        {
-            return "DAMAGE  —";
-        }
-
-        string damage = minDamage == maxDamage ? minDamage.ToString() : $"{minDamage}–{maxDamage}";
-        return $"DAMAGE  {damage}    COMBO  {Mathf.Min(weaponData.maxComboSteps, attackCount)} steps";
-    }
-
     private static string GetFailureText(EquipmentChangeFailure failure)
     {
         return failure switch
@@ -786,90 +762,31 @@ public sealed class CharacterInventoryScreen : MonoBehaviour
 
     public static Color GetRarityColor(ItemRarity rarity)
     {
-        return rarity switch
-        {
-            ItemRarity.Uncommon => new Color(0.32f, 0.68f, 0.3f, 1f),
-            ItemRarity.Rare => new Color(0.28f, 0.48f, 0.9f, 1f),
-            ItemRarity.Epic => new Color(0.62f, 0.34f, 0.82f, 1f),
-            ItemRarity.Legendary => new Color(0.9f, 0.52f, 0.16f, 1f),
-            _ => new Color(0.58f, 0.54f, 0.46f, 1f)
-        };
+        return ItemUiPresentation.GetRarityColor(rarity);
     }
 
     public static string GetRarityShortName(ItemRarity rarity)
     {
-        return rarity switch
-        {
-            ItemRarity.Uncommon => "UNCOMMON",
-            ItemRarity.Rare => "RARE",
-            ItemRarity.Epic => "EPIC",
-            ItemRarity.Legendary => "LEGEND",
-            _ => "COMMON"
-        };
+        return ItemUiPresentation.GetRarityShortName(rarity);
     }
 
     public static string GetQualityShortName(ItemQuality quality)
     {
-        return quality switch
-        {
-            ItemQuality.Crude => "CRUDE",
-            ItemQuality.Fine => "FINE",
-            ItemQuality.Masterwork => "MASTER",
-            _ => "STANDARD"
-        };
+        return ItemUiPresentation.GetQualityShortName(quality);
     }
 
     public static string GetItemMonogram(string displayName)
     {
-        if (string.IsNullOrWhiteSpace(displayName))
-        {
-            return "?";
-        }
-
-        string[] words = displayName.Split(new[] { ' ', '-', '_' }, StringSplitOptions.RemoveEmptyEntries);
-        if (words.Length >= 2)
-        {
-            return $"{char.ToUpperInvariant(words[0][0])}{char.ToUpperInvariant(words[1][0])}";
-        }
-
-        string word = words.Length == 1 ? words[0] : displayName;
-        return word.Length >= 2
-            ? word.Substring(0, 2).ToUpperInvariant()
-            : word.ToUpperInvariant();
+        return ItemUiPresentation.GetItemMonogram(displayName);
     }
 
     public static string GetSlotDisplayName(EquipmentSlotType slotType)
     {
-        return slotType switch
-        {
-            EquipmentSlotType.MainHand => "Main Hand / Right",
-            EquipmentSlotType.OffHand => "Off Hand / Left",
-            EquipmentSlotType.Accessory1 => "Accessory I",
-            EquipmentSlotType.Accessory2 => "Accessory II",
-            EquipmentSlotType.AxeTool => "Axe Tool",
-            EquipmentSlotType.PickaxeTool => "Pickaxe Tool",
-            EquipmentSlotType.KnifeTool => "Knife Tool",
-            _ => slotType.ToString()
-        };
+        return ItemUiPresentation.GetSlotDisplayName(slotType);
     }
 
     public static string GetSlotMonogram(EquipmentSlotType slotType)
     {
-        return slotType switch
-        {
-            EquipmentSlotType.MainHand => "RH",
-            EquipmentSlotType.OffHand => "LH",
-            EquipmentSlotType.Head => "HD",
-            EquipmentSlotType.Chest => "CH",
-            EquipmentSlotType.Hands => "HN",
-            EquipmentSlotType.Legs => "LG",
-            EquipmentSlotType.Feet => "FT",
-            EquipmentSlotType.Accessory1 => "A1",
-            EquipmentSlotType.Accessory2 => "A2",
-            EquipmentSlotType.AxeTool => "AX",
-            EquipmentSlotType.PickaxeTool => "PK",
-            EquipmentSlotType.KnifeTool => "KN",
-            _ => "--"
-        };
+        return ItemUiPresentation.GetSlotMonogram(slotType);
     }
 }

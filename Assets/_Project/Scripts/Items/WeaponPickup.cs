@@ -1,8 +1,7 @@
 using UnityEngine;
-using UnityEngine.InputSystem;
 
 [RequireComponent(typeof(Collider))]
-public sealed class WeaponPickup : MonoBehaviour
+public sealed class WeaponPickup : InteractableBehaviour
 {
     [SerializeField] private WeaponData weaponData;
     [SerializeField] private GameObject equippedWeaponPrefab;
@@ -11,8 +10,18 @@ public sealed class WeaponPickup : MonoBehaviour
     [SerializeField] private Transform visualRoot;
     [SerializeField] private float idleRotationSpeed = 45f;
 
-    private PlayerInventory nearbyInventory;
-    private PlayerEquipment nearbyEquipment;
+    private bool consumed;
+
+    public override InteractionKind Kind => InteractionKind.Pickup;
+    public override string ActionName => "Coletar";
+    public override bool IsAvailable => base.IsAvailable && !consumed && weaponData != null;
+    public GameObject LegacyEquippedWeaponPrefab => equippedWeaponPrefab;
+
+    private string PickupDisplayName => weaponData != null
+        ? weaponData.DisplayName
+        : string.IsNullOrWhiteSpace(weaponName)
+            ? DisplayName
+            : weaponName;
 
     private void Awake()
     {
@@ -26,16 +35,30 @@ public sealed class WeaponPickup : MonoBehaviour
         {
             visualRoot.Rotate(Vector3.up, idleRotationSpeed * Time.deltaTime, Space.World);
         }
+    }
 
-        if ((nearbyInventory == null && nearbyEquipment == null)
-            || GameplayInputGate.IsBlocked
-            || Keyboard.current == null
-            || !Keyboard.current.eKey.wasPressedThisFrame)
-        {
-            return;
-        }
+    public override bool CanInteract(InteractionContext context)
+    {
+        return base.CanInteract(context)
+            && !consumed
+            && weaponData != null
+            && context.GetActorComponent<PlayerInventory>() != null;
+    }
 
-        TryPickup(nearbyInventory, nearbyEquipment);
+    public override InteractionPromptData GetPrompt(InteractionContext context)
+    {
+        string targetName = PickupDisplayName;
+        return new InteractionPromptData(
+            Kind,
+            ActionName,
+            targetName,
+            $"E — {ActionName} {targetName}");
+    }
+
+    public override bool TryInteract(InteractionContext context)
+    {
+        return CanInteract(context)
+            && TryPickup(context.GetActorComponent<PlayerInventory>());
     }
 
     public void Pickup(PlayerEquipment equipment)
@@ -50,64 +73,32 @@ public sealed class WeaponPickup : MonoBehaviour
 
     public bool TryPickup(PlayerEquipment equipment)
     {
-        return TryPickup(equipment != null ? equipment.GetComponent<PlayerInventory>() : null, equipment);
+        return TryPickup(equipment != null ? equipment.GetComponent<PlayerInventory>() : null);
     }
 
     public bool TryPickup(PlayerInventory inventory)
     {
-        return TryPickup(inventory, inventory != null ? inventory.GetComponent<PlayerEquipment>() : null);
-    }
-
-    private bool TryPickup(PlayerInventory inventory, PlayerEquipment equipment)
-    {
-        bool pickedUp;
-        if (weaponData != null && inventory != null)
-        {
-            pickedUp = inventory.AddWeapon(weaponData, quantity, equipAfterPickup: true, out _);
-        }
-        else if (equipment == null)
-        {
-            return false;
-        }
-        else if (weaponData != null)
-        {
-            pickedUp = equipment.Equip(weaponData);
-        }
-        else
-        {
-            pickedUp = equipment.Equip(equippedWeaponPrefab, weaponName);
-        }
-
-        if (!pickedUp)
+        if (consumed || !isActiveAndEnabled || inventory == null || weaponData == null)
         {
             return false;
         }
 
+        consumed = true;
+        if (!inventory.AddWeapon(weaponData, quantity, equipAfterPickup: true, out _))
+        {
+            consumed = false;
+            return false;
+        }
+
+        NotifyInteractionStateChanged();
         CombatFeedbackAudio.PlayPickup(transform.position);
         gameObject.SetActive(false);
         return true;
     }
 
-    private void OnTriggerEnter(Collider other)
+    protected override void OnValidate()
     {
-        PlayerInventory inventory = other.GetComponentInParent<PlayerInventory>();
-        PlayerEquipment equipment = other.GetComponentInParent<PlayerEquipment>();
-        if (inventory != null || equipment != null)
-        {
-            nearbyEquipment = equipment;
-            nearbyInventory = inventory != null ? inventory : equipment.GetComponent<PlayerInventory>();
-        }
-    }
-
-    private void OnTriggerExit(Collider other)
-    {
-        PlayerInventory inventory = other.GetComponentInParent<PlayerInventory>();
-        PlayerEquipment equipment = other.GetComponentInParent<PlayerEquipment>();
-        if ((equipment != null && equipment == nearbyEquipment)
-            || (inventory != null && inventory == nearbyInventory))
-        {
-            nearbyEquipment = null;
-            nearbyInventory = null;
-        }
+        base.OnValidate();
+        quantity = Mathf.Max(1, quantity);
     }
 }

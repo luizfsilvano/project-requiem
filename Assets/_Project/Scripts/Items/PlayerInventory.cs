@@ -166,7 +166,7 @@ public sealed class PlayerInventory : MonoBehaviour, IItemContainer
 
     public bool TryAdd(ItemInstance item)
     {
-        return AddItem(item, autoAssignWeapon: true, equipAfterPickup: false);
+        return AddItem(item, autoAssignWeapon: false, equipAfterPickup: false);
     }
 
     public bool TryRemove(string instanceId, out ItemInstance item)

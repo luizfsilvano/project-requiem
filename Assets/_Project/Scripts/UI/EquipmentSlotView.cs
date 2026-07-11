@@ -48,7 +48,7 @@ public sealed class EquipmentSlotView : MonoBehaviour,
 
         if (slotLabel != null)
         {
-            slotLabel.text = CharacterInventoryScreen.GetSlotDisplayName(slotType);
+            slotLabel.text = ItemUiPresentation.GetSlotDisplayName(slotType);
         }
 
         if (itemLabel != null)
@@ -69,7 +69,7 @@ public sealed class EquipmentSlotView : MonoBehaviour,
         if (border != null)
         {
             Color rarityColor = hasItem
-                ? CharacterInventoryScreen.GetRarityColor(item.Rarity)
+                ? ItemUiPresentation.GetRarityColor(item.Rarity)
                 : new Color(0.22f, 0.19f, 0.15f, 0.9f);
             rarityColor.a = hasItem ? 0.36f : 0.52f;
             border.color = rarityColor;
@@ -84,8 +84,8 @@ public sealed class EquipmentSlotView : MonoBehaviour,
         if (iconFallback != null)
         {
             iconFallback.text = hasItem
-                ? CharacterInventoryScreen.GetItemMonogram(item.Definition.DisplayName)
-                : CharacterInventoryScreen.GetSlotMonogram(slotType);
+                ? ItemUiPresentation.GetItemMonogram(item.Definition.DisplayName)
+                : ItemUiPresentation.GetSlotMonogram(slotType);
             iconFallback.color = hasItem
                 ? new Color(0.86f, 0.72f, 0.42f, 1f)
                 : new Color(0.34f, 0.31f, 0.27f, 1f);

@@ -653,3 +653,72 @@ Validacao realizada:
 - `Assets/SazenGames` continua presente e nao foi alterada.
 
 Continuam fora de escopo: armaduras/acessorios/ferramentas reais, stats e bonus desses slots, dual wield, consumo/reparo de durabilidade, afinidade funcional, roubo, crafting, save, banco de dados, multiplayer, peso, lojas, bancos/bau, loot de cadaver, gamepad completo e arte/audio/VFX finais.
+
+## Atualizacao 2026-07-11 - Interacao de Mundo, Containers e Dialogo
+
+A terceira etapa da fundacao de itens conectou as `ItemInstance` ao mundo por uma camada generica de interacao, sem transferir regras de ownership para pickups, baus ou componentes visuais.
+
+Arquitetura atual:
+
+- `IInteractable`, `InteractionContext`, `InteractionPromptData` e `InteractionKind` formam o contrato reutilizavel para pickups, containers, portas, dialogos e interacoes futuras;
+- `InteractableBehaviour` concentra nome, descricao, prioridade, alcance, ponto de interacao, disponibilidade e notificacao de mudanca de estado;
+- `PlayerInteractor` e o unico leitor da tecla `E` para interacoes de mundo;
+- a selecao usa `OverlapCapsuleNonAlloc` na layer `Interactable` e desempate deterministico por prioridade, alinhamento com a camera, distancia e instance ID;
+- alvos invalidos, destruidos, desativados, fora de alcance, durante ataque/dodge ou durante qualquer modal limpam alvo e prompt;
+- `InteractionPromptView` apresenta apenas o prompt do alvo atual e nao executa regra de gameplay;
+- `GameplayInputGate` centraliza os modos exclusivos `Inventory`, `Container`, `Dialogue` e `DevConsole`, com ownership do modal e captura/restauracao unica do cursor;
+- abrir UI modal nao altera `Time.timeScale`; movimento, camera, ataque, dodge, lock-on, troca de arma e novas interacoes ficam bloqueados pelo mesmo gate;
+- uma UI nao pode fechar ou roubar o modal pertencente a outra UI.
+
+Pickups e ownership:
+
+- `WeaponPickup` implementa o contrato generico e nao consulta mais teclado nem guarda player por trigger;
+- Bronze Sword e Bronze Axe continuam usando seus `WeaponData`, quantidade e prefabs existentes;
+- coletar chama somente `PlayerInventory.AddWeapon`, cria uma unica `ItemInstance` e desativa o pickup apenas depois da transferencia aceita;
+- repetir a interacao no mesmo pickup nao cria outra instancia;
+- `PlayerInventory.TryAdd`, como operacao generica de container, nao equipa nem ocupa slot automaticamente; o comportamento historico de pickup permanece no wrapper explicito `AddWeapon`;
+- `ItemTransferService` move a mesma referencia e o mesmo ID entre dois `IItemContainer`, valida ownership antes/depois e faz rollback em falha;
+- transferencias em lote sao atomicas do ponto de vista da UI: uma falha tenta devolver todas as instancias ja movidas;
+- uma instancia equipada nao pode ser armazenada em outro container; primeiro deve ser desequipada;
+- `PlayerEquipment` continua sendo a unica autoridade para slots e visual equipado.
+
+Container, porta e NPC:
+
+- `WorldItemContainer` possui um `ItemContainer` proprio, capacidade e seeds de definicao/quantidade;
+- os seeds criam IDs somente no `Awake`; nenhum ID runtime fica serializado no prefab ou na cena;
+- reiniciar Play Mode recria o conteudo inicial porque persistencia ainda nao existe;
+- `ContainerTransferScreen` mostra inventario do player e container lado a lado, detalhes, feedback, selecao, `Take`, `Store`, `Take All`, duplo clique e drag-and-drop;
+- fechar, sair do alcance, morrer ou desativar/destruir o container encerra a tela e libera seu modal sem perder ownership;
+- `SimpleDoorInteractable` alterna abrir/fechar por uma coroutine curta, bloqueando reentrada durante a animacao;
+- `SimpleNpcInteractable` abre um `DialoguePanel` simples com nome e uma fala; branching, quest e AI social nao foram adicionados;
+- visuais de bau, porta e NPC sao primitives organizadas sob roots controlados por scripts de `Assets/_Project`.
+
+Assets e integracao:
+
+- `Assets/_Project/Prefabs/UI/InteractionPrompt.prefab` e o prompt reutilizavel;
+- `Assets/_Project/Prefabs/UI/ContainerTransferScreen.prefab` e a tela reutilizavel de transferencia;
+- `Assets/_Project/Prefabs/UI/DialoguePanel.prefab` e o painel reutilizavel de dialogo;
+- `Assets/_Project/Prefabs/World/WorldChest.prefab`, `SimpleDoor.prefab` e `NpcPlaceholder.prefab` sao os placeholders de mundo;
+- materiais placeholder ficam em `Assets/_Project/Materials/Interaction` e usam shader URP Lit;
+- `CombatSandbox` possui as seis novas roots `InteractionPrompt`, `ContainerTransferScreen`, `DialoguePanel`, `WorldChest`, `SimpleDoor` e `NpcPlaceholder`;
+- o `UIEventSystem` existente foi reaproveitado; a cena continua com exatamente um EventSystem e um AudioListener;
+- nenhum ZIP de `Downloads` foi necessario ou importado nesta etapa, portanto nao houve nova dependencia externa nem arquivo de licenca adicional;
+- `Tools/Combat Sandbox/Build World Interaction Foundation` reconstrui apenas esta feature, recusa Play Mode ou cena ativa dirty e procura somente roots exatas;
+- o builder legado `CombatSandboxSceneBuilder` nao foi executado nem alterado.
+
+Validacao realizada:
+
+- Play Mode confirmou prompt e alvo generico, coleta unica dos dois pickups e IDs/durabilidade distintos;
+- MainHand/OffHand, troca livre, retomada depois da acao e travas durante ataque/dodge continuaram funcionando;
+- selecao, botoes, duplo clique, drag-and-drop nos dois sentidos e `Take All` preservaram referencia, ID e ownership sem duplicacao;
+- tentativa de armazenar arma equipada falhou com `ItemEquipped` e sem mudar as contagens;
+- container abriu com cursor visivel, bloqueou ataque/dodge e impediu um segundo modal; desativar o container fechou a UI e restaurou `Locked/hidden`;
+- porta abriu e fechou, atualizou o prompt e rejeitou reentrada durante as duas animacoes;
+- NPC abriu dialogo, mostrou speaker/fala, manteve o mundo rodando e bloqueou outro modal;
+- Skeleton e Golem mantiveram AI, health e hitboxes e foram instanciados em Play Mode;
+- a tela do container e o dialogo foram inspecionados no Game View `WXGA (1366x768)` sem sobreposicao ou corte estrutural;
+- 26 prefabs, 791 GameObjects de prefab e a cena foram varridos com `0` scripts ausentes e `0` referencias quebradas;
+- Play Mode e a rodada final de Editor terminaram com `0 errors` e `0 warnings` do projeto;
+- `Assets/SazenGames` continua presente e nao foi alterada.
+
+Continuam fora de escopo: save/persistencia do container, banco de dados, servidor/multiplayer, respawn ou reposicao de loot, regras de roubo e afinidade, crafting, peso, lojas/bancos, containers compartilhados, loot de cadaver, portas trancadas/chaves, quest branching, AI social, animacoes humanoides do NPC e arte/audio/VFX finais.

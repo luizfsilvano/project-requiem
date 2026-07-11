@@ -12,7 +12,7 @@ GameObject:
   - component: {fileID: 2315767767677154146}
   - component: {fileID: 76165226705198562}
   - component: {fileID: 8650685339143470395}
-  m_Layer: 0
+  m_Layer: 29
   m_Name: BronzeSwordPickup
   m_TagString: Untagged
   m_Icon: {fileID: 0}
@@ -95,6 +95,11 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 573d4a5049dd91d4fb6e36478ce12f53, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::WeaponPickup
+  displayName: Bronze Sword
+  description: Coletar a espada de bronze.
+  priority: 30
+  interactionRange: 3.5
+  interactionPoint: {fileID: 9116177392131606474}
   weaponData: {fileID: 11400000, guid: aee9e858d45122d4e964eb74cf48c928, type: 2}
   equippedWeaponPrefab: {fileID: 695757031399475120, guid: 866a04eb59d86214db4874ee843dce28, type: 3}
   weaponName: Bronze Sword
@@ -164,6 +169,10 @@ PrefabInstance:
     - target: {fileID: 695757031399475120, guid: 866a04eb59d86214db4874ee843dce28, type: 3}
       propertyPath: m_Name
       value: Visual
+      objectReference: {fileID: 0}
+    - target: {fileID: 695757031399475120, guid: 866a04eb59d86214db4874ee843dce28, type: 3}
+      propertyPath: m_Layer
+      value: 29
       objectReference: {fileID: 0}
     m_RemovedComponents: []
     m_RemovedGameObjects: []

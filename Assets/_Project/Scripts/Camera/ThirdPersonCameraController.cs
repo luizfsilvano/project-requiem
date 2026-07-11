@@ -58,15 +58,17 @@ public sealed class ThirdPersonCameraController : MonoBehaviour
 
     private void OnEnable()
     {
-        LockCursor();
+        if (!GameplayInputGate.IsModalOpen)
+        {
+            LockCursor();
+        }
     }
 
     private void Update()
     {
-        if (DevSettings.ConsoleOpen || GameplayInputGate.InventoryOpen)
+        if (GameplayInputGate.IsModalOpen)
         {
-            Cursor.lockState = CursorLockMode.None;
-            Cursor.visible = true;
+            GameplayInputGate.EnsureModalCursor();
             return;
         }
 
@@ -108,7 +110,10 @@ public sealed class ThirdPersonCameraController : MonoBehaviour
             return;
         }
 
-        UpdateLockOnOrbit();
+        if (!GameplayInputGate.IsModalOpen)
+        {
+            UpdateLockOnOrbit();
+        }
 
         Vector3 targetPoint = target.position + Vector3.up * targetHeight;
         Quaternion orbitRotation = Quaternion.Euler(pitch, yaw, 0f);

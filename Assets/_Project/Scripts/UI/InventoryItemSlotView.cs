@@ -22,7 +22,8 @@ public sealed class InventoryItemSlotView : MonoBehaviour,
     [SerializeField] private Image durabilityFill;
     [SerializeField] private GameObject selectionFrame;
 
-    private CharacterInventoryScreen screen;
+    private IItemSlotViewHost host;
+    private IItemContainer source;
     private ItemInstance item;
     private CanvasGroup canvasGroup;
 
@@ -33,9 +34,10 @@ public sealed class InventoryItemSlotView : MonoBehaviour,
         canvasGroup = GetComponent<CanvasGroup>();
     }
 
-    public void Bind(CharacterInventoryScreen owner, ItemInstance boundItem)
+    public void Bind(IItemSlotViewHost owner, IItemContainer sourceContainer, ItemInstance boundItem)
     {
-        screen = owner;
+        host = owner;
+        source = sourceContainer;
         item = boundItem;
         Refresh();
     }
@@ -53,7 +55,7 @@ public sealed class InventoryItemSlotView : MonoBehaviour,
         if (rarityBorder != null)
         {
             Color rarityColor = hasItem
-                ? CharacterInventoryScreen.GetRarityColor(item.Rarity)
+                ? ItemUiPresentation.GetRarityColor(item.Rarity)
                 : new Color(0.18f, 0.16f, 0.13f, 0.8f);
             rarityColor.a = hasItem ? 0.34f : 0.5f;
             rarityBorder.color = rarityColor;
@@ -68,7 +70,7 @@ public sealed class InventoryItemSlotView : MonoBehaviour,
         if (iconFallback != null)
         {
             iconFallback.gameObject.SetActive(hasItem && (icon == null || icon.sprite == null));
-            iconFallback.text = hasItem ? CharacterInventoryScreen.GetItemMonogram(item.Definition.DisplayName) : string.Empty;
+            iconFallback.text = hasItem ? ItemUiPresentation.GetItemMonogram(item.Definition.DisplayName) : string.Empty;
         }
 
         if (quantityText != null)
@@ -78,16 +80,16 @@ public sealed class InventoryItemSlotView : MonoBehaviour,
 
         if (rarityText != null)
         {
-            rarityText.text = hasItem ? CharacterInventoryScreen.GetRarityShortName(item.Rarity) : string.Empty;
-            rarityText.color = hasItem ? CharacterInventoryScreen.GetRarityColor(item.Rarity) : Color.clear;
+            rarityText.text = hasItem ? ItemUiPresentation.GetRarityShortName(item.Rarity) : string.Empty;
+            rarityText.color = hasItem ? ItemUiPresentation.GetRarityColor(item.Rarity) : Color.clear;
         }
 
         if (qualityText != null)
         {
-            qualityText.text = hasItem ? CharacterInventoryScreen.GetQualityShortName(item.Quality) : string.Empty;
+            qualityText.text = hasItem ? ItemUiPresentation.GetQualityShortName(item.Quality) : string.Empty;
         }
 
-        bool equipped = hasItem && screen != null && screen.IsEquipped(item);
+        bool equipped = hasItem && host != null && host.IsEquipped(item);
         if (equippedText != null)
         {
             equippedText.gameObject.SetActive(equipped);
@@ -112,7 +114,7 @@ public sealed class InventoryItemSlotView : MonoBehaviour,
 
         if (selectionFrame != null)
         {
-            selectionFrame.SetActive(hasItem && screen != null && screen.IsSelected(item));
+            selectionFrame.SetActive(hasItem && host != null && host.IsSelected(item, source));
         }
 
         if (canvasGroup != null)
@@ -124,26 +126,26 @@ public sealed class InventoryItemSlotView : MonoBehaviour,
 
     public void OnPointerClick(PointerEventData eventData)
     {
-        if (item == null || screen == null)
+        if (item == null || host == null || source == null)
         {
             return;
         }
 
-        screen.SelectItem(item);
+        host.SelectItem(item, source);
         if (eventData.button == PointerEventData.InputButton.Left && eventData.clickCount >= 2)
         {
-            screen.ExecuteDefaultAction(item);
+            host.ExecuteDefaultAction(item, source);
         }
     }
 
     public void OnBeginDrag(PointerEventData eventData)
     {
-        if (item == null || screen == null || eventData.button != PointerEventData.InputButton.Left)
+        if (item == null || host == null || source == null || eventData.button != PointerEventData.InputButton.Left)
         {
             return;
         }
 
-        screen.BeginDrag(item, null, eventData.position);
+        host.BeginItemDrag(item, source, eventData.position);
         if (canvasGroup != null)
         {
             canvasGroup.alpha = 0.42f;
@@ -153,7 +155,7 @@ public sealed class InventoryItemSlotView : MonoBehaviour,
 
     public void OnDrag(PointerEventData eventData)
     {
-        screen?.UpdateDrag(eventData.position);
+        host?.UpdateItemDrag(eventData.position);
     }
 
     public void OnEndDrag(PointerEventData eventData)
@@ -164,11 +166,14 @@ public sealed class InventoryItemSlotView : MonoBehaviour,
             canvasGroup.blocksRaycasts = true;
         }
 
-        screen?.EndDrag();
+        host?.EndItemDrag();
     }
 
     public void OnDrop(PointerEventData eventData)
     {
-        screen?.TryDropOnInventory();
+        if (source != null)
+        {
+            host?.DropItemOnContainer(source);
+        }
     }
 }
