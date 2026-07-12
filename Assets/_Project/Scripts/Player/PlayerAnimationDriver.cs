@@ -175,6 +175,18 @@ public sealed class PlayerAnimationDriver : MonoBehaviour
         }
     }
 
+    public void ResetActionState()
+    {
+        actionLockTimer = 0f;
+        if (animator == null)
+        {
+            return;
+        }
+
+        animator.SetFloat(SpeedHash, 0f);
+        animator.CrossFadeInFixedTime(IdleStateHash, locomotionFade);
+    }
+
     private void CrossFadeIfNeeded(int stateHash, float fadeDuration)
     {
         AnimatorStateInfo currentState = animator.GetCurrentAnimatorStateInfo(0);

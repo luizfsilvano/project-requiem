@@ -11,11 +11,14 @@ public sealed class WeaponPickup : InteractableBehaviour
     [SerializeField] private float idleRotationSpeed = 45f;
 
     private bool consumed;
+    private Collider pickupCollider;
+    private Renderer[] visualRenderers = System.Array.Empty<Renderer>();
 
     public override InteractionKind Kind => InteractionKind.Pickup;
     public override string ActionName => "Coletar";
     public override bool IsAvailable => base.IsAvailable && !consumed && weaponData != null;
     public GameObject LegacyEquippedWeaponPrefab => equippedWeaponPrefab;
+    public bool IsCollected => consumed;
 
     private string PickupDisplayName => weaponData != null
         ? weaponData.DisplayName
@@ -25,13 +28,16 @@ public sealed class WeaponPickup : InteractableBehaviour
 
     private void Awake()
     {
-        Collider pickupCollider = GetComponent<Collider>();
+        pickupCollider = GetComponent<Collider>();
         pickupCollider.isTrigger = true;
+        visualRenderers = visualRoot != null
+            ? visualRoot.GetComponentsInChildren<Renderer>(true)
+            : GetComponentsInChildren<Renderer>(true);
     }
 
     private void Update()
     {
-        if (visualRoot != null)
+        if (!consumed && visualRoot != null)
         {
             visualRoot.Rotate(Vector3.up, idleRotationSpeed * Time.deltaTime, Space.World);
         }
@@ -90,10 +96,44 @@ public sealed class WeaponPickup : InteractableBehaviour
             return false;
         }
 
-        NotifyInteractionStateChanged();
+        SetCollectedState(true);
         CombatFeedbackAudio.PlayPickup(transform.position);
-        gameObject.SetActive(false);
         return true;
+    }
+
+    public void SetCollectedState(bool collected)
+    {
+        consumed = collected;
+        if (pickupCollider == null)
+        {
+            pickupCollider = GetComponent<Collider>();
+        }
+
+        if (pickupCollider != null)
+        {
+            pickupCollider.enabled = !collected;
+        }
+
+        if (visualRoot != null && visualRoot != transform)
+        {
+            visualRoot.gameObject.SetActive(!collected);
+        }
+        else
+        {
+            if (visualRenderers == null || visualRenderers.Length == 0)
+            {
+                visualRenderers = GetComponentsInChildren<Renderer>(true);
+            }
+            for (int i = 0; i < visualRenderers.Length; i++)
+            {
+                if (visualRenderers[i] != null)
+                {
+                    visualRenderers[i].enabled = !collected;
+                }
+            }
+        }
+
+        NotifyInteractionStateChanged();
     }
 
     protected override void OnValidate()

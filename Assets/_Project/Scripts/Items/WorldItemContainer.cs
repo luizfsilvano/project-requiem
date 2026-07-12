@@ -27,6 +27,7 @@ public sealed class WorldItemContainer : InteractableBehaviour, IItemContainer
 
     private readonly HashSet<ItemInstance> subscribedItems = new();
     private bool initialized;
+    private bool hasRestoredState;
     private bool isOpen;
     private bool unavailableNotified;
 
@@ -38,6 +39,8 @@ public sealed class WorldItemContainer : InteractableBehaviour, IItemContainer
     public override bool IsAvailable => base.IsAvailable && initialized;
     public string ContainerDisplayName => DisplayName;
     public bool IsOpen => isOpen;
+    public bool IsInitialized => initialized;
+    public bool HasRestoredState => hasRestoredState;
     public IItemContainer Container => this;
     public IReadOnlyList<ItemInstance> Items => itemContainer.Items;
     public int Count => itemContainer.Count;
@@ -45,16 +48,26 @@ public sealed class WorldItemContainer : InteractableBehaviour, IItemContainer
 
     private void Awake()
     {
-        itemContainer ??= new ItemContainer();
-        itemContainer.NormalizeContents();
-        InitializeContents();
-        SubscribeToAllItems();
-        initialized = true;
+        EnsureInitializedForPersistence();
 
         if (lid != null)
         {
             lid.localRotation = Quaternion.Euler(closedLidEuler);
         }
+    }
+
+    public void EnsureInitializedForPersistence()
+    {
+        if (initialized)
+        {
+            return;
+        }
+
+        itemContainer ??= new ItemContainer();
+        itemContainer.NormalizeContents();
+        InitializeContents();
+        SubscribeToAllItems();
+        initialized = true;
     }
 
     private void OnEnable()
@@ -179,6 +192,25 @@ public sealed class WorldItemContainer : InteractableBehaviour, IItemContainer
         return true;
     }
 
+    public bool TryRestoreContents(IReadOnlyList<ItemInstance> restoredItems, out string error)
+    {
+        List<ItemInstance> previousItems = new(itemContainer.Items);
+        UnsubscribeFromAllItems();
+        if (!itemContainer.TryReplaceContents(restoredItems, out error))
+        {
+            SubscribeToItems(previousItems);
+            return false;
+        }
+
+        SubscribeToItems(restoredItems);
+        initialized = true;
+        hasRestoredState = true;
+        SetUiOpen(false);
+        ContentsChanged?.Invoke();
+        NotifyInteractionStateChanged();
+        return true;
+    }
+
     protected override void OnValidate()
     {
         base.OnValidate();
@@ -222,6 +254,19 @@ public sealed class WorldItemContainer : InteractableBehaviour, IItemContainer
         foreach (ItemInstance item in itemContainer.Items)
         {
             SubscribeToItem(item);
+        }
+    }
+
+    private void SubscribeToItems(IReadOnlyList<ItemInstance> items)
+    {
+        if (items == null)
+        {
+            return;
+        }
+
+        for (int i = 0; i < items.Count; i++)
+        {
+            SubscribeToItem(items[i]);
         }
     }
 

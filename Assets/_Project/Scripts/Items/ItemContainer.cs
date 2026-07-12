@@ -178,6 +178,82 @@ public sealed class ItemContainer : IItemContainer, ISerializationCallbackReceiv
         runtimeStateReady = true;
     }
 
+    public bool TryReplaceContents(IReadOnlyList<ItemInstance> replacementItems, out string error)
+    {
+        EnsureRuntimeState();
+        error = string.Empty;
+        if (replacementItems == null)
+        {
+            error = "Replacement item list is null.";
+            return false;
+        }
+
+        if (Capacity > 0 && replacementItems.Count > Capacity)
+        {
+            error = $"Container capacity {Capacity} cannot hold {replacementItems.Count} items.";
+            return false;
+        }
+
+        HashSet<ItemInstance> references = new();
+        HashSet<string> instanceIds = new(StringComparer.Ordinal);
+        for (int i = 0; i < replacementItems.Count; i++)
+        {
+            ItemInstance item = replacementItems[i];
+            if (item == null || !item.IsValid)
+            {
+                error = $"Replacement item at index {i} is invalid.";
+                return false;
+            }
+
+            if (!references.Add(item) || !instanceIds.Add(item.InstanceId))
+            {
+                error = $"Replacement contains duplicate item '{item.InstanceId}'.";
+                return false;
+            }
+
+            if (!item.CanAttachTo(this))
+            {
+                error = $"Item '{item.InstanceId}' is already owned by another container.";
+                return false;
+            }
+        }
+
+        List<ItemInstance> previousItems = new(items);
+        for (int i = 0; i < previousItems.Count; i++)
+        {
+            previousItems[i]?.DetachFrom(this);
+        }
+
+        List<ItemInstance> nextItems = new(replacementItems.Count);
+        for (int i = 0; i < replacementItems.Count; i++)
+        {
+            ItemInstance item = replacementItems[i];
+            if (item.TryAttachTo(this))
+            {
+                nextItems.Add(item);
+                continue;
+            }
+
+            for (int attachedIndex = 0; attachedIndex < nextItems.Count; attachedIndex++)
+            {
+                nextItems[attachedIndex].DetachFrom(this);
+            }
+
+            for (int previousIndex = 0; previousIndex < previousItems.Count; previousIndex++)
+            {
+                previousItems[previousIndex]?.TryAttachTo(this);
+            }
+
+            error = $"Could not attach item '{item.InstanceId}' while replacing container contents.";
+            return false;
+        }
+
+        items = nextItems;
+        readOnlyItems = null;
+        runtimeStateReady = true;
+        return true;
+    }
+
     private bool CanAddIgnoringOwnership(ItemInstance item)
     {
         EnsureRuntimeState();

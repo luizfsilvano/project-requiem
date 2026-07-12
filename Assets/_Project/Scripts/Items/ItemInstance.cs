@@ -56,8 +56,13 @@ public sealed class ItemInstance
         && quantity <= definition.MaxStackSize;
 
     private ItemInstance(ItemDefinition itemDefinition, int itemQuantity)
+        : this(Guid.NewGuid().ToString("N"), itemDefinition, itemQuantity)
     {
-        instanceId = Guid.NewGuid().ToString("N");
+    }
+
+    private ItemInstance(string itemInstanceId, ItemDefinition itemDefinition, int itemQuantity)
+    {
+        instanceId = itemInstanceId;
         definition = itemDefinition;
         quantity = itemQuantity;
         maxDurability = itemDefinition != null ? itemDefinition.DefaultMaxDurability : 0f;
@@ -79,6 +84,73 @@ public sealed class ItemInstance
     public static ItemInstance Create(ItemDefinition definition, int quantity = 1)
     {
         return TryCreate(definition, quantity, out ItemInstance instance) ? instance : null;
+    }
+
+    public static bool TryRestore(
+        string restoredInstanceId,
+        ItemDefinition restoredDefinition,
+        int restoredQuantity,
+        float restoredCurrentDurability,
+        float restoredMaxDurability,
+        ItemQuality restoredQuality,
+        ItemRarity restoredRarity,
+        string restoredCreatorId,
+        string restoredAffinityId,
+        bool restoredIsStolen,
+        string restoredOriginalOwnerId,
+        out ItemInstance instance,
+        out string error)
+    {
+        instance = null;
+        error = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(restoredInstanceId))
+        {
+            error = "Item instance ID is empty.";
+            return false;
+        }
+
+        if (restoredDefinition == null)
+        {
+            error = $"Item '{restoredInstanceId}' has no definition.";
+            return false;
+        }
+
+        if (restoredQuantity < 1 || restoredQuantity > restoredDefinition.MaxStackSize)
+        {
+            error = $"Item '{restoredInstanceId}' has invalid quantity {restoredQuantity}.";
+            return false;
+        }
+
+        if (!IsFinite(restoredCurrentDurability)
+            || !IsFinite(restoredMaxDurability)
+            || restoredMaxDurability < 0f
+            || restoredCurrentDurability < 0f
+            || restoredCurrentDurability > restoredMaxDurability)
+        {
+            error = $"Item '{restoredInstanceId}' has invalid durability values.";
+            return false;
+        }
+
+        if (!Enum.IsDefined(typeof(ItemQuality), restoredQuality)
+            || !Enum.IsDefined(typeof(ItemRarity), restoredRarity))
+        {
+            error = $"Item '{restoredInstanceId}' has an unknown quality or rarity.";
+            return false;
+        }
+
+        instance = new ItemInstance(restoredInstanceId, restoredDefinition, restoredQuantity)
+        {
+            currentDurability = restoredCurrentDurability,
+            maxDurability = restoredMaxDurability,
+            quality = restoredQuality,
+            rarity = restoredRarity,
+            creatorId = restoredCreatorId ?? string.Empty,
+            affinityId = restoredAffinityId ?? string.Empty,
+            isStolen = restoredIsStolen,
+            originalOwnerId = restoredOriginalOwnerId ?? string.Empty
+        };
+        return true;
     }
 
     public bool EnsureValidState()
@@ -118,7 +190,11 @@ public sealed class ItemInstance
 
     public bool TrySetDurability(float newCurrentDurability, float newMaxDurability)
     {
-        if (newMaxDurability < 0f || newCurrentDurability < 0f || newCurrentDurability > newMaxDurability)
+        if (!IsFinite(newCurrentDurability)
+            || !IsFinite(newMaxDurability)
+            || newMaxDurability < 0f
+            || newCurrentDurability < 0f
+            || newCurrentDurability > newMaxDurability)
         {
             return false;
         }
@@ -162,5 +238,10 @@ public sealed class ItemInstance
     internal void RegenerateInstanceId()
     {
         instanceId = Guid.NewGuid().ToString("N");
+    }
+
+    private static bool IsFinite(float value)
+    {
+        return !float.IsNaN(value) && !float.IsInfinity(value);
     }
 }

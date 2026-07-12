@@ -251,6 +251,18 @@ public sealed class PlayerCameraRelativeMovement : MonoBehaviour
         return false;
     }
 
+    public void ResetTransientState()
+    {
+        verticalVelocity = 0f;
+        dodgeTimer = 0f;
+        dodgeCooldownTimer = 0f;
+        spaceHeldTime = 0f;
+        isTrackingSpaceHold = false;
+        dodgeDirection = Vector3.zero;
+        IsRunning = false;
+        CurrentPlanarSpeed = 0f;
+    }
+
     private bool CanSpendDodge()
     {
         return stamina == null || stamina.CanSpend(stamina.DodgeCost);

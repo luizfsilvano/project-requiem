@@ -77,7 +77,24 @@ public sealed class PlayerHealth : MonoBehaviour
 
     public void RestoreFullHealth()
     {
-        currentHealth = maxHealth;
+        RestoreHealth(maxHealth);
+    }
+
+    public void RestoreHealth(int restoredHealth)
+    {
+        if (flashRoutine != null)
+        {
+            StopCoroutine(flashRoutine);
+            flashRoutine = null;
+        }
+
+        if (deathRoutine != null)
+        {
+            StopCoroutine(deathRoutine);
+            deathRoutine = null;
+        }
+
+        currentHealth = Mathf.Clamp(restoredHealth, 1, Mathf.Max(1, maxHealth));
         invulnerableTimer = 0f;
         isDead = false;
 

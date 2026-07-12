@@ -303,6 +303,25 @@ public sealed class PlayerInventory : MonoBehaviour, IItemContainer
         return true;
     }
 
+    public bool TryRestoreItems(IReadOnlyList<ItemInstance> restoredItems, out string error)
+    {
+        List<ItemInstance> previousItems = new(itemContainer.Items);
+        UnsubscribeFromAllItems();
+        if (!itemContainer.TryReplaceContents(restoredItems, out error))
+        {
+            SubscribeToItems(previousItems);
+            return false;
+        }
+
+        SubscribeToItems(restoredItems);
+        return true;
+    }
+
+    public void NotifyStateRestored()
+    {
+        InventoryChanged?.Invoke();
+    }
+
     private void MigrateLegacyWeapons()
     {
         if (legacyWeapons == null || legacyWeapons.Count == 0)
@@ -434,6 +453,19 @@ public sealed class PlayerInventory : MonoBehaviour, IItemContainer
         foreach (ItemInstance item in itemContainer.Items)
         {
             SubscribeToItem(item);
+        }
+    }
+
+    private void SubscribeToItems(IReadOnlyList<ItemInstance> items)
+    {
+        if (items == null)
+        {
+            return;
+        }
+
+        for (int i = 0; i < items.Count; i++)
+        {
+            SubscribeToItem(items[i]);
         }
     }
 

@@ -15,6 +15,8 @@ public sealed class SimpleDoorInteractable : InteractableBehaviour
     private Coroutine animationRoutine;
     private bool isOpen;
     private bool isAnimating;
+    private bool rotationsInitialized;
+    private bool doorStateInitialized;
 
     public override InteractionKind Kind => InteractionKind.Door;
     public override string ActionName => isOpen ? "Fechar Porta" : "Abrir Porta";
@@ -24,20 +26,24 @@ public sealed class SimpleDoorInteractable : InteractableBehaviour
 
     private void Awake()
     {
-        ResolvePivot();
+        EnsureRotationsInitialized();
         if (doorPivot == null)
         {
             return;
         }
 
-        closedLocalRotation = doorPivot.localRotation;
-        openLocalRotation = closedLocalRotation * Quaternion.Euler(openEulerOffset);
-        isOpen = startsOpen;
+        if (!doorStateInitialized)
+        {
+            isOpen = startsOpen;
+            doorStateInitialized = true;
+        }
+
         doorPivot.localRotation = isOpen ? openLocalRotation : closedLocalRotation;
     }
 
     private void OnDisable()
     {
+        EnsureRotationsInitialized();
         if (animationRoutine != null)
         {
             StopCoroutine(animationRoutine);
@@ -75,6 +81,60 @@ public sealed class SimpleDoorInteractable : InteractableBehaviour
         isAnimating = true;
         NotifyInteractionStateChanged();
         animationRoutine = StartCoroutine(AnimateDoor(targetOpen));
+        return true;
+    }
+
+    public void ApplyPersistentState(bool open)
+    {
+        if (animationRoutine != null)
+        {
+            StopCoroutine(animationRoutine);
+            animationRoutine = null;
+        }
+
+        EnsureRotationsInitialized();
+        isOpen = open;
+        isAnimating = false;
+        doorStateInitialized = true;
+        if (doorPivot != null)
+        {
+            doorPivot.localRotation = isOpen ? openLocalRotation : closedLocalRotation;
+        }
+
+        NotifyInteractionStateChanged();
+    }
+
+    public bool TryGetPersistentColliderPose(
+        Collider collider,
+        bool open,
+        out Vector3 position,
+        out Quaternion rotation)
+    {
+        position = collider != null ? collider.transform.position : Vector3.zero;
+        rotation = collider != null ? collider.transform.rotation : Quaternion.identity;
+        EnsureRotationsInitialized();
+        if (collider == null || doorPivot == null || !collider.transform.IsChildOf(transform))
+        {
+            return false;
+        }
+
+        if (!collider.transform.IsChildOf(doorPivot))
+        {
+            return true;
+        }
+
+        Matrix4x4 parentToWorld = doorPivot.parent != null
+            ? doorPivot.parent.localToWorldMatrix
+            : Matrix4x4.identity;
+        Matrix4x4 targetPivotMatrix = parentToWorld * Matrix4x4.TRS(
+            doorPivot.localPosition,
+            open ? openLocalRotation : closedLocalRotation,
+            doorPivot.localScale);
+        Matrix4x4 colliderRelativeToPivot = doorPivot.worldToLocalMatrix
+            * collider.transform.localToWorldMatrix;
+        Matrix4x4 targetColliderMatrix = targetPivotMatrix * colliderRelativeToPivot;
+        position = targetColliderMatrix.GetColumn(3);
+        rotation = targetColliderMatrix.rotation;
         return true;
     }
 
@@ -122,6 +182,24 @@ public sealed class SimpleDoorInteractable : InteractableBehaviour
         }
 
         doorPivot = transform.Find("DoorPivot");
+    }
+
+    private void EnsureRotationsInitialized()
+    {
+        if (rotationsInitialized)
+        {
+            return;
+        }
+
+        ResolvePivot();
+        if (doorPivot == null)
+        {
+            return;
+        }
+
+        closedLocalRotation = doorPivot.localRotation;
+        openLocalRotation = closedLocalRotation * Quaternion.Euler(openEulerOffset);
+        rotationsInitialized = true;
     }
 
     protected override void OnValidate()

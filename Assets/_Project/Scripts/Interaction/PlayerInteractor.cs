@@ -112,6 +112,11 @@ public sealed class PlayerInteractor : MonoBehaviour
             && dialoguePanel.Open(npc, this);
     }
 
+    public void ClearCurrentTarget()
+    {
+        SetCurrentTarget(null);
+    }
+
     private void ResolveDependencies()
     {
         if (cameraTransform == null && Camera.main != null)

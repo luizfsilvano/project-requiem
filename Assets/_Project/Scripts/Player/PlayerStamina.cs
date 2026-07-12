@@ -96,8 +96,13 @@ public sealed class PlayerStamina : MonoBehaviour
 
     public void RestoreFullStamina()
     {
-        currentStamina = Mathf.Max(0f, maxStamina);
-        regenDelayTimer = 0f;
+        RestoreStamina(maxStamina);
+    }
+
+    public void RestoreStamina(float restoredStamina)
+    {
+        currentStamina = Mathf.Clamp(restoredStamina, 0f, Mathf.Max(0f, maxStamina));
+        regenDelayTimer = currentStamina < maxStamina ? regenDelay : 0f;
         StaminaChanged?.Invoke();
     }
 }

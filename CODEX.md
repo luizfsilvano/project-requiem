@@ -722,3 +722,83 @@ Validacao realizada:
 - `Assets/SazenGames` continua presente e nao foi alterada.
 
 Continuam fora de escopo: save/persistencia do container, banco de dados, servidor/multiplayer, respawn ou reposicao de loot, regras de roubo e afinidade, crafting, peso, lojas/bancos, containers compartilhados, loot de cadaver, portas trancadas/chaves, quest branching, AI social, animacoes humanoides do NPC e arte/audio/VFX finais.
+
+## Atualizacao 2026-07-11 - Save System Local v1
+
+A quarta etapa adicionou persistencia local deliberadamente pequena para o sandbox. O estado atual dos arquivos e esta secao substituem as observacoes cronologicas anteriores que diziam que save ainda nao existia.
+
+Arquitetura e contrato:
+
+- `SaveGameService`, presente como root unica da cena `CombatSandbox`, e a autoridade central para snapshot, validacao, escrita, load, delete, status e diagnostico;
+- o formato atual usa `schemaVersion = 1`; schemas futuros sao rejeitados e `TryMigrateToCurrentSchema` concentra o ponto de extensao para migracoes futuras, mas nenhuma migracao legada existe ainda;
+- `SaveGameDtos` contem somente numeros, booleans, strings, listas e DTOs compostos por esses valores; nao ha `UnityEngine.Object`, `Transform`, `ScriptableObject`, prefab, instance ID da Unity ou referencia runtime no JSON;
+- os arquivos ficam em `Application.persistentDataPath` com os nomes `combat-sandbox-save.json`, `combat-sandbox-save.tmp` e `combat-sandbox-save.bak`;
+- o save escreve e faz flush do `.tmp`, desserializa e valida esse arquivo, e somente entao usa substituicao atomica do arquivo principal, mantendo o principal anterior como `.bak`;
+- o load tenta primeiro o principal e usa o backup somente se leitura, JSON ou validacao semantica do principal falhar; arquivo corrompido nunca e sobrescrito durante load;
+- `ItemDefinitionRegistry.asset`, em `Assets/_Project/Data/Items`, registra explicitamente Bronze Sword e Bronze Axe por `definitionId`; IDs vazios, repetidos ou desconhecidos invalidam a operacao;
+- `ItemDefinition.DefinitionId` nao usa mais o nome do asset como fallback silencioso;
+- `ItemInstance.TryRestore` recria explicitamente o mesmo ID, definicao, quantidade, durabilidade, qualidade, raridade, criador, afinidade, flag de roubado e dono original, sem reflection e sem gerar outro GUID;
+- `ItemContainer.TryReplaceContents`, `PlayerInventory.TryRestoreItems`, `PlayerEquipment.TryRestoreState` e `WorldItemContainer.TryRestoreContents` aplicam lotes validados sem passar por pickups, autoequip ou transferencias unitarias;
+- equipamento continua guardando apenas IDs de instancias pertencentes ao inventario; o load restaura inventario primeiro, depois slots/arma ativa, e reconstrui o visual equipado uma vez;
+- uma mesma `ItemInstance` continua sem poder ocupar dois owners ou dois slots, e a validacao do save tambem exige unicidade global de todos os `instanceId` entre player e containers.
+
+Estado persistido no schema v1:
+
+- posicao e rotacao do player;
+- vida jogavel e stamina atuais;
+- `lastSanctuaryId` preparado, atualmente com o valor unico `combat_sandbox.sanctuary.default` e sem implementar respawn regional;
+- todas as instancias do inventario, incluindo seus metadados preparados para sistemas futuros;
+- os 12 registros estruturais de equipamento, `activeWeaponSlot` e `activeItemInstanceId`;
+- conteudo completo do `WorldChest`, inclusive lista vazia, e a flag `initializedOrRestored`;
+- estado coletado dos pickups de Bronze Sword e Bronze Axe;
+- estado aberto/fechado da `SimpleDoor`.
+
+Identidade persistente de mundo:
+
+- `PersistentWorldId` existe somente nas instancias relevantes da cena, nao nos prefabs, evitando que futuras copias de um prefab nascam com o mesmo ID;
+- IDs atuais: `combat_sandbox.container.world_chest`, `combat_sandbox.pickup.bronze_sword`, `combat_sandbox.pickup.bronze_axe` e `combat_sandbox.door.simple_door`;
+- a validacao detecta participantes sem ID, IDs vazios, duplicados, desconhecidos no save e participantes persistentes ausentes da cena;
+- `Tools/Combat Sandbox/Validate Persistence Foundation` executa essa verificacao no Editor; o menu de contexto de `PersistentWorldId` gera um novo ID estavel quando uma instancia de cena e duplicada;
+- pickups coletados nao desativam mais o root persistente: visual e collider sao desativados, enquanto o componente permanece localizavel para load e pode ser restaurado;
+- `WorldItemContainer.HasRestoredState` distingue uma restauracao runtime dos seeds criados no `Awake`; um container salvo vazio permanece vazio depois do load.
+
+Seguranca do load:
+
+- todo o documento, registry, bindings, world IDs, numeros, definicoes, IDs globais, capacidades, ownership, slots e arma ativa sao validados e materializados fora do mundo antes da primeira mutacao;
+- imediatamente antes de aplicar, inventario, container, dialogo e dev console sao fechados; selecao/prompt, ataque, dodge, lock-on e action lock da animacao sao limpos; o input fica suprimido por dois frames;
+- antes de mutar o mundo, a pose salva do `CharacterController` e testada contra colliders estaticos e contra a pose salva da porta; coordenadas extremas e penetracao em geometria sao rejeitadas;
+- teleport desabilita temporariamente o `CharacterController` e restaura seu estado anterior;
+- `PlayerHealth.RestoreHealth` cancela coroutines de hit/morte e `PlayerStamina.RestoreStamina` reinicia o pequeno delay de regeneracao quando necessario;
+- o servico captura um snapshot de rollback antes de aplicar; retornos de falha e excecoes inesperadas de visual, fisica ou listeners tentam reconstruir esse estado anterior, e excecoes do proprio rollback tambem viram status controlado;
+- vida zero durante a janela de morte nao e uma condicao persistente neste MVP: snapshots sao limitados ao minimo jogavel de `1 HP`.
+
+Ferramentas de desenvolvimento:
+
+- o Dev Console possui a aba `Persistence` com `Save`, `Load`, `Delete Save`, `Show Folder`, `Print Summary`, `Validate World IDs` e `Validate Registry`;
+- delete exige um segundo clique de confirmacao em ate cinco segundos;
+- a aba mostra schema, existencia de principal/backup, `updatedAt`, contagens atuais de itens do player, containers e objetos persistentes, ultima operacao, fonte do ultimo load, status, erro e caminho;
+- autoload existe apenas como campo preparado e permanece desligado na cena; nenhum load automatico acontece por padrao;
+- `Tools/Combat Sandbox/Build Persistence Foundation` cria/atualiza somente registry, servico e IDs desta feature, recusa Play Mode ou cena dirty e nao executa nem altera `CombatSandboxSceneBuilder`.
+
+Validacao realizada:
+
+- primeira escrita criou somente o principal; a segunda criou backup e removeu o temporario;
+- no mesmo Play Mode, quatro instancias com IDs distintos, durabilidade `73/100`, MainHand/OffHand, arma ativa, vida, stamina, transform, dois pickups, porta aberta e bau vazio foram mutados e restaurados exatamente;
+- sair e entrar novamente em Play Mode confirmou que o load recria novas referencias `ItemInstance` preservando os mesmos IDs e nao depende de referencias do processo anterior;
+- outro round-trip entre Play Modes preservou ownership exclusivo de dois itens no player e um item real no bau, pickup de Sword coletado, pickup de Axe ainda disponivel e OffHand ativa;
+- a instancia do bau preservou o mesmo ID, durabilidade `55/100`, qualidade `Fine`, raridade `Rare`, criador, afinidade, flag de roubado e dono original nao vazios;
+- JSON principal propositalmente corrompido caiu para o backup valido e informou `Backup` como fonte;
+- definicao desconhecida, ID global duplicado, item em mais de um slot, schema futuro e world ID desconhecido foram rejeitados sem alterar o player ou o mundo;
+- IDs de mundo vazios/duplicados e `definitionId` duplicado no registry foram detectados e o estado valido foi confirmado novamente depois do teste;
+- load durante ataque, dodge, inventario, container, dialogo e dev console cancelou/fechou o estado transitorio e deixou `GameplayInputGate` em `None`;
+- uma posicao dentro do collider do `WorldChest` foi rejeitada nos dois arquivos sem mover o player; uma posicao no vao da porta salva aberta carregou corretamente quando a cena iniciou com a porta fechada;
+- uma porta temporariamente inativa foi localizada, restaurada e manteve a pose aberta ao ser ativada novamente;
+- `Print Summary` confirmou schema v1, quatro itens do player, dois slots ocupados, um container vazio, dois pickups e uma porta;
+- a rodada final no schema definitivo confirmou tres itens do player, bau vazio marcado como inicializado/restaurado, quatro objetos persistentes, `updatedAt` valido, exatamente um EventSystem e um AudioListener;
+- Skeleton e Golem foram instanciados em Play Mode e mantiveram AI, health e hitboxes esperados;
+- 26 prefabs, 791 GameObjects de prefab e 398 GameObjects da cena foram varridos com `0` scripts ausentes e `0` referencias quebradas;
+- Play Mode e a verificacao final do Editor terminaram com `0 errors` e `0 warnings`; o Editor ficou fora de Play Mode, com `CombatSandbox` salva e limpa;
+- nenhum asset externo dos ZIPs foi necessario ou importado nesta etapa;
+- `Assets/SazenGames` continua preservada e nao foi alterada.
+
+Continuam fora de escopo: multiplos perfis/slots de save, autosave, checkpoint, save de inimigos ou bosses, NPC/quest, cooldowns e estados transitorios, configuracoes do dev console, criptografia, compressao, cloud, banco de dados, servidor/multiplayer, migracoes de schemas antigos, respawn/reposicao de loot, crafting, peso, lojas/bancos, containers compartilhados, loot de cadaver e regras completas de afinidade/roubo.

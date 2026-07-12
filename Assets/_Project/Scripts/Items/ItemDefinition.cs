@@ -23,7 +23,7 @@ public abstract class ItemDefinition : ScriptableObject
     [Header("Equipment Compatibility")]
     [SerializeField] private EquipmentSlotMask acceptedEquipmentSlots = EquipmentSlotMask.None;
 
-    public string DefinitionId => string.IsNullOrWhiteSpace(definitionId) ? name : definitionId;
+    public string DefinitionId => definitionId != null ? definitionId.Trim() : string.Empty;
     public abstract string DisplayName { get; }
     public string Description => description ?? string.Empty;
     public Sprite Icon => icon;
@@ -45,6 +45,7 @@ public abstract class ItemDefinition : ScriptableObject
 
     protected virtual void OnValidate()
     {
+        definitionId = definitionId != null ? definitionId.Trim() : string.Empty;
         maxStackSize = Mathf.Max(1, maxStackSize);
         defaultMaxDurability = Mathf.Max(0f, defaultMaxDurability);
     }

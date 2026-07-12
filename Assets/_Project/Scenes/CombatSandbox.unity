@@ -174,8 +174,45 @@ PrefabInstance:
     m_RemovedComponents: []
     m_RemovedGameObjects: []
     m_AddedGameObjects: []
-    m_AddedComponents: []
+    m_AddedComponents:
+    - targetCorrespondingSourceObject: {fileID: 8188038725868001991, guid: e8cc2add3943a9746bcd3e8e5d14f779, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 915564361}
   m_SourcePrefab: {fileID: 100100000, guid: e8cc2add3943a9746bcd3e8e5d14f779, type: 3}
+--- !u!1 &130425455 stripped
+GameObject:
+  m_CorrespondingSourceObject: {fileID: 6549189861929377924, guid: 4035844de5b853140bfceb73b16bd1d4, type: 3}
+  m_PrefabInstance: {fileID: 1168633142}
+  m_PrefabAsset: {fileID: 0}
+--- !u!114 &130425458
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 130425455}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 474bcb49853aa07438625e644c072ee6, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: Unity.RenderPipelines.Universal.Runtime::UnityEngine.Rendering.Universal.UniversalAdditionalLightData
+  m_UsePipelineSettings: 1
+  m_AdditionalLightsShadowResolutionTier: 2
+  m_CustomShadowLayers: 0
+  m_LightCookieSize: {x: 1, y: 1}
+  m_LightCookieOffset: {x: 0, y: 0}
+  m_SoftShadowQuality: 0
+  m_RenderingLayersMask:
+    serializedVersion: 0
+    m_Bits: 1
+  m_ShadowRenderingLayersMask:
+    serializedVersion: 0
+    m_Bits: 1
+  m_Version: 4
+  m_LightLayerMask: 1
+  m_ShadowLayerMask: 1
+  m_RenderingLayers: 1
+  m_ShadowRenderingLayers: 1
 --- !u!1001 &218481021
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -936,8 +973,94 @@ PrefabInstance:
     m_RemovedComponents: []
     m_RemovedGameObjects: []
     m_AddedGameObjects: []
-    m_AddedComponents: []
+    m_AddedComponents:
+    - targetCorrespondingSourceObject: {fileID: 272162204953086263, guid: 5ba0a23dc3fa45649b60fa82bbc791f4, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 916352895}
   m_SourcePrefab: {fileID: 100100000, guid: 5ba0a23dc3fa45649b60fa82bbc791f4, type: 3}
+--- !u!134 &858092160
+PhysicsMaterial:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name:
+  serializedVersion: 2
+  m_DynamicFriction: 0.6
+  m_StaticFriction: 0.6
+  m_Bounciness: 0
+  m_FrictionCombine: 0
+  m_BounceCombine: 0
+--- !u!1 &889716354 stripped
+GameObject:
+  m_CorrespondingSourceObject: {fileID: 1255108073648550013, guid: 4035844de5b853140bfceb73b16bd1d4, type: 3}
+  m_PrefabInstance: {fileID: 1168633142}
+  m_PrefabAsset: {fileID: 0}
+--- !u!114 &889716357
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 889716354}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 474bcb49853aa07438625e644c072ee6, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: Unity.RenderPipelines.Universal.Runtime::UnityEngine.Rendering.Universal.UniversalAdditionalLightData
+  m_UsePipelineSettings: 1
+  m_AdditionalLightsShadowResolutionTier: 2
+  m_CustomShadowLayers: 0
+  m_LightCookieSize: {x: 1, y: 1}
+  m_LightCookieOffset: {x: 0, y: 0}
+  m_SoftShadowQuality: 0
+  m_RenderingLayersMask:
+    serializedVersion: 0
+    m_Bits: 1
+  m_ShadowRenderingLayersMask:
+    serializedVersion: 0
+    m_Bits: 1
+  m_Version: 4
+  m_LightLayerMask: 1
+  m_ShadowLayerMask: 1
+  m_RenderingLayers: 1
+  m_ShadowRenderingLayers: 1
+--- !u!1 &915564356 stripped
+GameObject:
+  m_CorrespondingSourceObject: {fileID: 8188038725868001991, guid: e8cc2add3943a9746bcd3e8e5d14f779, type: 3}
+  m_PrefabInstance: {fileID: 59776933}
+  m_PrefabAsset: {fileID: 0}
+--- !u!114 &915564361
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 915564356}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8f8b00caee6af52488194a390ddd4001, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: Assembly-CSharp::PersistentWorldId
+  worldId: combat_sandbox.pickup.bronze_sword
+--- !u!1 &916352890 stripped
+GameObject:
+  m_CorrespondingSourceObject: {fileID: 272162204953086263, guid: 5ba0a23dc3fa45649b60fa82bbc791f4, type: 3}
+  m_PrefabInstance: {fileID: 787258593}
+  m_PrefabAsset: {fileID: 0}
+--- !u!114 &916352895
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 916352890}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8f8b00caee6af52488194a390ddd4001, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: Assembly-CSharp::PersistentWorldId
+  worldId: combat_sandbox.pickup.bronze_axe
 --- !u!1001 &946250294
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -993,7 +1116,10 @@ PrefabInstance:
     m_RemovedComponents: []
     m_RemovedGameObjects: []
     m_AddedGameObjects: []
-    m_AddedComponents: []
+    m_AddedComponents:
+    - targetCorrespondingSourceObject: {fileID: 6768879531920815510, guid: 5ff5fd1b1e9b843459ed96d2520b734a, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 1472710062}
   m_SourcePrefab: {fileID: 100100000, guid: 5ff5fd1b1e9b843459ed96d2520b734a, type: 3}
 --- !u!1001 &1168633142
 PrefabInstance:
@@ -1054,7 +1180,16 @@ PrefabInstance:
     m_RemovedComponents: []
     m_RemovedGameObjects: []
     m_AddedGameObjects: []
-    m_AddedComponents: []
+    m_AddedComponents:
+    - targetCorrespondingSourceObject: {fileID: 1429787673910586145, guid: 4035844de5b853140bfceb73b16bd1d4, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 1810334248}
+    - targetCorrespondingSourceObject: {fileID: 6549189861929377924, guid: 4035844de5b853140bfceb73b16bd1d4, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 130425458}
+    - targetCorrespondingSourceObject: {fileID: 1255108073648550013, guid: 4035844de5b853140bfceb73b16bd1d4, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 889716357}
   m_SourcePrefab: {fileID: 100100000, guid: 4035844de5b853140bfceb73b16bd1d4, type: 3}
 --- !u!114 &1168633143 stripped
 MonoBehaviour:
@@ -1065,7 +1200,7 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 980c2ad5889f2f1468a4329b2dbd0e2d, type: 3}
-  m_Name: 
+  m_Name:
   m_EditorClassIdentifier: Assembly-CSharp::CharacterPreviewController
 --- !u!1001 &1186494200
 PrefabInstance:
@@ -1231,7 +1366,10 @@ PrefabInstance:
     m_RemovedComponents: []
     m_RemovedGameObjects: []
     m_AddedGameObjects: []
-    m_AddedComponents: []
+    m_AddedComponents:
+    - targetCorrespondingSourceObject: {fileID: 4399225012854545838, guid: 44e9dfdaa04da2a41b00395bb93fe493, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 1717143150}
   m_SourcePrefab: {fileID: 100100000, guid: 44e9dfdaa04da2a41b00395bb93fe493, type: 3}
 --- !u!1001 &1443486561
 PrefabInstance:
@@ -1290,6 +1428,70 @@ PrefabInstance:
     m_AddedGameObjects: []
     m_AddedComponents: []
   m_SourcePrefab: {fileID: 100100000, guid: 534cf0b9b5b2ef94291d1c277e64d77e, type: 3}
+--- !u!1 &1472710059 stripped
+GameObject:
+  m_CorrespondingSourceObject: {fileID: 6768879531920815510, guid: 5ff5fd1b1e9b843459ed96d2520b734a, type: 3}
+  m_PrefabInstance: {fileID: 946250294}
+  m_PrefabAsset: {fileID: 0}
+--- !u!114 &1472710062
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1472710059}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8f8b00caee6af52488194a390ddd4001, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: Assembly-CSharp::PersistentWorldId
+  worldId: combat_sandbox.door.simple_door
+--- !u!1 &1505289638
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1505289640}
+  - component: {fileID: 1505289639}
+  m_Layer: 0
+  m_Name: SaveGameService
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &1505289639
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1505289638}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 137f15dcab199814498ef77796ba8f14, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: Assembly-CSharp::SaveGameService
+  itemDefinitionRegistry: {fileID: 11400000, guid: b36ecf4b586bf854a8c389f0805f0502, type: 2}
+  autoLoadOnStart: 0
+--- !u!4 &1505289640
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1505289638}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1001 &1507752356
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -1421,6 +1623,24 @@ PrefabInstance:
     m_AddedGameObjects: []
     m_AddedComponents: []
   m_SourcePrefab: {fileID: 100100000, guid: b7dd0afe119214640ae8ec6f3201570d, type: 3}
+--- !u!1 &1717143146 stripped
+GameObject:
+  m_CorrespondingSourceObject: {fileID: 4399225012854545838, guid: 44e9dfdaa04da2a41b00395bb93fe493, type: 3}
+  m_PrefabInstance: {fileID: 1342695977}
+  m_PrefabAsset: {fileID: 0}
+--- !u!114 &1717143150
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1717143146}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8f8b00caee6af52488194a390ddd4001, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: Assembly-CSharp::PersistentWorldId
+  worldId: combat_sandbox.container.world_chest
 --- !u!1 &1726389012
 GameObject:
   m_ObjectHideFlags: 0
@@ -1489,6 +1709,40 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &1810334245 stripped
+GameObject:
+  m_CorrespondingSourceObject: {fileID: 1429787673910586145, guid: 4035844de5b853140bfceb73b16bd1d4, type: 3}
+  m_PrefabInstance: {fileID: 1168633142}
+  m_PrefabAsset: {fileID: 0}
+--- !u!114 &1810334248
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1810334245}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 474bcb49853aa07438625e644c072ee6, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: Unity.RenderPipelines.Universal.Runtime::UnityEngine.Rendering.Universal.UniversalAdditionalLightData
+  m_UsePipelineSettings: 1
+  m_AdditionalLightsShadowResolutionTier: 2
+  m_CustomShadowLayers: 0
+  m_LightCookieSize: {x: 1, y: 1}
+  m_LightCookieOffset: {x: 0, y: 0}
+  m_SoftShadowQuality: 0
+  m_RenderingLayersMask:
+    serializedVersion: 0
+    m_Bits: 1
+  m_ShadowRenderingLayersMask:
+    serializedVersion: 0
+    m_Bits: 1
+  m_Version: 4
+  m_LightLayerMask: 1
+  m_ShadowLayerMask: 1
+  m_RenderingLayers: 1
+  m_ShadowRenderingLayers: 1
 --- !u!1 &1849532537
 GameObject:
   m_ObjectHideFlags: 0
@@ -1616,19 +1870,6 @@ MonoBehaviour:
   m_ShadowLayerMask: 1
   m_RenderingLayers: 1
   m_ShadowRenderingLayers: 1
---- !u!134 &858092160
-PhysicsMaterial:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_Name:
-  serializedVersion: 2
-  m_DynamicFriction: 0.6
-  m_StaticFriction: 0.6
-  m_Bounciness: 0
-  m_FrictionCombine: 0
-  m_BounceCombine: 0
 --- !u!114 &1905760454 stripped
 MonoBehaviour:
   m_CorrespondingSourceObject: {fileID: 1185635140982066688, guid: 90d9b61f14881b54c93c4fa247ebd18a, type: 3}
@@ -1673,3 +1914,4 @@ SceneRoots:
   - {fileID: 1342695977}
   - {fileID: 946250294}
   - {fileID: 1443486561}
+  - {fileID: 1505289640}

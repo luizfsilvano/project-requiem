@@ -136,6 +136,19 @@ public static class GameplayInputGate
         suppressThroughFrame = -1;
     }
 
+    public static void ResetModalStateForRestore(int suppressFrames = 2)
+    {
+        if (IsModalOpen)
+        {
+            CloseActiveModal(suppressFrames: -1);
+        }
+
+        activeModalOwner = null;
+        DevSettings.ConsoleOpen = false;
+        suppressThroughFrame = -1;
+        SuppressForFrames(suppressFrames);
+    }
+
     private static void CloseActiveModal(int suppressFrames)
     {
         GameplayModalMode previousMode = ActiveMode;

@@ -11,7 +11,8 @@ public sealed class DevConsole : MonoBehaviour
     {
         Enemy,
         Player,
-        Debug
+        Debug,
+        Persistence
     }
 
     private const int WindowId = 19423;
@@ -35,6 +36,10 @@ public sealed class DevConsole : MonoBehaviour
     private TrainingDummyHealth enemyHealth;
     private GolemBossAI golemBoss;
     private TrainingDummyHealth golemBossHealth;
+    private SaveGameService saveGameService;
+    private bool deleteSaveConfirmationArmed;
+    private float deleteSaveConfirmationExpiresAt;
+    private string persistenceFeedback = string.Empty;
     [SerializeField] private EnemyCombatTuning enemyTuning;
     private Material enemyMaterial;
     private Material hitboxMaterial;
@@ -84,6 +89,14 @@ public sealed class DevConsole : MonoBehaviour
         }
     }
 
+    private void OnDisable()
+    {
+        if (Application.isPlaying && visible)
+        {
+            CloseConsole();
+        }
+    }
+
     private void OnGUI()
     {
         if (!visible)
@@ -96,7 +109,9 @@ public sealed class DevConsole : MonoBehaviour
 
     private void DrawWindow(int windowId)
     {
-        selectedTab = (ConsoleTab)GUILayout.Toolbar((int)selectedTab, new[] { "Enemy", "Player", "Debug" });
+        selectedTab = (ConsoleTab)GUILayout.Toolbar(
+            (int)selectedTab,
+            new[] { "Enemy", "Player", "Debug", "Persistence" });
         scrollPosition = GUILayout.BeginScrollView(scrollPosition);
 
         switch (selectedTab)
@@ -109,6 +124,9 @@ public sealed class DevConsole : MonoBehaviour
                 break;
             case ConsoleTab.Debug:
                 DrawDebugTab();
+                break;
+            case ConsoleTab.Persistence:
+                DrawPersistenceTab();
                 break;
         }
 
@@ -246,6 +264,123 @@ public sealed class DevConsole : MonoBehaviour
         GUILayout.Label("Run does not spend stamina; dodge and attacks do.");
     }
 
+    private void DrawPersistenceTab()
+    {
+        EnsurePersistenceService();
+        GUILayout.Label("Local Save MVP");
+        if (saveGameService == null)
+        {
+            GUILayout.Label("SaveGameService is missing from the active scene.");
+            return;
+        }
+
+        GUILayout.Label($"Schema: v{saveGameService.SchemaVersion}");
+        GUILayout.Label($"Main: {(saveGameService.SaveExists ? "present" : "missing")}");
+        GUILayout.Label($"Backup: {(saveGameService.BackupExists ? "present" : "missing")}");
+        GUILayout.Label($"Updated at: {saveGameService.SaveUpdatedAtUtc}");
+        if (saveGameService.TryGetCurrentCounts(
+                out int playerItemCount,
+                out int containerCount,
+                out int persistentObjectCount,
+                out string countError))
+        {
+            GUILayout.Label($"Player items: {playerItemCount}");
+            GUILayout.Label($"Containers: {containerCount}");
+            GUILayout.Label($"Persistent objects: {persistentObjectCount}");
+        }
+        else
+        {
+            GUILayout.Label($"Counts unavailable: {countError}");
+        }
+
+        GUILayout.Label($"Last operation: {saveGameService.LastOperation}");
+        GUILayout.Label($"Load source: {saveGameService.LastLoadSource}");
+        GUILayout.Label(saveGameService.LastStatus);
+        if (!string.IsNullOrWhiteSpace(saveGameService.LastError))
+        {
+            GUILayout.Label($"Error: {saveGameService.LastError}");
+        }
+
+        GUILayout.Space(8f);
+        GUILayout.BeginHorizontal();
+        if (GUILayout.Button("Save"))
+        {
+            persistenceFeedback = saveGameService.SaveGame()
+                ? "Save completed."
+                : saveGameService.LastError;
+        }
+
+        if (GUILayout.Button("Load"))
+        {
+            persistenceFeedback = saveGameService.LoadGame()
+                ? $"Loaded from {saveGameService.LastLoadSource}."
+                : saveGameService.LastError;
+        }
+        GUILayout.EndHorizontal();
+
+        GUILayout.BeginHorizontal();
+        if (GUILayout.Button("Show Folder"))
+        {
+            saveGameService.ShowSaveFolder();
+            persistenceFeedback = saveGameService.SaveDirectory;
+        }
+
+        if (GUILayout.Button("Print Summary"))
+        {
+            persistenceFeedback = saveGameService.PrintSummary()
+                ? saveGameService.LastStatus
+                : saveGameService.LastError;
+        }
+        GUILayout.EndHorizontal();
+
+        if (deleteSaveConfirmationArmed && Time.realtimeSinceStartup > deleteSaveConfirmationExpiresAt)
+        {
+            deleteSaveConfirmationArmed = false;
+        }
+
+        string deleteLabel = deleteSaveConfirmationArmed
+            ? "Confirm Delete Save"
+            : "Delete Save";
+        if (GUILayout.Button(deleteLabel))
+        {
+            if (!deleteSaveConfirmationArmed)
+            {
+                deleteSaveConfirmationArmed = true;
+                deleteSaveConfirmationExpiresAt = Time.realtimeSinceStartup + 5f;
+                persistenceFeedback = "Press Confirm Delete Save within 5 seconds.";
+            }
+            else
+            {
+                deleteSaveConfirmationArmed = false;
+                persistenceFeedback = saveGameService.DeleteSave()
+                    ? "Save files deleted."
+                    : saveGameService.LastError;
+            }
+        }
+
+        GUILayout.Space(8f);
+        GUILayout.BeginHorizontal();
+        if (GUILayout.Button("Validate World IDs"))
+        {
+            saveGameService.ValidateWorldIds(out persistenceFeedback);
+        }
+
+        if (GUILayout.Button("Validate Registry"))
+        {
+            saveGameService.ValidateRegistry(out persistenceFeedback);
+        }
+        GUILayout.EndHorizontal();
+
+        if (!string.IsNullOrWhiteSpace(persistenceFeedback))
+        {
+            GUILayout.Space(6f);
+            GUILayout.Label(persistenceFeedback);
+        }
+
+        GUILayout.Space(8f);
+        GUILayout.Label(saveGameService.SavePath);
+    }
+
     private static float Slider(string label, float value, float min, float max)
     {
         GUILayout.Label($"{label}: {value:0.00}x");
@@ -263,12 +398,14 @@ public sealed class DevConsole : MonoBehaviour
         DevSettings.ConsoleOpen = true;
     }
 
-    private void CloseConsole()
+    public void CloseConsole()
     {
         visible = false;
         DevSettings.ConsoleOpen = false;
         GameplayInputGate.TryCloseModal(GameplayModalMode.DevConsole, this);
     }
+
+    public bool IsOpen => visible;
 
     private void EnsurePlayer()
     {
@@ -320,6 +457,14 @@ public sealed class DevConsole : MonoBehaviour
             {
                 playerInventory = player.gameObject.AddComponent<PlayerInventory>();
             }
+        }
+    }
+
+    private void EnsurePersistenceService()
+    {
+        if (saveGameService == null)
+        {
+            saveGameService = FindFirstObjectByType<SaveGameService>(FindObjectsInactive.Include);
         }
     }
 

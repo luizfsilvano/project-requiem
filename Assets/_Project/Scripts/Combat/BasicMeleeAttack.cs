@@ -239,6 +239,11 @@ public sealed class BasicMeleeAttack : MonoBehaviour
 
     private void OnDisable()
     {
+        CancelAttack();
+    }
+
+    public void CancelAttack()
+    {
         if (attackRoutine != null)
         {
             StopCoroutine(attackRoutine);

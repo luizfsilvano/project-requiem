@@ -451,6 +451,113 @@ public sealed class PlayerEquipment : MonoBehaviour
         return true;
     }
 
+    public bool TryRestoreState(
+        IReadOnlyDictionary<EquipmentSlotType, string> restoredAssignments,
+        EquipmentSlotType restoredActiveSlot,
+        string restoredActiveItemInstanceId,
+        out string error)
+    {
+        error = string.Empty;
+        if (inventory == null)
+        {
+            error = "Player equipment is not bound to an inventory.";
+            return false;
+        }
+
+        if (restoredAssignments == null)
+        {
+            error = "Equipment slot assignments are null.";
+            return false;
+        }
+
+        if (!IsWeaponSlot(restoredActiveSlot))
+        {
+            error = $"Active equipment slot '{restoredActiveSlot}' is not a weapon hand.";
+            return false;
+        }
+
+        Dictionary<EquipmentSlotType, ItemInstance> resolvedAssignments = new();
+        HashSet<string> equippedIds = new(StringComparer.Ordinal);
+        foreach (KeyValuePair<EquipmentSlotType, string> assignment in restoredAssignments)
+        {
+            if (!Enum.IsDefined(typeof(EquipmentSlotType), assignment.Key))
+            {
+                error = $"Unknown equipment slot value '{assignment.Key}'.";
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(assignment.Value))
+            {
+                continue;
+            }
+
+            if (!equippedIds.Add(assignment.Value))
+            {
+                error = $"Item '{assignment.Value}' is assigned to more than one equipment slot.";
+                return false;
+            }
+
+            if (!inventory.TryGetItem(assignment.Value, out ItemInstance item) || !Owns(item))
+            {
+                error = $"Equipment item '{assignment.Value}' is not owned by the player inventory.";
+                return false;
+            }
+
+            if (!item.Definition.AcceptsSlot(assignment.Key))
+            {
+                error = $"Item '{assignment.Value}' is incompatible with slot '{assignment.Key}'.";
+                return false;
+            }
+
+            if (IsWeaponSlot(assignment.Key)
+                && (item.Definition is not WeaponData weaponData || weaponData.equippedPrefab == null))
+            {
+                error = $"Weapon item '{assignment.Value}' has no equipped visual.";
+                return false;
+            }
+
+            resolvedAssignments.Add(assignment.Key, item);
+        }
+
+        restoredActiveItemInstanceId ??= string.Empty;
+        resolvedAssignments.TryGetValue(restoredActiveSlot, out ItemInstance activeItem);
+        if (string.IsNullOrWhiteSpace(restoredActiveItemInstanceId))
+        {
+            if (activeItem != null)
+            {
+                error = "The active weapon slot contains an item but activeItemInstanceId is empty.";
+                return false;
+            }
+        }
+        else if (activeItem == null
+            || !string.Equals(activeItem.InstanceId, restoredActiveItemInstanceId, StringComparison.Ordinal))
+        {
+            error = "The active weapon ID does not match the restored active slot.";
+            return false;
+        }
+
+        NormalizeSlots();
+        for (int i = 0; i < slots.Count; i++)
+        {
+            EquipmentSlotState state = slots[i];
+            state.SetItem(resolvedAssignments.TryGetValue(state.SlotType, out ItemInstance item) ? item : null);
+        }
+
+        if (activeItem == null)
+        {
+            activeSlot = restoredActiveSlot;
+            UnequipVisual();
+        }
+        else if (!ApplyActiveWeapon(restoredActiveSlot, out EquipmentChangeFailure failure))
+        {
+            error = $"Could not rebuild the active weapon visual ({failure}).";
+            return false;
+        }
+
+        NotifyEquipmentChanged(activeWeaponChanged: true);
+        return true;
+    }
+
     private bool ApplyActiveWeapon(EquipmentSlotType slotType, out EquipmentChangeFailure failure)
     {
         failure = EquipmentChangeFailure.None;
