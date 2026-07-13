@@ -12,13 +12,14 @@ using UnityEditor;
 [DisallowMultipleComponent]
 public sealed class SaveGameService : MonoBehaviour
 {
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 2;
     public const string SaveFileName = "combat-sandbox-save.json";
     public const string TempFileName = "combat-sandbox-save.tmp";
     public const string BackupFileName = "combat-sandbox-save.bak";
     public const string DefaultSanctuaryId = "combat_sandbox.sanctuary.default";
 
     [SerializeField] private ItemDefinitionRegistry itemDefinitionRegistry;
+    [SerializeField] private QuestDefinitionRegistry questDefinitionRegistry;
     [SerializeField] private bool autoLoadOnStart;
 
     public static SaveGameService Instance { get; private set; }
@@ -61,6 +62,7 @@ public sealed class SaveGameService : MonoBehaviour
         public PlayerHealth health;
         public PlayerStamina stamina;
         public CharacterController characterController;
+        public PlayerQuestLog questLog;
     }
 
     private sealed class WorldBindings
@@ -84,6 +86,7 @@ public sealed class SaveGameService : MonoBehaviour
         public readonly Dictionary<string, List<ItemInstance>> containerItems = new(StringComparer.Ordinal);
         public readonly Dictionary<string, bool> pickupStates = new(StringComparer.Ordinal);
         public readonly Dictionary<string, bool> doorStates = new(StringComparer.Ordinal);
+        public QuestRestorePlan questLogRestore;
     }
 
     private void Awake()
@@ -323,10 +326,14 @@ public sealed class SaveGameService : MonoBehaviour
         }
 
         LastLoadSource = usedBackup ? "Backup" : "Main";
+        string trackedQuestId = string.IsNullOrWhiteSpace(data.questLog.trackedQuestId)
+            ? "none"
+            : data.questLog.trackedQuestId;
         LastStatus = $"Schema v{data.schemaVersion}; saved {data.savedAtUtc}; "
             + $"player items {data.player.inventoryItems.Count}; equipped slots {CountEquipped(data.player.equipmentSlots)}; "
             + $"containers {data.world.containers.Count} ({containerItemCount} items); "
-            + $"pickups {data.world.pickups.Count}; doors {data.world.doors.Count}; source {LastLoadSource}.";
+            + $"pickups {data.world.pickups.Count}; doors {data.world.doors.Count}; "
+            + $"quests {data.questLog.quests.Count}; tracked quest {trackedQuestId}; source {LastLoadSource}.";
         Debug.Log($"[SaveGame] {LastStatus}");
         return true;
     }
@@ -345,7 +352,56 @@ public sealed class SaveGameService : MonoBehaviour
             return false;
         }
 
-        report = $"Registry valid: {itemDefinitionRegistry.Count} unique item definitions.";
+        if (!ValidateQuestRegistry(out string questReport))
+        {
+            report = questReport;
+            return false;
+        }
+
+        report = $"Registries valid: {itemDefinitionRegistry.Count} unique item definitions; {questReport}";
+        return true;
+    }
+
+    public bool ValidateQuestRegistry(out string report)
+    {
+        if (itemDefinitionRegistry == null)
+        {
+            report = "ItemDefinitionRegistry reference is missing.";
+            return false;
+        }
+
+        if (!itemDefinitionRegistry.Validate(out string itemError))
+        {
+            report = itemError;
+            return false;
+        }
+
+        if (questDefinitionRegistry == null)
+        {
+            report = "QuestDefinitionRegistry reference is missing.";
+            return false;
+        }
+
+        if (!questDefinitionRegistry.Validate(out string error))
+        {
+            report = error;
+            return false;
+        }
+
+        for (int i = 0; i < questDefinitionRegistry.Definitions.Count; i++)
+        {
+            QuestDefinition quest = questDefinitionRegistry.Definitions[i];
+            ItemDefinition reward = quest != null ? quest.RewardItem : null;
+            if (reward != null
+                && (!itemDefinitionRegistry.TryResolve(reward.DefinitionId, out ItemDefinition registeredReward)
+                    || !ReferenceEquals(registeredReward, reward)))
+            {
+                report = $"Quest '{quest.QuestId}' reward '{reward.DefinitionId}' is not registered consistently.";
+                return false;
+            }
+        }
+
+        report = $"{questDefinitionRegistry.Count} unique quest definitions";
         return true;
     }
 
@@ -379,6 +435,29 @@ public sealed class SaveGameService : MonoBehaviour
         playerItemCount = player.inventory.ItemCount;
         containerCount = world.containers.Count;
         persistentObjectCount = world.containers.Count + world.pickups.Count + world.doors.Count;
+        return true;
+    }
+
+    public bool TryGetCurrentQuestCounts(
+        out int questCount,
+        out string trackedQuestId,
+        out string error)
+    {
+        questCount = 0;
+        trackedQuestId = string.Empty;
+        if (!TryResolveBindings(out PlayerBindings player, out _, out error))
+        {
+            return false;
+        }
+
+        QuestLogSaveData snapshot = new();
+        if (!TryCaptureQuestLog(player.questLog, snapshot, out error))
+        {
+            return false;
+        }
+
+        questCount = snapshot.quests.Count;
+        trackedQuestId = snapshot.trackedQuestId ?? string.Empty;
         return true;
     }
 
@@ -472,12 +551,90 @@ public sealed class SaveGameService : MonoBehaviour
             });
         }
 
+        if (!TryCaptureQuestLog(player.questLog, snapshot.questLog, out error))
+        {
+            return false;
+        }
+
         if (!TryBuildRestorePlan(snapshot, player, world, out _, out error))
         {
             return false;
         }
 
         data = snapshot;
+        return true;
+    }
+
+    private static bool TryCaptureQuestLog(
+        PlayerQuestLog questLog,
+        QuestLogSaveData destination,
+        out string error)
+    {
+        error = string.Empty;
+        if (questLog == null || destination == null)
+        {
+            error = "Quest log capture received missing runtime data.";
+            return false;
+        }
+
+        QuestLogSnapshot snapshot;
+        try
+        {
+            snapshot = questLog.CaptureSnapshot();
+        }
+        catch (Exception exception)
+        {
+            error = $"Could not capture the quest log: {exception.GetType().Name}: {exception.Message}";
+            return false;
+        }
+
+        if (snapshot == null || snapshot.quests == null)
+        {
+            error = "Player quest log produced an invalid snapshot.";
+            return false;
+        }
+
+        destination.trackedQuestId = snapshot.trackedQuestId ?? string.Empty;
+        destination.quests.Clear();
+        for (int i = 0; i < snapshot.quests.Count; i++)
+        {
+            QuestProgressSnapshot source = snapshot.quests[i];
+            if (source == null || source.objectives == null)
+            {
+                error = $"Quest snapshot record {i} is missing required data.";
+                return false;
+            }
+
+            QuestProgressSaveData questData = new()
+            {
+                questId = source.questId ?? string.Empty,
+                state = source.state,
+                currentObjectiveId = source.currentObjectiveId ?? string.Empty,
+                rewardStatus = source.rewardStatus,
+                rewardItemInstanceId = source.rewardItemInstanceId ?? string.Empty,
+                rewardDefinitionId = source.rewardDefinitionId ?? string.Empty,
+                rewardQuantity = source.rewardQuantity
+            };
+            for (int objectiveIndex = 0; objectiveIndex < source.objectives.Count; objectiveIndex++)
+            {
+                QuestObjectiveProgressSnapshot objective = source.objectives[objectiveIndex];
+                if (objective == null || objective.creditedTargetInstanceIds == null)
+                {
+                    error = $"Quest '{questData.questId}' objective snapshot {objectiveIndex} is missing.";
+                    return false;
+                }
+
+                questData.objectives.Add(new QuestObjectiveProgressSaveData
+                {
+                    objectiveId = objective.objectiveId ?? string.Empty,
+                    progress = objective.progress,
+                    creditedTargetInstanceIds = new List<string>(objective.creditedTargetInstanceIds)
+                });
+            }
+
+            destination.quests.Add(questData);
+        }
+
         return true;
     }
 
@@ -642,7 +799,9 @@ public sealed class SaveGameService : MonoBehaviour
             || data.world == null
             || data.world.containers == null
             || data.world.pickups == null
-            || data.world.doors == null)
+            || data.world.doors == null
+            || data.questLog == null
+            || data.questLog.quests == null)
         {
             error = "Save is missing one or more required sections.";
             return false;
@@ -795,6 +954,17 @@ public sealed class SaveGameService : MonoBehaviour
             return false;
         }
 
+        if (!TryBuildQuestRestorePlan(
+                data.questLog,
+                player.questLog,
+                playerItemsById,
+                globalInstanceIds,
+                out nextPlan.questLogRestore,
+                out error))
+        {
+            return false;
+        }
+
         if (!IsPlayerPositionSafe(
                 player,
                 world,
@@ -810,6 +980,142 @@ public sealed class SaveGameService : MonoBehaviour
         return true;
     }
 
+    private static bool TryBuildQuestRestorePlan(
+        QuestLogSaveData source,
+        PlayerQuestLog questLog,
+        IReadOnlyDictionary<string, ItemInstance> plannedPlayerItems,
+        HashSet<string> allPlannedItemIds,
+        out QuestRestorePlan preparedRestore,
+        out string error)
+    {
+        preparedRestore = null;
+        error = string.Empty;
+        if (questLog == null)
+        {
+            error = "Player quest log binding is missing.";
+            return false;
+        }
+
+        if (!TryMapQuestSnapshot(source, out QuestLogSnapshot snapshot, out error))
+        {
+            return false;
+        }
+
+        if (!questLog.TryPrepareRestore(snapshot, out preparedRestore, out error))
+        {
+            error = $"Quest log validation failed: {error}";
+            return false;
+        }
+
+        HashSet<string> rewardItemIds = new(StringComparer.Ordinal);
+        for (int i = 0; i < snapshot.quests.Count; i++)
+        {
+            QuestProgressSnapshot quest = snapshot.quests[i];
+            string rewardItemId = quest.rewardItemInstanceId ?? string.Empty;
+            if (string.IsNullOrEmpty(rewardItemId))
+            {
+                continue;
+            }
+
+            if (!rewardItemIds.Add(rewardItemId))
+            {
+                error = $"Quest reward item reservation '{rewardItemId}' appears more than once.";
+                return false;
+            }
+
+            QuestRewardStatus rewardStatus = (QuestRewardStatus)quest.rewardStatus;
+            if (rewardStatus != QuestRewardStatus.None
+                && (!string.Equals(rewardItemId, rewardItemId.Trim(), StringComparison.Ordinal)
+                    || !string.Equals(
+                        quest.rewardDefinitionId,
+                        quest.rewardDefinitionId.Trim(),
+                        StringComparison.Ordinal)))
+            {
+                error = $"Quest '{quest.questId}' has an untrimmed reward reservation.";
+                return false;
+            }
+
+            if (rewardStatus == QuestRewardStatus.PendingDelivery
+                && allPlannedItemIds.Contains(rewardItemId)
+                && !plannedPlayerItems.ContainsKey(rewardItemId))
+            {
+                error = $"Pending quest reward item '{rewardItemId}' is owned by a world container.";
+                return false;
+            }
+
+            if (plannedPlayerItems.TryGetValue(rewardItemId, out ItemInstance rewardItem)
+                && !string.IsNullOrWhiteSpace(quest.rewardDefinitionId)
+                && !string.Equals(
+                    rewardItem.Definition.DefinitionId,
+                    quest.rewardDefinitionId,
+                    StringComparison.Ordinal))
+            {
+                error = $"Quest reward item '{rewardItemId}' has a different item definition.";
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool TryMapQuestSnapshot(
+        QuestLogSaveData source,
+        out QuestLogSnapshot snapshot,
+        out string error)
+    {
+        snapshot = null;
+        error = string.Empty;
+        if (source == null || source.quests == null)
+        {
+            error = "Quest restore data is missing.";
+            return false;
+        }
+
+        snapshot = new QuestLogSnapshot
+        {
+            trackedQuestId = source.trackedQuestId ?? string.Empty
+        };
+        for (int i = 0; i < source.quests.Count; i++)
+        {
+            QuestProgressSaveData questData = source.quests[i];
+            if (questData == null || questData.objectives == null)
+            {
+                error = $"Quest record {i} is missing required data.";
+                return false;
+            }
+
+            QuestProgressSnapshot quest = new()
+            {
+                questId = questData.questId ?? string.Empty,
+                state = questData.state,
+                currentObjectiveId = questData.currentObjectiveId ?? string.Empty,
+                rewardStatus = questData.rewardStatus,
+                rewardItemInstanceId = questData.rewardItemInstanceId ?? string.Empty,
+                rewardDefinitionId = questData.rewardDefinitionId ?? string.Empty,
+                rewardQuantity = questData.rewardQuantity
+            };
+            for (int objectiveIndex = 0; objectiveIndex < questData.objectives.Count; objectiveIndex++)
+            {
+                QuestObjectiveProgressSaveData objectiveData = questData.objectives[objectiveIndex];
+                if (objectiveData == null || objectiveData.creditedTargetInstanceIds == null)
+                {
+                    error = $"Quest '{quest.questId}' objective record {objectiveIndex} is missing.";
+                    return false;
+                }
+
+                quest.objectives.Add(new QuestObjectiveProgressSnapshot
+                {
+                    objectiveId = objectiveData.objectiveId ?? string.Empty,
+                    progress = objectiveData.progress,
+                    creditedTargetInstanceIds = new List<string>(objectiveData.creditedTargetInstanceIds)
+                });
+            }
+
+            snapshot.quests.Add(quest);
+        }
+
+        return true;
+    }
     private bool TryBuildItems(
         IReadOnlyList<ItemInstanceSaveData> source,
         List<ItemInstance> destination,
@@ -1049,6 +1355,13 @@ public sealed class SaveGameService : MonoBehaviour
         player.health.RestoreHealth(plan.playerHealth);
         player.stamina.RestoreStamina(plan.playerStamina);
         CurrentSanctuaryId = plan.lastSanctuaryId;
+
+        if (!player.questLog.TryApplyPreparedRestore(plan.questLogRestore, out error))
+        {
+            error = $"Quest log restore failed: {error}";
+            return false;
+        }
+
         player.inventory.NotifyStateRestored();
         return true;
     }
@@ -1064,6 +1377,7 @@ public sealed class SaveGameService : MonoBehaviour
 
         FindFirstObjectByType<ContainerTransferScreen>(FindObjectsInactive.Include)?.Close();
         FindFirstObjectByType<DialoguePanel>(FindObjectsInactive.Include)?.Close();
+        FindFirstObjectByType<QuestJournalScreen>(FindObjectsInactive.Include)?.CloseScreen();
         FindFirstObjectByType<DevConsole>(FindObjectsInactive.Include)?.CloseConsole();
         FindFirstObjectByType<PlayerInteractor>(FindObjectsInactive.Include)?.ClearCurrentTarget();
         FindFirstObjectByType<BasicMeleeAttack>(FindObjectsInactive.Include)?.CancelAttack();
@@ -1097,9 +1411,20 @@ public sealed class SaveGameService : MonoBehaviour
         PlayerHealth health = inventory.GetComponent<PlayerHealth>();
         PlayerStamina stamina = inventory.GetComponent<PlayerStamina>();
         CharacterController characterController = inventory.GetComponent<CharacterController>();
-        if (equipment == null || health == null || stamina == null || characterController == null)
+        PlayerQuestLog questLog = inventory.GetComponent<PlayerQuestLog>();
+        if (equipment == null
+            || health == null
+            || stamina == null
+            || characterController == null
+            || questLog == null)
         {
-            error = "Player is missing PlayerEquipment, PlayerHealth, PlayerStamina, or CharacterController.";
+            error = "Player is missing PlayerEquipment, PlayerHealth, PlayerStamina, CharacterController, or PlayerQuestLog.";
+            return false;
+        }
+
+        if (!ReferenceEquals(questLog.Registry, questDefinitionRegistry))
+        {
+            error = "PlayerQuestLog and SaveGameService must reference the same QuestDefinitionRegistry.";
             return false;
         }
 
@@ -1110,7 +1435,8 @@ public sealed class SaveGameService : MonoBehaviour
             equipment = equipment,
             health = health,
             stamina = stamina,
-            characterController = characterController
+            characterController = characterController,
+            questLog = questLog
         };
 
         if (!TryBuildWorldBindings(out world, out error))
@@ -1209,6 +1535,10 @@ public sealed class SaveGameService : MonoBehaviour
         {
             switch (data.schemaVersion)
             {
+                case 1:
+                    data.questLog = new QuestLogSaveData();
+                    data.schemaVersion = 2;
+                    break;
                 default:
                     error = $"No migration is registered from schema v{data.schemaVersion}.";
                     return false;

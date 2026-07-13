@@ -12,7 +12,8 @@ public sealed class DevConsole : MonoBehaviour
         Enemy,
         Player,
         Debug,
-        Persistence
+        Persistence,
+        Quests
     }
 
     private const int WindowId = 19423;
@@ -24,7 +25,7 @@ public sealed class DevConsole : MonoBehaviour
     private const float EnemyVisualTargetHeight = 2.05f;
     private const float EnemyVisualGroundSink = 0.02f;
 
-    private Rect windowRect = new(20f, 20f, 360f, 520f);
+    private Rect windowRect = new(20f, 20f, 430f, 560f);
     private Vector2 scrollPosition;
     private ConsoleTab selectedTab;
     private bool visible;
@@ -37,6 +38,9 @@ public sealed class DevConsole : MonoBehaviour
     private GolemBossAI golemBoss;
     private TrainingDummyHealth golemBossHealth;
     private SaveGameService saveGameService;
+    private PlayerQuestLog playerQuestLog;
+    private string selectedDevQuestId = string.Empty;
+    private string questFeedback = string.Empty;
     private bool deleteSaveConfirmationArmed;
     private float deleteSaveConfirmationExpiresAt;
     private string persistenceFeedback = string.Empty;
@@ -111,7 +115,7 @@ public sealed class DevConsole : MonoBehaviour
     {
         selectedTab = (ConsoleTab)GUILayout.Toolbar(
             (int)selectedTab,
-            new[] { "Enemy", "Player", "Debug", "Persistence" });
+            new[] { "Enemy", "Player", "Debug", "Persistence", "Quests" });
         scrollPosition = GUILayout.BeginScrollView(scrollPosition);
 
         switch (selectedTab)
@@ -127,6 +131,9 @@ public sealed class DevConsole : MonoBehaviour
                 break;
             case ConsoleTab.Persistence:
                 DrawPersistenceTab();
+                break;
+            case ConsoleTab.Quests:
+                DrawQuestsTab();
                 break;
         }
 
@@ -262,6 +269,129 @@ public sealed class DevConsole : MonoBehaviour
         GUILayout.Label("Notes");
         GUILayout.Label("Enemy is idle until you press Start enemy.");
         GUILayout.Label("Run does not spend stamina; dodge and attacks do.");
+    }
+
+    private void DrawQuestsTab()
+    {
+        EnsurePlayer();
+        GUILayout.Label("Quest Development Tools");
+        if (playerQuestLog == null)
+        {
+            GUILayout.Label("PlayerQuestLog is missing from the player.");
+            return;
+        }
+
+        QuestRuntimeState tracked = null;
+        if (!string.IsNullOrWhiteSpace(playerQuestLog.TrackedQuestId))
+        {
+            playerQuestLog.TryGetQuest(playerQuestLog.TrackedQuestId, out tracked);
+        }
+        GUILayout.Label(tracked != null
+            ? $"Tracked: {tracked.Definition.Title} ({tracked.State})"
+            : "Tracked: none");
+
+        GUILayout.Space(6f);
+        GUILayout.Label("Quest records");
+        System.Collections.Generic.IReadOnlyList<QuestRuntimeState> quests = playerQuestLog.Quests;
+        if (quests.Count == 0)
+        {
+            GUILayout.Label("No registered quest records.");
+        }
+
+        for (int i = 0; i < quests.Count; i++)
+        {
+            QuestRuntimeState quest = quests[i];
+            if (quest?.Definition == null)
+            {
+                continue;
+            }
+
+            GUILayout.BeginHorizontal();
+            bool selected = string.Equals(
+                selectedDevQuestId,
+                quest.QuestId,
+                System.StringComparison.Ordinal);
+            GUILayout.Label($"{(selected ? ">" : " ")} {quest.Definition.Title}: {quest.State}");
+            if (GUILayout.Button("Select", GUILayout.Width(64f)))
+            {
+                selectedDevQuestId = quest.QuestId;
+            }
+            GUILayout.EndHorizontal();
+
+            QuestObjectiveDefinition objective = quest.CurrentObjective;
+            if (objective != null)
+            {
+                GUILayout.Label(
+                    $"  {objective.Description}: {quest.GetProgress(objective.ObjectiveId)}/{objective.RequiredAmount}");
+            }
+        }
+
+        ResolveSelectedDevQuest();
+        GUILayout.Space(8f);
+        GUILayout.Label(string.IsNullOrWhiteSpace(selectedDevQuestId)
+            ? "Selected: none"
+            : $"Selected: {selectedDevQuestId}");
+
+        GUILayout.BeginHorizontal();
+        GUI.enabled = !string.IsNullOrWhiteSpace(selectedDevQuestId);
+        if (GUILayout.Button("Start selected"))
+        {
+            questFeedback = playerQuestLog.DebugStartQuest(selectedDevQuestId, out string startError)
+                ? "Quest started."
+                : startError;
+        }
+
+        if (GUILayout.Button("Advance objective"))
+        {
+            questFeedback = playerQuestLog.DebugAdvanceCurrentObjective(selectedDevQuestId, out string advanceError)
+                ? "Current objective advanced."
+                : advanceError;
+        }
+        GUI.enabled = true;
+        GUILayout.EndHorizontal();
+
+        if (GUILayout.Button("Reset all quest progress"))
+        {
+            playerQuestLog.DebugResetAllQuestProgress();
+            selectedDevQuestId = string.Empty;
+            questFeedback = "Quest progress reset.";
+        }
+
+        if (!string.IsNullOrWhiteSpace(questFeedback))
+        {
+            GUILayout.Space(6f);
+            GUILayout.Label(questFeedback);
+        }
+
+        GUILayout.Space(8f);
+        GUILayout.Label("These controls are development-only and do not change normal quest rules.");
+    }
+
+    private void ResolveSelectedDevQuest()
+    {
+        if (playerQuestLog == null)
+        {
+            selectedDevQuestId = string.Empty;
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(selectedDevQuestId)
+            && playerQuestLog.TryGetQuest(selectedDevQuestId, out _))
+        {
+            return;
+        }
+
+        selectedDevQuestId = playerQuestLog.TrackedQuestId;
+        if (!string.IsNullOrWhiteSpace(selectedDevQuestId))
+        {
+            return;
+        }
+
+        System.Collections.Generic.IReadOnlyList<QuestRuntimeState> quests = playerQuestLog.Quests;
+        if (quests.Count > 0 && quests[0] != null)
+        {
+            selectedDevQuestId = quests[0].QuestId;
+        }
     }
 
     private void DrawPersistenceTab()
@@ -457,6 +587,11 @@ public sealed class DevConsole : MonoBehaviour
             {
                 playerInventory = player.gameObject.AddComponent<PlayerInventory>();
             }
+        }
+
+        if (playerQuestLog == null)
+        {
+            playerQuestLog = player.GetComponent<PlayerQuestLog>();
         }
     }
 

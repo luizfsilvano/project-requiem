@@ -9,6 +9,7 @@ public sealed class SaveGameData
     public string sceneName;
     public PlayerSaveData player = new();
     public WorldSaveData world = new();
+    public QuestLogSaveData questLog = new();
 }
 
 [Serializable]
@@ -76,6 +77,34 @@ public sealed class WorldDoorSaveData
 {
     public string worldId;
     public bool isOpen;
+}
+
+[Serializable]
+public sealed class QuestLogSaveData
+{
+    public string trackedQuestId;
+    public List<QuestProgressSaveData> quests = new();
+}
+
+[Serializable]
+public sealed class QuestProgressSaveData
+{
+    public string questId;
+    public int state;
+    public string currentObjectiveId;
+    public List<QuestObjectiveProgressSaveData> objectives = new();
+    public int rewardStatus;
+    public string rewardItemInstanceId;
+    public string rewardDefinitionId;
+    public int rewardQuantity;
+}
+
+[Serializable]
+public sealed class QuestObjectiveProgressSaveData
+{
+    public string objectiveId;
+    public int progress;
+    public List<string> creditedTargetInstanceIds = new();
 }
 
 [Serializable]

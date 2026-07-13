@@ -10,6 +10,11 @@ public sealed class DialoguePanel : MonoBehaviour
     [SerializeField] private Text speakerText;
     [SerializeField] private Text dialogueText;
     [SerializeField] private Text closeHintText;
+    [SerializeField] private Text feedbackText;
+    [SerializeField] private Button primaryActionButton;
+    [SerializeField] private Text primaryActionText;
+    [SerializeField] private Button secondaryActionButton;
+    [SerializeField] private Text secondaryActionText;
     [SerializeField] private Button closeButton;
 
     [Header("Lifetime")]
@@ -18,6 +23,9 @@ public sealed class DialoguePanel : MonoBehaviour
     private SimpleNpcInteractable currentNpc;
     private PlayerInteractor currentInteractor;
     private PlayerHealth playerHealth;
+    private PlayerQuestLog questLog;
+    private QuestGiver questGiver;
+    private QuestDialogueViewModel dialogueViewModel;
     private int openedFrame = -1;
     private bool listenerBound;
 
@@ -104,11 +112,19 @@ public sealed class DialoguePanel : MonoBehaviour
         currentNpc = npc;
         currentInteractor = interactor;
         playerHealth = interactor.GetComponent<PlayerHealth>();
+        questLog = interactor.GetComponent<PlayerQuestLog>();
+        questGiver = npc.GetComponent<QuestGiver>();
+        if (questLog != null)
+        {
+            questLog.QuestChanged -= HandleQuestChanged;
+            questLog.QuestChanged += HandleQuestChanged;
+        }
         openedFrame = Time.frameCount;
         IsOpen = true;
 
         SetText(speakerText, npc.SpeakerName);
-        SetText(dialogueText, npc.DialogueLine);
+        SetText(feedbackText, string.Empty);
+        RefreshDialogue();
         SetText(closeHintText, "E / Esc — Fechar");
         SetPanelVisible(true);
         GameplayInputGate.EnsureModalCursor();
@@ -163,10 +179,106 @@ public sealed class DialoguePanel : MonoBehaviour
 
     private void ClearSession()
     {
+        if (questLog != null)
+        {
+            questLog.QuestChanged -= HandleQuestChanged;
+        }
+
         currentNpc = null;
         currentInteractor = null;
         playerHealth = null;
+        questLog = null;
+        questGiver = null;
+        dialogueViewModel = default;
         openedFrame = -1;
+    }
+
+    private void HandleQuestChanged(QuestRuntimeState quest)
+    {
+        if (IsOpen
+            && quest != null
+            && questGiver?.QuestDefinition != null
+            && string.Equals(
+                quest.QuestId,
+                questGiver.QuestDefinition.QuestId,
+                System.StringComparison.Ordinal))
+        {
+            RefreshDialogue();
+        }
+    }
+
+    public void ExecutePrimaryAction()
+    {
+        ExecuteDialogueAction(dialogueViewModel.PrimaryAction);
+    }
+
+    public void ExecuteSecondaryAction()
+    {
+        ExecuteDialogueAction(dialogueViewModel.SecondaryAction);
+    }
+
+    private void ExecuteDialogueAction(QuestDialogueAction action)
+    {
+        if (!IsOpen || questGiver == null || questLog == null)
+        {
+            return;
+        }
+
+        switch (action)
+        {
+            case QuestDialogueAction.Accept:
+                bool accepted = questGiver.TryAccept(questLog, out string acceptFeedback);
+                SetText(feedbackText, acceptFeedback);
+                if (accepted)
+                {
+                    RefreshDialogue(keepFeedback: true);
+                }
+                break;
+            case QuestDialogueAction.Decline:
+                SetText(dialogueText, questGiver.GetDeclinedLine());
+                SetText(feedbackText, "Missao recusada. Voce pode conversar novamente mais tarde.");
+                dialogueViewModel = default;
+                ConfigureActionButton(primaryActionButton, primaryActionText, string.Empty, false);
+                ConfigureActionButton(secondaryActionButton, secondaryActionText, string.Empty, false);
+                break;
+            case QuestDialogueAction.TurnIn:
+                bool completed = questGiver.TryTurnIn(questLog, out string turnInFeedback);
+                SetText(feedbackText, turnInFeedback);
+                if (completed)
+                {
+                    RefreshDialogue(keepFeedback: true);
+                }
+                break;
+        }
+    }
+
+    private void RefreshDialogue(bool keepFeedback = false)
+    {
+        if (!keepFeedback)
+        {
+            SetText(feedbackText, string.Empty);
+        }
+
+        string fallbackLine = currentNpc != null ? currentNpc.DialogueLine : string.Empty;
+        dialogueViewModel = questGiver != null
+            ? questGiver.BuildDialogue(questLog, fallbackLine)
+            : new QuestDialogueViewModel(
+                fallbackLine,
+                QuestDialogueAction.None,
+                string.Empty,
+                QuestDialogueAction.None,
+                string.Empty);
+        SetText(dialogueText, dialogueViewModel.Line);
+        ConfigureActionButton(
+            primaryActionButton,
+            primaryActionText,
+            dialogueViewModel.PrimaryLabel,
+            dialogueViewModel.PrimaryAction != QuestDialogueAction.None);
+        ConfigureActionButton(
+            secondaryActionButton,
+            secondaryActionText,
+            dialogueViewModel.SecondaryLabel,
+            dialogueViewModel.SecondaryAction != QuestDialogueAction.None);
     }
 
     private void BindListener()
@@ -177,6 +289,8 @@ public sealed class DialoguePanel : MonoBehaviour
         }
 
         closeButton.onClick.AddListener(Close);
+        primaryActionButton?.onClick.AddListener(ExecutePrimaryAction);
+        secondaryActionButton?.onClick.AddListener(ExecuteSecondaryAction);
         listenerBound = true;
     }
 
@@ -188,7 +302,24 @@ public sealed class DialoguePanel : MonoBehaviour
         }
 
         closeButton.onClick.RemoveListener(Close);
+        primaryActionButton?.onClick.RemoveListener(ExecutePrimaryAction);
+        secondaryActionButton?.onClick.RemoveListener(ExecuteSecondaryAction);
         listenerBound = false;
+    }
+
+    private static void ConfigureActionButton(
+        Button button,
+        Text label,
+        string value,
+        bool visible)
+    {
+        if (button != null)
+        {
+            button.gameObject.SetActive(visible);
+            button.interactable = visible;
+        }
+
+        SetText(label, visible ? value : string.Empty);
     }
 
     private void SetPanelVisible(bool visible)

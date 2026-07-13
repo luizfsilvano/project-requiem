@@ -94,6 +94,10 @@ public static class WorldInteractionBootstrap
         GameObject chestPrefab = BuildChestPrefab(interactionLayer, wood, bronze, sword, axe);
         GameObject doorPrefab = BuildDoorPrefab(interactionLayer, wood, bronze, stone);
         GameObject npcPrefab = BuildNpcPrefab(interactionLayer, npcCloth, npcSkin, bronze);
+        QuestSystemBootstrap.RestoreQuestAugmentationsIfAvailable();
+
+        dialoguePrefab = AssetDatabase.LoadAssetAtPath<GameObject>(DialoguePrefabPath);
+        npcPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(NpcPrefabPath);
 
         UpdatePlayerPrefab(interactionLayer);
         UpdatePickupPrefab(SwordPickupPath, interactionLayer, "Bronze Sword", "Coletar a espada de bronze.");
@@ -515,7 +519,12 @@ public static class WorldInteractionBootstrap
         InstantiateScenePrefab(doorPrefab, "SimpleDoor", new Vector3(-7f, 0f, 7f), Quaternion.Euler(0f, 90f, 0f));
         Vector3 npcPosition = new(5f, 0f, -3f);
         Vector3 npcForward = Vector3.ProjectOnPlane(-npcPosition, Vector3.up).normalized;
-        InstantiateScenePrefab(npcPrefab, "NpcPlaceholder", npcPosition, Quaternion.LookRotation(npcForward, Vector3.up));
+        GameObject npc = InstantiateScenePrefab(
+            npcPrefab,
+            "NpcPlaceholder",
+            npcPosition,
+            Quaternion.LookRotation(npcForward, Vector3.up));
+        QuestSystemBootstrap.RestoreQuestNpcSceneInstanceIfAvailable(npc);
 
         GameObject player = FindSceneRoot(scene, "PlayerPlaceholder");
         if (player == null)

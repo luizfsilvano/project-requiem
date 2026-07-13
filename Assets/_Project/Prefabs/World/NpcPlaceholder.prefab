@@ -132,6 +132,8 @@ GameObject:
   - component: {fileID: 2652691329406641702}
   - component: {fileID: 5494758426951133983}
   - component: {fileID: 7165964650913738556}
+  - component: {fileID: 4036387196462535708}
+  - component: {fileID: 3934045966600721447}
   m_Layer: 29
   m_Name: NpcPlaceholder
   m_TagString: Untagged
@@ -200,6 +202,37 @@ MonoBehaviour:
   interactionPoint: {fileID: 4241471108909701196}
   speakerName: "Alde\xE3o"
   dialogueLine: "A floresta est\xE1 perigosa desde que os esqueletos apareceram."
+--- !u!114 &4036387196462535708
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 4847400241445033484}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1b0236d46950cfb4596e4d010462e1d6, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: Assembly-CSharp::QuestGiver
+  npcId: npc.combat_sandbox.aldeao
+  questDefinition: {fileID: 11400000, guid: 60015aca1235b964b85fb03beff65df9, type: 2}
+--- !u!114 &3934045966600721447
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 4847400241445033484}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f0d14febde224704f88ce7a6cd5e7fd6, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: Assembly-CSharp::QuestTargetIdentity
+  targetId: npc.combat_sandbox.aldeao
+  stableInstanceId:
+  targetKind: 1
+  enemyHealth: {fileID: 0}
+  autoStartCombat: 0
 --- !u!1 &6075959407274046501
 GameObject:
   m_ObjectHideFlags: 0

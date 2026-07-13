@@ -723,14 +723,14 @@ Validacao realizada:
 
 Continuam fora de escopo: save/persistencia do container, banco de dados, servidor/multiplayer, respawn ou reposicao de loot, regras de roubo e afinidade, crafting, peso, lojas/bancos, containers compartilhados, loot de cadaver, portas trancadas/chaves, quest branching, AI social, animacoes humanoides do NPC e arte/audio/VFX finais.
 
-## Atualizacao 2026-07-11 - Save System Local v1
+## Atualizacao 2026-07-11 - Save System Local v1 (historico)
 
-A quarta etapa adicionou persistencia local deliberadamente pequena para o sandbox. O estado atual dos arquivos e esta secao substituem as observacoes cronologicas anteriores que diziam que save ainda nao existia.
+A quarta etapa adicionou persistencia local deliberadamente pequena para o sandbox. Esta secao registra o contrato original do schema v1; a secao de Quest System abaixo descreve o schema atual e substitui as afirmacoes de versao corrente desta etapa.
 
 Arquitetura e contrato:
 
 - `SaveGameService`, presente como root unica da cena `CombatSandbox`, e a autoridade central para snapshot, validacao, escrita, load, delete, status e diagnostico;
-- o formato atual usa `schemaVersion = 1`; schemas futuros sao rejeitados e `TryMigrateToCurrentSchema` concentra o ponto de extensao para migracoes futuras, mas nenhuma migracao legada existe ainda;
+- o formato original desta etapa usava `schemaVersion = 1`; o formato atual e a migracao registrada estao documentados na secao de Quest System;
 - `SaveGameDtos` contem somente numeros, booleans, strings, listas e DTOs compostos por esses valores; nao ha `UnityEngine.Object`, `Transform`, `ScriptableObject`, prefab, instance ID da Unity ou referencia runtime no JSON;
 - os arquivos ficam em `Application.persistentDataPath` com os nomes `combat-sandbox-save.json`, `combat-sandbox-save.tmp` e `combat-sandbox-save.bak`;
 - o save escreve e faz flush do `.tmp`, desserializa e valida esse arquivo, e somente entao usa substituicao atomica do arquivo principal, mantendo o principal anterior como `.bak`;
@@ -742,7 +742,7 @@ Arquitetura e contrato:
 - equipamento continua guardando apenas IDs de instancias pertencentes ao inventario; o load restaura inventario primeiro, depois slots/arma ativa, e reconstrui o visual equipado uma vez;
 - uma mesma `ItemInstance` continua sem poder ocupar dois owners ou dois slots, e a validacao do save tambem exige unicidade global de todos os `instanceId` entre player e containers.
 
-Estado persistido no schema v1:
+Estado persistido no schema v1 legado:
 
 - posicao e rotacao do player;
 - vida jogavel e stamina atuais;
@@ -793,7 +793,7 @@ Validacao realizada:
 - load durante ataque, dodge, inventario, container, dialogo e dev console cancelou/fechou o estado transitorio e deixou `GameplayInputGate` em `None`;
 - uma posicao dentro do collider do `WorldChest` foi rejeitada nos dois arquivos sem mover o player; uma posicao no vao da porta salva aberta carregou corretamente quando a cena iniciou com a porta fechada;
 - uma porta temporariamente inativa foi localizada, restaurada e manteve a pose aberta ao ser ativada novamente;
-- `Print Summary` confirmou schema v1, quatro itens do player, dois slots ocupados, um container vazio, dois pickups e uma porta;
+- na validacao da etapa v1, `Print Summary` confirmou schema v1, quatro itens do player, dois slots ocupados, um container vazio, dois pickups e uma porta;
 - a rodada final no schema definitivo confirmou tres itens do player, bau vazio marcado como inicializado/restaurado, quatro objetos persistentes, `updatedAt` valido, exatamente um EventSystem e um AudioListener;
 - Skeleton e Golem foram instanciados em Play Mode e mantiveram AI, health e hitboxes esperados;
 - 26 prefabs, 791 GameObjects de prefab e 398 GameObjects da cena foram varridos com `0` scripts ausentes e `0` referencias quebradas;
@@ -801,4 +801,83 @@ Validacao realizada:
 - nenhum asset externo dos ZIPs foi necessario ou importado nesta etapa;
 - `Assets/SazenGames` continua preservada e nao foi alterada.
 
-Continuam fora de escopo: multiplos perfis/slots de save, autosave, checkpoint, save de inimigos ou bosses, NPC/quest, cooldowns e estados transitorios, configuracoes do dev console, criptografia, compressao, cloud, banco de dados, servidor/multiplayer, migracoes de schemas antigos, respawn/reposicao de loot, crafting, peso, lojas/bancos, containers compartilhados, loot de cadaver e regras completas de afinidade/roubo.
+Na etapa v1 ficaram fora de escopo: multiplos perfis/slots de save, autosave, checkpoint, save de inimigos ou bosses, NPC/quest, cooldowns e estados transitorios, configuracoes do dev console, criptografia, compressao, cloud, banco de dados, servidor/multiplayer, migracoes de schemas antigos, respawn/reposicao de loot, crafting, peso, lojas/bancos, containers compartilhados, loot de cadaver e regras completas de afinidade/roubo. Quests e a migracao `v1 -> v2` foram adicionadas na etapa seguinte.
+
+## Atualizacao 2026-07-12 - Quest System MVP e Save schema v2
+
+Esta etapa implementa o ciclo jogavel completo de `Problemas com Esqueletos` sobre os sistemas existentes de interacao, combate, inventario, UI modal e persistencia. A implementacao imediata continua pequena e local ao sandbox; reputacao, guildas, quests procedurais, multiplayer e narrativa ramificada continuam futuros.
+
+Arquitetura atual:
+
+- `QuestDefinition` e um `ScriptableObject` data-driven com `questId` estavel, titulo, descricao, giver/turn-in por ID, lista ordenada de objetivos, textos de dialogo e recompensa;
+- definicao e estado possuido pelo jogador ficam separados: `QuestRuntimeState`, `QuestProgressSnapshot` e `QuestObjectiveProgressSnapshot` guardam somente estado runtime e dados serializaveis;
+- `PlayerQuestLog` e a autoridade de aceite, progresso, tracking, entrega, reward pendente, snapshots e restore; UI e dialogo chamam suas APIs e nao escrevem no estado diretamente;
+- estados suportados: `Unavailable`, `Available`, `Active`, `ReadyToTurnIn` e `Completed`;
+- objetivos suportados: `TalkToNpc`, `DefeatTarget`, `OwnItem` e `InteractWithObject`; a quest demonstrativa usa derrota e conversa de retorno;
+- `QuestTargetIdentity` usa IDs estaveis de tipo e instancia, sem depender de nome, texto ou hierarquia; morte valida vem do evento real de `TrainingDummyHealth` e exige attacker pertencente ao player;
+- cada ID de instancia derrotada e persistido no progresso e conta no maximo uma vez; stagger, fade e uma segunda chamada de morte nao geram credito;
+- `PlayerInteractor.InteractionSucceeded` publica progresso somente depois de uma interacao aceita; `TryInteract` concentra a mesma validacao reutilizada pelo caminho da tecla `E`;
+- `QuestEncounterController` e event-driven e mantem os tres skeletons da quest inativos antes do aceite, ativos somente no objetivo de derrota e novamente inativos depois dele; a retirada e diferida por um frame para preservar a sequencia visual de morte;
+- `DialoguePanel` continua sendo o painel existente e agora apresenta aceitar, recusar, estado ativo, concluir, feedback de inventario cheio e texto posterior a conclusao;
+- `QuestJournalScreen` e `QuestTrackerHud` consomem eventos do log; nao fazem polling de gameplay nem possuem regra de progressao;
+- o Dev Console ganhou a aba `Quests` para listar, iniciar, avancar, resetar e inspecionar tracking, explicitamente como ferramenta de desenvolvimento.
+
+Missao e recompensa:
+
+- asset: `Assets/_Project/Data/Quests/SkeletonTrouble.asset`;
+- ID: `quest.problemas_com_esqueletos`;
+- NPC giver/turn-in: `npc.combat_sandbox.aldeao`, com instancia `combat_sandbox.npc.quest_giver`;
+- objetivo 1: eliminar tres alvos `enemy.skeleton`; as instancias da cena usam IDs `combat_sandbox.enemy.quest_skeleton_01` ate `_03`;
+- objetivo 2: retornar e conversar com o mesmo NPC;
+- recompensa: `3x Fragmento de Osso`, definida por `Assets/_Project/Data/Items/BoneFragment.asset` com ID `material.bone_fragment` e registrada no `ItemDefinitionRegistry`;
+- a recompensa recebe um novo `ItemInstance` com GUID reservado. Inventario cheio mantem a quest em `ReadyToTurnIn` com `PendingDelivery`; um novo dialogo tenta entregar o mesmo ID;
+- a quest somente vira `Completed/Granted` depois da transferencia aceita. Item reservado ja presente e reconhecido, enquanto nova conversa ou reload depois de `Granted` nao duplica a recompensa.
+
+UI, teclas e fluxo manual:
+
+- `E`: conversar com o aldeao, aceitar/recusar e voltar para concluir;
+- `J`: abrir/fechar o diario; `Esc` e o botao `X` tambem fecham;
+- o diario lista ativas e concluidas, mostra descricao, objetivos, progresso e recompensa e permite rastrear/parar de rastrear uma quest ativa;
+- o tracker mostra somente a quest rastreada e o objetivo atual;
+- diario e dialogo usam `GameplayInputGate` como modais exclusivos. Enquanto abertos, inventario, movimento de gameplay, ataque, dodge, lock-on, troca de arma e outra interacao nao podem disputar input;
+- `F2 > Quests`: ferramentas de teste; o fluxo normal nao depende delas.
+
+Persistencia atual:
+
+- `SaveGameService.CurrentSchemaVersion` agora e `2`;
+- schema v2 salva quest ID, estado, objetivo atual, progresso por `objectiveId`, IDs de alvos creditados, quest rastreada e reserva/status da recompensa;
+- `TryMigrateToCurrentSchema` registra a migracao explicita `v1 -> v2`: todo o restante do save v1 e preservado e o quest log nasce vazio, sendo normalizado para o estado inicial das definicoes atuais;
+- quests removidas/desconhecidas sao preservadas como registros orfaos e ignoradas pela UI; tracking desconhecido e limpo sem invalidar o documento inteiro;
+- o load prepara e valida o quest log antes de mutar o mundo, aplica quests por ultimo e inclui seu snapshot no rollback;
+- load nunca concede recompensa. Entrega pendente continua pendente ate uma chamada explicita de turn-in;
+- escrita atomica, `.tmp`, `.bak`, fallback do principal corrompido, IDs de itens, ownership e demais participantes v1 permanecem no mesmo servico.
+
+Arquivos e assets principais:
+
+- dominio: `Assets/_Project/Scripts/Quests/QuestDefinition.cs`, `QuestRuntimeModels.cs`, `QuestDefinitionRegistry.cs`, `PlayerQuestLog.cs`, `QuestSignalHub.cs`, `QuestTargetIdentity.cs`, `QuestEncounterController.cs` e `QuestGiver.cs`;
+- UI: `Assets/_Project/Scripts/UI/QuestJournalScreen.cs`, `QuestTrackerHud.cs` e a evolucao de `DialoguePanel.cs`;
+- persistencia: `Assets/_Project/Scripts/Persistence/SaveGameDtos.cs` e `SaveGameService.cs`;
+- prefabs: `Assets/_Project/Prefabs/UI/QuestJournalScreen.prefab`, `QuestTrackerHud.prefab`, `DialoguePanel.prefab`, `PlayerPlaceholder.prefab`, `NpcPlaceholder.prefab` e `SkeletonEnemy.prefab`;
+- registries: `Assets/_Project/Data/Quests/QuestDefinitionRegistry.asset` e `Assets/_Project/Data/Items/ItemDefinitionRegistry.asset`;
+- `Tools/Combat Sandbox/Build Quest System MVP` cria/atualiza apenas a feature, preserva outras definicoes nos registries, recusa Play Mode/cena dirty e nao executa `CombatSandboxSceneBuilder`;
+- os builders de World Interaction e Persistence foram endurecidos para preservar os componentes/IDs de quest independentemente da ordem de reexecucao.
+
+Validacao realizada:
+
+- Play Mode confirmou recusar, conversar novamente, aceitar, tracking automatico e ativacao dos tres skeletons somente depois do aceite;
+- a tecla `J` foi exercitada pelo Input System; diario aberto bloqueou ataque, dodge e inventario e fechou liberando o modal;
+- tres mortes reais de `TrainingDummyHealth` produziram `1/3`, `2/3`, `3/3`; repetir dano no primeiro morto nao alterou progresso nem IDs creditados;
+- a conversa de retorno pelo `PlayerInteractor` mudou para `ReadyToTurnIn` e atualizou o dialogo para entrega;
+- inventario `24/24` manteve recompensa `PendingDelivery` com o mesmo GUID atraves de save/load; liberar um slot entregou exatamente uma instancia de quantidade `3`;
+- nova entrega, nova conversa e reload depois de `Completed/Granted` nao criaram outra recompensa;
+- save/load foi exercitado em `Available`, `Active 1/3` com ID creditado e tracking, `ReadyToTurnIn`, `PendingDelivery` e `Completed/Granted`;
+- um JSON real com `schemaVersion = 1` carregou como v2, iniciou a quest em `Available` e preservou todos os IDs de `ItemInstance`;
+- uma quest removida desconhecida foi preservada como orfa sem quebrar a quest conhecida, e tracking desconhecido foi limpo;
+- principal corrompido caiu para o backup valido, e o save limpo schema v2 foi restaurado depois do teste;
+- Skeleton e Golem foram instanciados com AI, health, roots de fisica e hitboxes esperados;
+- os builders Quest, World Interaction e Persistence foram reexecutados em ordens diferentes e os validators continuaram passando, com NPC, registry e encounter preservados;
+- 28 prefabs, 831 GameObjects de prefab e 691 GameObjects da cena foram varridos sem scripts ausentes ou referencias quebradas; a cena manteve exatamente um EventSystem e um AudioListener;
+- nenhum ZIP externo foi necessario ou importado; `Assets/SazenGames` continua presente e inalterada;
+- a rodada final terminou fora de Play Mode, com a cena limpa e sem errors ou warnings do projeto no Console.
+
+Continuam fora de escopo: falha e limite de tempo, branching/editor visual de dialogo, reputacao, guildas, quests procedurais/diarias, compartilhamento, party/multiplayer/backend, marcadores de mapa, cutscenes/voice acting, economia, crafting/profissoes, achievements, save de inimigos mortos, respawn generico, arte/audio/VFX finais e multiplos perfis de save.

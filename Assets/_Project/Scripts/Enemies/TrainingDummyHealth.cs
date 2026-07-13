@@ -1,3 +1,4 @@
+using System;
 using System.Collections;
 using UnityEngine;
 
@@ -83,6 +84,7 @@ public sealed class TrainingDummyHealth : MonoBehaviour
     private Material barBackMaterial;
     private Material sparkMaterial;
     private Rigidbody[] rigidbodiesToDisableOnDeath;
+    private Transform lastDamageAttacker;
 
     private static Coroutine hitStopRoutine;
     private static float defaultFixedDeltaTime;
@@ -95,6 +97,7 @@ public sealed class TrainingDummyHealth : MonoBehaviour
     public bool IsDead => isDead;
     public bool IsStaggered => staggerLockTimer > 0f;
     public bool IsControlLocked => isDead || staggerLockTimer > 0f;
+    public event Action<TrainingDummyHealth, Transform> Died;
     public float StaggerLockDuration
     {
         get => staggerLockDuration;
@@ -200,6 +203,11 @@ public sealed class TrainingDummyHealth : MonoBehaviour
         }
 
         int appliedDamage = DevSettings.EnemyInvincible ? 0 : hit.Damage;
+        if (appliedDamage > 0 && hit.Attacker != null)
+        {
+            lastDamageAttacker = hit.Attacker;
+        }
+
         currentHealth = Mathf.Max(0, currentHealth - appliedDamage);
         currentPoise += GetAdjustedPoiseDamage(hit);
         poiseRecoveryTimer = poiseRecoveryDelay;
@@ -275,6 +283,7 @@ public sealed class TrainingDummyHealth : MonoBehaviour
         poiseRecoveryTimer = 0f;
         staggerLockTimer = 0f;
         isDead = false;
+        lastDamageAttacker = null;
         transform.localScale = defaultScale;
 
         if (bodyRenderer != null)
@@ -385,6 +394,7 @@ public sealed class TrainingDummyHealth : MonoBehaviour
         staggerLockTimer = 0f;
         DestroyFloatingBars();
         DisableGameplayCollision();
+        Died?.Invoke(this, lastDamageAttacker);
 
         deathRoutine ??= StartCoroutine(DeathSequence());
     }

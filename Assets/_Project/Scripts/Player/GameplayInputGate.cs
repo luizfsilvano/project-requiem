@@ -7,7 +7,8 @@ public enum GameplayModalMode
     Inventory,
     Container,
     Dialogue,
-    DevConsole
+    DevConsole,
+    QuestJournal
 }
 
 public static class GameplayInputGate

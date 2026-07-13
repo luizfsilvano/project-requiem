@@ -13,6 +13,7 @@ GameObject:
   - component: {fileID: 2397612475064135456}
   - component: {fileID: 8693198573061669301}
   - component: {fileID: 4372928672640056559}
+  - component: {fileID: 1609646824164625772}
   m_Layer: 0
   m_Name: SkeletonEnemy
   m_TagString: Untagged
@@ -97,7 +98,7 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 6b5878028fd5f0e4295758202468607c, type: 3}
-  m_Name: 
+  m_Name:
   m_EditorClassIdentifier: Assembly-CSharp::TrainingDummyHealth
   tuning: {fileID: 11400000, guid: 6d0a1b6d1f8ac5e43a4301476d2e5003, type: 2}
   maxHealth: 100
@@ -105,8 +106,10 @@ MonoBehaviour:
   poiseRecoveryDelay: 1.2
   poiseRecoveryPerSecond: 35
   impactProfile: 0
+  allowStagger: 1
   allowHitStop: 1
   allowCameraShake: 1
+  allowScalePunch: 1
   heavyPoiseDamageMultiplier: 0.55
   bossPoiseDamageMultiplier: 0
   heavyKnockbackMultiplier: 0.45
@@ -130,6 +133,9 @@ MonoBehaviour:
   healthFillColor: {r: 0.86, g: 0.08, b: 0.05, a: 1}
   poiseFillColor: {r: 1, g: 0.72, b: 0.12, a: 1}
   barBackColor: {r: 0.04, g: 0.04, b: 0.04, a: 1}
+  lockOnHeightOverride: -1
+  lockOnIndicatorRadiusOverride: -1
+  lockOnIndicatorHeightOverride: -1
   spawnHitSparks: 1
   hitSparkCount: 8
   staggerSparkCount: 16
@@ -144,7 +150,7 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 75ddf5cea5f04c0f829d2d638c7e3e77, type: 3}
-  m_Name: 
+  m_Name:
   m_EditorClassIdentifier: Assembly-CSharp::EnemyPlaceholderAI
   target: {fileID: 0}
   tuning: {fileID: 11400000, guid: 6d0a1b6d1f8ac5e43a4301476d2e5003, type: 2}
@@ -176,6 +182,23 @@ MonoBehaviour:
   attackController: {fileID: 0}
   staggerController: {fileID: 0}
   deathController: {fileID: 0}
+--- !u!114 &1609646824164625772
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 129550075577728638}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f0d14febde224704f88ce7a6cd5e7fd6, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: Assembly-CSharp::QuestTargetIdentity
+  targetId: enemy.skeleton
+  stableInstanceId:
+  targetKind: 2
+  enemyHealth: {fileID: 8693198573061669301}
+  autoStartCombat: 0
 --- !u!1 &318207993951888491
 GameObject:
   m_ObjectHideFlags: 0
@@ -327,7 +350,7 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: a19d902b69f6417fadb5a1f944b1457e, type: 3}
-  m_Name: 
+  m_Name:
   m_EditorClassIdentifier: Assembly-CSharp::EnemyAttackHitbox
   triggerCollider: {fileID: 0}
   hitboxRenderer: {fileID: 0}
@@ -400,7 +423,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 5217009034759064855, guid: 61b3e3801d56a3f429556c96ea2f07d6, type: 3}
       propertyPath: m_Controller
-      value: 
+      value:
       objectReference: {fileID: 9100000, guid: b82f5b1f4bc9c924d878393f43e9c24d, type: 2}
     m_RemovedComponents: []
     m_RemovedGameObjects: []

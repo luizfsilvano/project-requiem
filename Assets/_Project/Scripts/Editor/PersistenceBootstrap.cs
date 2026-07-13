@@ -12,8 +12,10 @@ public static class PersistenceBootstrap
     private const string ValidateMenuPath = "Tools/Combat Sandbox/Validate Persistence Foundation";
     private const string ScenePath = "Assets/_Project/Scenes/CombatSandbox.unity";
     private const string RegistryPath = "Assets/_Project/Data/Items/ItemDefinitionRegistry.asset";
+    private const string QuestRegistryPath = "Assets/_Project/Data/Quests/QuestDefinitionRegistry.asset";
     private const string SwordPath = "Assets/_Project/Data/Weapons/BronzeSword.asset";
     private const string AxePath = "Assets/_Project/Data/Weapons/BronzeAxe.asset";
+    private const string GenericQuestRewardPath = "Assets/_Project/Data/Items/BoneFragment.asset";
 
     private static readonly (string rootName, string worldId, Type participantType)[] PersistentObjects =
     {
@@ -43,8 +45,11 @@ public static class PersistenceBootstrap
         }
 
         EnsureFolder("Assets/_Project/Data/Items");
+        EnsureFolder("Assets/_Project/Data/Quests");
         ItemDefinitionRegistry registry = CreateOrUpdateRegistry();
-        SaveGameService service = CreateOrUpdateService(scene, registry);
+        QuestDefinitionRegistry questRegistry = CreateOrLoadQuestRegistry();
+
+        SaveGameService service = CreateOrUpdateService(scene, registry, questRegistry);
         ConfigurePersistentObjects(scene);
 
         EditorSceneManager.MarkSceneDirty(scene);
@@ -124,15 +129,53 @@ public static class PersistenceBootstrap
 
         SerializedObject serialized = new(registry);
         SerializedProperty definitions = RequireProperty(serialized, "definitions");
-        definitions.arraySize = 2;
-        definitions.GetArrayElementAtIndex(0).objectReferenceValue = sword;
-        definitions.GetArrayElementAtIndex(1).objectReferenceValue = axe;
+        List<ItemDefinition> preservedDefinitions = new();
+        HashSet<ItemDefinition> seenDefinitions = new();
+        for (int i = 0; i < definitions.arraySize; i++)
+        {
+            ItemDefinition definition = definitions.GetArrayElementAtIndex(i).objectReferenceValue as ItemDefinition;
+            if (definition != null && seenDefinitions.Add(definition))
+            {
+                preservedDefinitions.Add(definition);
+            }
+        }
+
+        AddDefinitionIfMissing(preservedDefinitions, seenDefinitions, sword);
+        AddDefinitionIfMissing(preservedDefinitions, seenDefinitions, axe);
+        ItemDefinition genericQuestReward = AssetDatabase.LoadAssetAtPath<ItemDefinition>(GenericQuestRewardPath);
+        AddDefinitionIfMissing(preservedDefinitions, seenDefinitions, genericQuestReward);
+
+        definitions.arraySize = preservedDefinitions.Count;
+        for (int i = 0; i < preservedDefinitions.Count; i++)
+        {
+            definitions.GetArrayElementAtIndex(i).objectReferenceValue = preservedDefinitions[i];
+        }
         serialized.ApplyModifiedPropertiesWithoutUndo();
         EditorUtility.SetDirty(registry);
         return registry;
     }
 
-    private static SaveGameService CreateOrUpdateService(Scene scene, ItemDefinitionRegistry registry)
+    private static QuestDefinitionRegistry CreateOrLoadQuestRegistry()
+    {
+        QuestDefinitionRegistry registry = AssetDatabase.LoadAssetAtPath<QuestDefinitionRegistry>(QuestRegistryPath);
+        if (registry == null)
+        {
+            registry = ScriptableObject.CreateInstance<QuestDefinitionRegistry>();
+            AssetDatabase.CreateAsset(registry, QuestRegistryPath);
+        }
+
+        if (!registry.Validate(out string error))
+        {
+            throw new InvalidOperationException($"Quest definition registry is invalid: {error}");
+        }
+
+        return registry;
+    }
+
+    private static SaveGameService CreateOrUpdateService(
+        Scene scene,
+        ItemDefinitionRegistry registry,
+        QuestDefinitionRegistry questRegistry)
     {
         SaveGameService[] services = UnityEngine.Object.FindObjectsByType<SaveGameService>(
             FindObjectsInactive.Include,
@@ -157,10 +200,56 @@ public static class PersistenceBootstrap
 
         SerializedObject serialized = new(service);
         RequireProperty(serialized, "itemDefinitionRegistry").objectReferenceValue = registry;
+        RequireProperty(serialized, "questDefinitionRegistry").objectReferenceValue = questRegistry;
         RequireProperty(serialized, "autoLoadOnStart").boolValue = false;
         serialized.ApplyModifiedPropertiesWithoutUndo();
         EditorUtility.SetDirty(service);
+
+        PlayerQuestLog[] questLogs = UnityEngine.Object.FindObjectsByType<PlayerQuestLog>(
+            FindObjectsInactive.Include,
+            FindObjectsSortMode.None);
+        if (questLogs.Length > 1)
+        {
+            throw new InvalidOperationException($"Expected at most one PlayerQuestLog, found {questLogs.Length}.");
+        }
+
+        PlayerQuestLog questLog;
+        if (questLogs.Length == 0)
+        {
+            PlayerInventory[] inventories = UnityEngine.Object.FindObjectsByType<PlayerInventory>(
+                FindObjectsInactive.Include,
+                FindObjectsSortMode.None);
+            if (inventories.Length != 1)
+            {
+                throw new InvalidOperationException(
+                    $"Expected exactly one PlayerInventory when creating PlayerQuestLog, found {inventories.Length}.");
+            }
+
+            questLog = inventories[0].gameObject.AddComponent<PlayerQuestLog>();
+        }
+        else
+        {
+            questLog = questLogs[0];
+        }
+
+        SerializedObject questLogSerialized = new(questLog);
+        RequireProperty(questLogSerialized, "registry").objectReferenceValue = questRegistry;
+        RequireProperty(questLogSerialized, "inventory").objectReferenceValue = questLog.GetComponent<PlayerInventory>();
+        RequireProperty(questLogSerialized, "interactor").objectReferenceValue = questLog.GetComponent<PlayerInteractor>();
+        questLogSerialized.ApplyModifiedPropertiesWithoutUndo();
+        EditorUtility.SetDirty(questLog);
         return service;
+    }
+
+    private static void AddDefinitionIfMissing(
+        List<ItemDefinition> definitions,
+        HashSet<ItemDefinition> seenDefinitions,
+        ItemDefinition definition)
+    {
+        if (definition != null && seenDefinitions.Add(definition))
+        {
+            definitions.Add(definition);
+        }
     }
 
     private static void ConfigurePersistentObjects(Scene scene)

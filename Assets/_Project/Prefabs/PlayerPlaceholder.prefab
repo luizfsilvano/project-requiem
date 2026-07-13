@@ -18,6 +18,7 @@ GameObject:
   - component: {fileID: 6825579895974506997}
   - component: {fileID: 3787728588524257526}
   - component: {fileID: 7409539807314245206}
+  - component: {fileID: 6469157173604789319}
   m_Layer: 0
   m_Name: PlayerPlaceholder
   m_TagString: Untagged
@@ -77,7 +78,7 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: dc1556b2a9f97d447bb7e96dd61434bd, type: 3}
-  m_Name: 
+  m_Name:
   m_EditorClassIdentifier: Assembly-CSharp::PlayerCameraRelativeMovement
   characterController: {fileID: 0}
   cameraTransform: {fileID: 0}
@@ -103,7 +104,7 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: d4bac59ec49f4174b9a90acd443620f5, type: 3}
-  m_Name: 
+  m_Name:
   m_EditorClassIdentifier: Assembly-CSharp::PlayerAnimationDriver
   animator: {fileID: 1601743979945255308}
   characterController: {fileID: 2006016124739436042}
@@ -127,7 +128,7 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 531983c74ef446f46820a245e4c0b3af, type: 3}
-  m_Name: 
+  m_Name:
   m_EditorClassIdentifier: Assembly-CSharp::BasicMeleeAttack
   hitbox: {fileID: 6299172725696788439}
   movement: {fileID: 5679640867013821910}
@@ -163,7 +164,7 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 0ebe7169a78d0904cb8d494250631032, type: 3}
-  m_Name: 
+  m_Name:
   m_EditorClassIdentifier: Assembly-CSharp::PlayerEquipment
   animator: {fileID: 1601743979945255308}
   weaponSocket: {fileID: 0}
@@ -174,32 +175,32 @@ MonoBehaviour:
   weaponLocalScale: {x: 100, y: 100, z: 100}
   slots:
   - slotType: 0
-    itemInstanceId: 
+    itemInstanceId:
   - slotType: 1
-    itemInstanceId: 
+    itemInstanceId:
   - slotType: 2
-    itemInstanceId: 
+    itemInstanceId:
   - slotType: 3
-    itemInstanceId: 
+    itemInstanceId:
   - slotType: 4
-    itemInstanceId: 
+    itemInstanceId:
   - slotType: 5
-    itemInstanceId: 
+    itemInstanceId:
   - slotType: 6
-    itemInstanceId: 
+    itemInstanceId:
   - slotType: 7
-    itemInstanceId: 
+    itemInstanceId:
   - slotType: 8
-    itemInstanceId: 
+    itemInstanceId:
   - slotType: 9
-    itemInstanceId: 
+    itemInstanceId:
   - slotType: 10
-    itemInstanceId: 
+    itemInstanceId:
   - slotType: 11
-    itemInstanceId: 
+    itemInstanceId:
   activeSlot: 0
-  legacyPrimaryItemInstanceId: 
-  legacySecondaryItemInstanceId: 
+  legacyPrimaryItemInstanceId:
+  legacySecondaryItemInstanceId:
 --- !u!114 &6409660377452784229
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -210,7 +211,7 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 99b97e12f1b69fd43a103adb123eb38b, type: 3}
-  m_Name: 
+  m_Name:
   m_EditorClassIdentifier: Assembly-CSharp::PlayerLockOnController
   cameraTransform: {fileID: 0}
   searchRadius: 12
@@ -233,7 +234,7 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 86b48c5fbe5aee640b0ef3f691db7b82, type: 3}
-  m_Name: 
+  m_Name:
   m_EditorClassIdentifier: Assembly-CSharp::PlayerStamina
   maxStamina: 100
   regenPerSecond: 28
@@ -252,13 +253,13 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: ac81bfa196fecdc44a9cf876dfda3185, type: 3}
-  m_Name: 
+  m_Name:
   m_EditorClassIdentifier: Assembly-CSharp::PlayerInventory
   equipment: {fileID: 6608353860777622547}
   meleeAttack: {fileID: 7473062904022722828}
   movement: {fileID: 5679640867013821910}
   itemContainer:
-    capacity: 0
+    capacity: 24
     items: []
   legacyWeapons: []
   legacyEquippedWeaponIndex: -1
@@ -288,6 +289,21 @@ MonoBehaviour:
   promptView: {fileID: 0}
   containerScreen: {fileID: 0}
   dialoguePanel: {fileID: 0}
+--- !u!114 &6469157173604789319
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2907621798093756314}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: ca793aa2f6378bd41b29dfb056757b1a, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: Assembly-CSharp::PlayerQuestLog
+  registry: {fileID: 11400000, guid: ba3467ba8148f7a4895d47dd6abdaa85, type: 2}
+  inventory: {fileID: 3787728588524257526}
+  interactor: {fileID: 7409539807314245206}
 --- !u!1 &6772202266386334792
 GameObject:
   m_ObjectHideFlags: 0
@@ -439,7 +455,7 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 1afcd3aa5363f9b4495427fbb7aa02f5, type: 3}
-  m_Name: 
+  m_Name:
   m_EditorClassIdentifier: Assembly-CSharp::MeleeHitbox
   triggerCollider: {fileID: 0}
   firstHitDamage: 18
@@ -529,7 +545,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 5866666021909216657, guid: 2accc43aef08dd94eb13153dd2dfd3ab, type: 3}
       propertyPath: m_Controller
-      value: 
+      value:
       objectReference: {fileID: 9100000, guid: 38de20b9de2b11f489c159a03f96772e, type: 2}
     - target: {fileID: 5866666021909216657, guid: 2accc43aef08dd94eb13153dd2dfd3ab, type: 3}
       propertyPath: m_ApplyRootMotion

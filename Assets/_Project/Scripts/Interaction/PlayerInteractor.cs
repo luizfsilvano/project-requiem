@@ -30,6 +30,7 @@ public sealed class PlayerInteractor : MonoBehaviour
     private float nextSearchTime;
 
     public event Action<IInteractable> CurrentTargetChanged;
+    public event Action<IInteractable> InteractionSucceeded;
 
     public IInteractable CurrentTarget => currentTarget;
     public float SearchRange => searchRange;
@@ -79,23 +80,7 @@ public sealed class PlayerInteractor : MonoBehaviour
             return;
         }
 
-        InteractableBehaviour target = currentTarget;
-        if (!IsCandidateValid(target, context, out _, out _))
-        {
-            SetCurrentTarget(null);
-            return;
-        }
-
-        bool succeeded = target.TryInteract(context);
-        nextSearchTime = Time.unscaledTime + searchInterval;
-        if (succeeded && (GameplayInputGate.IsModalOpen || target == null || !target.IsAvailable))
-        {
-            SetCurrentTarget(null);
-        }
-        else
-        {
-            RefreshPrompt(context);
-        }
+        TryInteract(currentTarget);
     }
 
     public bool TryOpenContainer(WorldItemContainer container)
@@ -110,6 +95,43 @@ public sealed class PlayerInteractor : MonoBehaviour
         return npc != null
             && dialoguePanel != null
             && dialoguePanel.Open(npc, this);
+    }
+
+    public bool TryInteract(InteractableBehaviour target)
+    {
+        if (target == null || GameplayInputGate.IsBlocked || IsActionLocked)
+        {
+            return false;
+        }
+
+        InteractionContext context = new(this, gameObject);
+        if (!IsCandidateValid(target, context, out _, out _))
+        {
+            if (ReferenceEquals(currentTarget, target))
+            {
+                SetCurrentTarget(null);
+            }
+
+            return false;
+        }
+
+        bool succeeded = target.TryInteract(context);
+        if (succeeded)
+        {
+            InteractionSucceeded?.Invoke(target);
+        }
+
+        nextSearchTime = Time.unscaledTime + searchInterval;
+        if (succeeded && (GameplayInputGate.IsModalOpen || target == null || !target.IsAvailable))
+        {
+            SetCurrentTarget(null);
+        }
+        else
+        {
+            RefreshPrompt(context);
+        }
+
+        return succeeded;
     }
 
     public void ClearCurrentTarget()

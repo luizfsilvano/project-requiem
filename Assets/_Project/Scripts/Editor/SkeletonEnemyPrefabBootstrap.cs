@@ -73,6 +73,7 @@ public static class SkeletonEnemyPrefabBootstrap
 
         PrefabUtility.SaveAsPrefabAsset(root, EnemyPrefabPath);
         Object.DestroyImmediate(root);
+        QuestSystemBootstrap.RestoreQuestAugmentationsIfAvailable();
         AssetDatabase.SaveAssets();
         AssetDatabase.Refresh();
     }
