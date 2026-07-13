@@ -86,9 +86,6 @@ public sealed class TrainingDummyHealth : MonoBehaviour
     private Rigidbody[] rigidbodiesToDisableOnDeath;
     private Transform lastDamageAttacker;
 
-    private static Coroutine hitStopRoutine;
-    private static float defaultFixedDeltaTime;
-
     public float HealthRatio => maxHealth > 0 ? currentHealth / (float)maxHealth : 0f;
     public float PoiseRatio => maxPoise > 0f ? currentPoise / maxPoise : 0f;
     public int CurrentHealth => currentHealth;
@@ -137,7 +134,6 @@ public sealed class TrainingDummyHealth : MonoBehaviour
 
         ApplyTuning(tuning);
         defaultScale = transform.localScale;
-        defaultFixedDeltaTime = Time.fixedDeltaTime;
 
         if (showFloatingBars)
         {
@@ -616,13 +612,13 @@ public sealed class TrainingDummyHealth : MonoBehaviour
 
     private void TriggerHitStop(CombatHit hit, CombatImpactReaction reaction)
     {
-        if (!ShouldHitStop(hit, reaction) || hit.HitStopDuration <= 0f || hitStopRoutine != null)
+        if (!ShouldHitStop(hit, reaction) || hit.HitStopDuration <= 0f)
         {
             return;
         }
 
         float duration = hit.HitStopDuration * GetHitStopMultiplier(reaction);
-        hitStopRoutine = StartCoroutine(HitStop(duration));
+        CombatHitStop.TryPlay(duration);
     }
 
     private void SpawnHitSparks(CombatHit hit, CombatImpactReaction reaction)
@@ -956,14 +952,4 @@ public sealed class TrainingDummyHealth : MonoBehaviour
         return material;
     }
 
-    private static IEnumerator HitStop(float duration)
-    {
-        float previousTimeScale = Time.timeScale;
-        Time.timeScale = 0.05f;
-        Time.fixedDeltaTime = defaultFixedDeltaTime * Time.timeScale;
-        yield return new WaitForSecondsRealtime(duration);
-        Time.timeScale = previousTimeScale;
-        Time.fixedDeltaTime = defaultFixedDeltaTime * previousTimeScale;
-        hitStopRoutine = null;
-    }
 }

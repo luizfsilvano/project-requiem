@@ -818,6 +818,7 @@ Arquitetura atual:
 - cada ID de instancia derrotada e persistido no progresso e conta no maximo uma vez; stagger, fade e uma segunda chamada de morte nao geram credito;
 - `PlayerInteractor.InteractionSucceeded` publica progresso somente depois de uma interacao aceita; `TryInteract` concentra a mesma validacao reutilizada pelo caminho da tecla `E`;
 - `QuestEncounterController` e event-driven e mantem os tres skeletons da quest inativos antes do aceite, ativos somente no objetivo de derrota e novamente inativos depois dele; a retirada e diferida por um frame para preservar a sequencia visual de morte;
+- o hit-stop de combate roda no host persistente `CombatHitStop`, independente do inimigo atingido, para que desativar um encounter durante uma morte nunca deixe `Time.timeScale` reduzido;
 - `DialoguePanel` continua sendo o painel existente e agora apresenta aceitar, recusar, estado ativo, concluir, feedback de inventario cheio e texto posterior a conclusao;
 - `QuestJournalScreen` e `QuestTrackerHud` consomem eventos do log; nao fazem polling de gameplay nem possuem regra de progressao;
 - o Dev Console ganhou a aba `Quests` para listar, iniciar, avancar, resetar e inspecionar tracking, explicitamente como ferramenta de desenvolvimento.
