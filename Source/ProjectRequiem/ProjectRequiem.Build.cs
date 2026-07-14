@@ -10,7 +10,6 @@ public class ProjectRequiem : ModuleRules
 
 		PublicDependencyModuleNames.AddRange(new string[]
 		{
-			"AnimGraphRuntime",
 			"Core",
 			"CoreUObject",
 			"Engine",
