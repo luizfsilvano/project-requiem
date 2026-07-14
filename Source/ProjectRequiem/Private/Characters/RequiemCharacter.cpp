@@ -19,10 +19,9 @@ ARequiemCharacter::ARequiemCharacter()
 	GetCharacterMovement()->RotationRate = FRotator(0.0, 500.0, 0.0);
 	GetCharacterMovement()->JumpZVelocity = 500.0f;
 	GetCharacterMovement()->AirControl = 0.35f;
-	// Match the speed axis authored by Epic's unarmed locomotion Blend Space.
-	// Acceleration and braking remain entirely movement-driven; animation no longer
-	// changes MaxWalkSpeed or introduces a second deceleration curve.
-	GetCharacterMovement()->MaxWalkSpeed = 600.0f;
+	// Conservative default pace for the temporary UAL locomotion validation.
+	// The presentation-only subclass owns clip transitions without changing input.
+	GetCharacterMovement()->MaxWalkSpeed = 400.0f;
 	GetCharacterMovement()->MinAnalogWalkSpeed = 20.0f;
 	GetCharacterMovement()->MaxAcceleration = 2048.0f;
 	GetCharacterMovement()->GroundFriction = 8.0f;
