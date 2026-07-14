@@ -134,6 +134,16 @@ def make_mapping(action, key_name: str, outer, modifier_classes=()):
     return mapping
 
 
+def make_mouse_look_mapping(action, outer):
+    mapping = make_mapping(action, "Mouse2D", outer)
+    invert_vertical = unreal.new_object(unreal.InputModifierNegate, outer=outer)
+    invert_vertical.set_editor_property("x", False)
+    invert_vertical.set_editor_property("y", True)
+    invert_vertical.set_editor_property("z", False)
+    mapping.set_editor_property("modifiers", [invert_vertical])
+    return mapping
+
+
 def create_input_assets(asset_tools):
     move_action = create_data_asset(asset_tools, "IA_Move", ACTION_PATH, unreal.InputAction)
     look_action = create_data_asset(asset_tools, "IA_Look", ACTION_PATH, unreal.InputAction)
@@ -157,7 +167,7 @@ def create_input_assets(asset_tools):
         make_mapping(move_action, "A", mapping_context, (unreal.InputModifierNegate,)),
         make_mapping(move_action, "D", mapping_context),
         make_mapping(move_action, "Gamepad_Left2D", mapping_context),
-        make_mapping(look_action, "Mouse2D", mapping_context),
+        make_mouse_look_mapping(look_action, mapping_context),
         make_mapping(look_action, "Gamepad_Right2D", mapping_context),
         make_mapping(jump_action, "SpaceBar", mapping_context),
         make_mapping(jump_action, "Gamepad_FaceButton_Bottom", mapping_context),
