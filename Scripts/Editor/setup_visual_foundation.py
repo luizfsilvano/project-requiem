@@ -26,11 +26,10 @@ SKELETON_ASSET = f"{MESH_PATH}/SKEL_Temp_SuperheroFemale"
 IDLE_ASSET = f"{ANIMATION_PATH}/A_Temp_Idle"
 MOVE_ASSET = f"{ANIMATION_PATH}/A_Temp_Walk"
 JUMP_ASSET = f"{ANIMATION_PATH}/A_Temp_JumpLoop"
-SPRINT_ENTER_ASSET = f"{ANIMATION_PATH}/A_Temp_SprintEnter"
-SPRINT_LOOP_ASSET = f"{ANIMATION_PATH}/A_Temp_SprintLoop"
-SPRINT_EXIT_ASSET = f"{ANIMATION_PATH}/A_Temp_SprintExit"
+RUN_ENTER_ASSET = f"{ANIMATION_PATH}/A_Temp_SprintEnter"
+RUN_LOOP_ASSET = f"{ANIMATION_PATH}/A_Temp_SprintLoop"
+RUN_EXIT_ASSET = f"{ANIMATION_PATH}/A_Temp_SprintExit"
 LEGACY_MOVE_ASSET = f"{ANIMATION_PATH}/A_Temp_Jog"
-SPRINT_INPUT_ASSET = f"{PROJECT_ROOT}/Core/Input/Actions/IA_Sprint"
 CHARACTER_MATERIALS = (
     (
         (f"{MESH_PATH}/M_Temp_Hair_2", f"{MESH_PATH}/MI_Hair_2"),
@@ -442,9 +441,9 @@ def import_animations(asset_tools, asset_subsystem, source_path: Path, skeleton)
         "Idle_Loop": IDLE_ASSET,
         "Walk_Loop": MOVE_ASSET,
         "Jump_Loop": JUMP_ASSET,
-        "Sprint_Enter": SPRINT_ENTER_ASSET,
-        "Sprint_Loop": SPRINT_LOOP_ASSET,
-        "Sprint_Exit": SPRINT_EXIT_ASSET,
+        "Sprint_Enter": RUN_ENTER_ASSET,
+        "Sprint_Loop": RUN_LOOP_ASSET,
+        "Sprint_Exit": RUN_EXIT_ASSET,
     }
     if any(load_existing(f"{ANIMATION_PATH}/{name}") for name in expected_names):
         reconcile_animation_assets(expected_names, replace_existing=True)
@@ -467,9 +466,9 @@ def import_animations(asset_tools, asset_subsystem, source_path: Path, skeleton)
             IDLE_ASSET,
             MOVE_ASSET,
             JUMP_ASSET,
-            SPRINT_ENTER_ASSET,
-            SPRINT_LOOP_ASSET,
-            SPRINT_EXIT_ASSET,
+            RUN_ENTER_ASSET,
+            RUN_LOOP_ASSET,
+            RUN_EXIT_ASSET,
         )
     )
 
@@ -540,15 +539,12 @@ def configure_character_blueprint(asset_subsystem, skeletal_mesh, animations):
         "relative_rotation", unreal.Rotator(pitch=0.0, yaw=-90.0, roll=0.0)
     )
     character_cdo.set_editor_property("idle_animation", animations[0])
-    character_cdo.set_editor_property("move_animation", animations[1])
     character_cdo.set_editor_property("jump_animation", animations[2])
-    character_cdo.set_editor_property("sprint_enter_animation", animations[3])
-    character_cdo.set_editor_property("sprint_loop_animation", animations[4])
-    character_cdo.set_editor_property("sprint_exit_animation", animations[5])
-    character_cdo.set_editor_property(
-        "sprint_action",
-        require(load_existing(SPRINT_INPUT_ASSET), f"Missing {SPRINT_INPUT_ASSET}"),
-    )
+    character_cdo.set_editor_property("run_enter_animation", animations[3])
+    character_cdo.set_editor_property("run_loop_animation", animations[4])
+    character_cdo.set_editor_property("run_exit_animation", animations[5])
+    character_cdo.set_editor_property("run_start_speed", 97.5)
+    character_cdo.set_editor_property("run_speed", 825.0)
     movement_component.set_editor_property("max_walk_speed", 97.5)
     movement_component.set_editor_property("max_acceleration", 1400.0)
     movement_component.set_editor_property("braking_deceleration_walking", 1600.0)

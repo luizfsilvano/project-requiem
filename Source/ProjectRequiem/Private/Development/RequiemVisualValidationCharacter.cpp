@@ -5,18 +5,17 @@
 #include "AnimSequencerInstance.h"
 #include "Animation/AnimSequenceBase.h"
 #include "Components/SkeletalMeshComponent.h"
-#include "EnhancedInputComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
-#include "InputActionValue.h"
 
 namespace
 {
-constexpr float MovementSpeedThreshold = 5.0f;
 constexpr float GroundBlendDuration = 0.16f;
-constexpr float SprintEnterBlendDuration = 0.12f;
-constexpr float SprintLoopBlendDuration = 0.04f;
-constexpr float SprintExitBlendDuration = 0.12f;
-constexpr float SprintExitWalkTransitionFraction = 0.35f;
+constexpr float RunEnterBlendDuration = 0.12f;
+constexpr float RunLoopBlendDuration = 0.04f;
+constexpr float RunExitBlendDuration = 0.12f;
+constexpr float RunEnterCommitFraction = 0.45f;
+constexpr float RunExitDecelerationFraction = 0.35f;
+constexpr float RunLoopMinimumPlayRate = 0.5f;
 constexpr float FallingBlendDuration = 0.08f;
 
 float SmoothStep01(const float Value)
@@ -33,28 +32,6 @@ ARequiemVisualValidationCharacter::ARequiemVisualValidationCharacter()
 	// Temporary tuning based on the source motion contained in UAL1 Pro.
 	GetCharacterMovement()->MaxAcceleration = 1400.0f;
 	GetCharacterMovement()->BrakingDecelerationWalking = 1600.0f;
-}
-
-void ARequiemVisualValidationCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
-{
-	Super::SetupPlayerInputComponent(PlayerInputComponent);
-
-	UEnhancedInputComponent* EnhancedInputComponent = Cast<UEnhancedInputComponent>(PlayerInputComponent);
-	if (!EnhancedInputComponent || !SprintAction)
-	{
-		return;
-	}
-
-	// IA_Sprint owns the Hold gesture. IA_Jump keeps the Tap gesture on the same key.
-	EnhancedInputComponent->BindAction(
-		SprintAction, ETriggerEvent::Triggered, this,
-		&ARequiemVisualValidationCharacter::HandleSprintTriggered);
-	EnhancedInputComponent->BindAction(
-		SprintAction, ETriggerEvent::Completed, this,
-		&ARequiemVisualValidationCharacter::HandleSprintReleased);
-	EnhancedInputComponent->BindAction(
-		SprintAction, ETriggerEvent::Canceled, this,
-		&ARequiemVisualValidationCharacter::HandleSprintReleased);
 }
 
 void ARequiemVisualValidationCharacter::BeginPlay()
@@ -88,16 +65,6 @@ void ARequiemVisualValidationCharacter::Tick(float DeltaSeconds)
 	UpdateAnimationBlend();
 }
 
-void ARequiemVisualValidationCharacter::HandleSprintTriggered(const FInputActionValue& Value)
-{
-	bSprintRequested = Value.Get<bool>();
-}
-
-void ARequiemVisualValidationCharacter::HandleSprintReleased(const FInputActionValue& Value)
-{
-	bSprintRequested = false;
-}
-
 void ARequiemVisualValidationCharacter::UpdateLocomotionState()
 {
 	if (GetCharacterMovement()->IsFalling())
@@ -111,29 +78,48 @@ void ARequiemVisualValidationCharacter::UpdateLocomotionState()
 
 	if (LocomotionState == ELocomotionState::Falling)
 	{
-		const ELocomotionState GroundState = IsMovingOnGround()
-			? ELocomotionState::Walk
+		const float HorizontalSpeed = GetVelocity().Size2D();
+		ELocomotionState GroundState = HorizontalSpeed > RunStartSpeed
+			? ELocomotionState::RunExit
 			: ELocomotionState::Idle;
+		if (HasMovementIntent())
+		{
+			GroundState = HorizontalSpeed >= RunSpeed * RunLoopMinimumPlayRate
+				? ELocomotionState::RunLoop
+				: ELocomotionState::RunEnter;
+		}
 		SetLocomotionState(GroundState, GroundBlendDuration);
 	}
 
 	switch (LocomotionState)
 	{
-	case ELocomotionState::SprintEnter:
-		if (!bSprintRequested || !HasMovementIntent())
+	case ELocomotionState::RunEnter:
+		if (!HasMovementIntent())
 		{
-			SetLocomotionState(ELocomotionState::SprintExit, SprintExitBlendDuration);
+			const bool bCommittedToRun =
+				GetNormalizedStateTime() >= RunEnterCommitFraction
+				|| RunEnterStartSpeed > RunStartSpeed;
+			SetLocomotionState(
+				bCommittedToRun ? ELocomotionState::RunExit : ELocomotionState::Idle,
+				bCommittedToRun ? RunExitBlendDuration : GroundBlendDuration);
 		}
 		return;
 
-	case ELocomotionState::SprintExit:
-		// SprintExit selects Walk or Idle at an authored handoff point below.
+	case ELocomotionState::RunExit:
+		if (HasMovementIntent())
+		{
+			const ELocomotionState ResumeState =
+				GetVelocity().Size2D() >= RunSpeed * RunLoopMinimumPlayRate
+					? ELocomotionState::RunLoop
+					: ELocomotionState::RunEnter;
+			SetLocomotionState(ResumeState, RunExitBlendDuration);
+		}
 		return;
 
-	case ELocomotionState::SprintLoop:
-		if (!bSprintRequested || !HasMovementIntent())
+	case ELocomotionState::RunLoop:
+		if (!HasMovementIntent())
 		{
-			SetLocomotionState(ELocomotionState::SprintExit, SprintExitBlendDuration);
+			SetLocomotionState(ELocomotionState::RunExit, RunExitBlendDuration);
 		}
 		return;
 
@@ -141,18 +127,15 @@ void ARequiemVisualValidationCharacter::UpdateLocomotionState()
 		break;
 	}
 
-	if (bSprintRequested && HasMovementIntent())
+	if (HasMovementIntent())
 	{
-		SetLocomotionState(ELocomotionState::SprintEnter, SprintEnterBlendDuration);
+		SetLocomotionState(ELocomotionState::RunEnter, RunEnterBlendDuration);
 		return;
 	}
 
-	const ELocomotionState DesiredGroundState = IsMovingOnGround()
-		? ELocomotionState::Walk
-		: ELocomotionState::Idle;
-	if (DesiredGroundState != LocomotionState)
+	if (LocomotionState != ELocomotionState::Idle)
 	{
-		SetLocomotionState(DesiredGroundState, GroundBlendDuration);
+		SetLocomotionState(ELocomotionState::Idle, GroundBlendDuration);
 	}
 }
 
@@ -163,46 +146,29 @@ void ARequiemVisualValidationCharacter::HandleCompletedAnimation()
 		return;
 	}
 
-	// Sprint_Exit settles to idle after its displacement phase. When movement is
-	// still requested, hand off to Walk as soon as that phase finishes instead
-	// of visually idling while the capsule keeps moving.
-	if (LocomotionState == ELocomotionState::SprintExit
-		&& HasMovementIntent()
-		&& GetNormalizedStateTime() >= SprintExitWalkTransitionFraction)
-	{
-		const ELocomotionState NextState = bSprintRequested
-			? ELocomotionState::SprintEnter
-			: ELocomotionState::Walk;
-		SetLocomotionState(NextState, SprintExitBlendDuration);
-		return;
-	}
-
 	if (ActiveAnimationPosition + KINDA_SMALL_NUMBER < ActiveAnimation->GetPlayLength())
 	{
 		return;
 	}
 
-	if (LocomotionState == ELocomotionState::SprintEnter)
+	if (LocomotionState == ELocomotionState::RunEnter)
 	{
-		const ELocomotionState NextState = bSprintRequested && HasMovementIntent()
-			? ELocomotionState::SprintLoop
-			: ELocomotionState::SprintExit;
-		SetLocomotionState(NextState, SprintLoopBlendDuration);
+		const ELocomotionState NextState = HasMovementIntent()
+			? ELocomotionState::RunLoop
+			: ELocomotionState::RunExit;
+		SetLocomotionState(NextState, RunLoopBlendDuration);
 		return;
 	}
 
-	if (LocomotionState == ELocomotionState::SprintExit)
+	if (LocomotionState == ELocomotionState::RunExit)
 	{
-		if (bSprintRequested && HasMovementIntent())
+		if (HasMovementIntent())
 		{
-			SetLocomotionState(ELocomotionState::SprintEnter, SprintEnterBlendDuration);
+			SetLocomotionState(ELocomotionState::RunEnter, RunEnterBlendDuration);
 			return;
 		}
 
-		const ELocomotionState GroundState = IsMovingOnGround() || HasMovementIntent()
-			? ELocomotionState::Walk
-			: ELocomotionState::Idle;
-		SetLocomotionState(GroundState, GroundBlendDuration);
+		SetLocomotionState(ELocomotionState::Idle, GroundBlendDuration);
 	}
 }
 
@@ -230,9 +196,15 @@ void ARequiemVisualValidationCharacter::SetLocomotionState(
 		bPreviousAnimationLooping = false;
 	}
 
-	if (NewState == ELocomotionState::SprintExit)
+	if (NewState == ELocomotionState::RunExit)
 	{
-		SprintExitStartSpeed = FMath::Clamp(GetVelocity().Size2D(), 0.0f, SprintSpeed);
+		RunExitStartSpeed = FMath::Clamp(GetVelocity().Size2D(), 0.0f, RunSpeed);
+	}
+	else if (NewState == ELocomotionState::RunEnter)
+	{
+		RunEnterStartSpeed = FMath::Clamp(
+			FMath::Max(GetVelocity().Size2D(), RunStartSpeed),
+			RunStartSpeed, RunSpeed);
 	}
 
 	LocomotionState = NewState;
@@ -268,13 +240,10 @@ void ARequiemVisualValidationCharacter::AdvanceAnimationPlayback(const float Del
 
 	float ActivePlayRate = 1.0f;
 	const float HorizontalSpeed = GetVelocity().Size2D();
-	if (LocomotionState == ELocomotionState::Walk && WalkSpeed > UE_KINDA_SMALL_NUMBER)
+	if (LocomotionState == ELocomotionState::RunLoop && RunSpeed > UE_KINDA_SMALL_NUMBER)
 	{
-		ActivePlayRate = FMath::Clamp(HorizontalSpeed / WalkSpeed, 0.2f, 1.2f);
-	}
-	else if (LocomotionState == ELocomotionState::SprintLoop && SprintSpeed > UE_KINDA_SMALL_NUMBER)
-	{
-		ActivePlayRate = FMath::Clamp(HorizontalSpeed / SprintSpeed, 0.5f, 1.2f);
+		ActivePlayRate = FMath::Clamp(
+			HorizontalSpeed / RunSpeed, RunLoopMinimumPlayRate, 1.2f);
 	}
 
 	AdvancePosition(
@@ -295,30 +264,35 @@ void ARequiemVisualValidationCharacter::AdvanceAnimationPlayback(const float Del
 void ARequiemVisualValidationCharacter::UpdateMovementSpeed()
 {
 	UCharacterMovementComponent* Movement = GetCharacterMovement();
-	float DesiredMaxSpeed = WalkSpeed;
+	float DesiredMaxSpeed = LocomotionState == ELocomotionState::Falling
+		? RunSpeed
+		: RunStartSpeed;
 
 	switch (LocomotionState)
 	{
-	case ELocomotionState::SprintEnter:
+	case ELocomotionState::RunEnter:
 	{
-		// The authored clip walks for roughly its first half, then commits to the sprint.
-		const float RampAlpha = (GetNormalizedStateTime() - 0.45f) / 0.55f;
-		DesiredMaxSpeed = FMath::Lerp(WalkSpeed, SprintSpeed, SmoothStep01(RampAlpha));
+		// The authored clip builds pace for roughly its first half, then commits to the run.
+		const float RampAlpha =
+			(GetNormalizedStateTime() - RunEnterCommitFraction)
+			/ (1.0f - RunEnterCommitFraction);
+		DesiredMaxSpeed = FMath::Lerp(
+			RunEnterStartSpeed, RunSpeed, SmoothStep01(RampAlpha));
 		break;
 	}
 
-	case ELocomotionState::SprintLoop:
-		DesiredMaxSpeed = SprintSpeed;
+	case ELocomotionState::RunLoop:
+		DesiredMaxSpeed = RunSpeed;
 		break;
 
-	case ELocomotionState::SprintExit:
+	case ELocomotionState::RunExit:
 	{
-		// Preserve the speed present at release, then settle to Walk when movement
-		// remains held or to zero when the player also lets go of movement.
-		const float ExitAlpha = GetNormalizedStateTime() / SprintExitWalkTransitionFraction;
-		const float ExitTargetSpeed = HasMovementIntent() ? WalkSpeed : 0.0f;
+		// Preserve the speed at release, then stop. If movement resumes during the
+		// stop clip, keep the authored starting pace until RunEnter takes over.
+		const float ExitAlpha = GetNormalizedStateTime() / RunExitDecelerationFraction;
+		const float ExitTargetSpeed = HasMovementIntent() ? RunStartSpeed : 0.0f;
 		DesiredMaxSpeed = FMath::Lerp(
-			SprintExitStartSpeed, ExitTargetSpeed, SmoothStep01(ExitAlpha));
+			RunExitStartSpeed, ExitTargetSpeed, SmoothStep01(ExitAlpha));
 		break;
 	}
 
@@ -358,17 +332,10 @@ bool ARequiemVisualValidationCharacter::HasMovementIntent() const
 	return !GetLastMovementInputVector().IsNearlyZero(0.05f);
 }
 
-bool ARequiemVisualValidationCharacter::IsMovingOnGround() const
-{
-	return !GetCharacterMovement()->IsFalling()
-		&& GetVelocity().SizeSquared2D() > FMath::Square(MovementSpeedThreshold);
-}
-
 bool ARequiemVisualValidationCharacter::IsLoopingState(const ELocomotionState State) const
 {
 	return State == ELocomotionState::Idle
-		|| State == ELocomotionState::Walk
-		|| State == ELocomotionState::SprintLoop
+		|| State == ELocomotionState::RunLoop
 		|| State == ELocomotionState::Falling;
 }
 
@@ -388,14 +355,12 @@ UAnimSequenceBase* ARequiemVisualValidationCharacter::GetAnimationForState(
 	{
 	case ELocomotionState::Idle:
 		return IdleAnimation;
-	case ELocomotionState::Walk:
-		return MoveAnimation;
-	case ELocomotionState::SprintEnter:
-		return SprintEnterAnimation;
-	case ELocomotionState::SprintLoop:
-		return SprintLoopAnimation;
-	case ELocomotionState::SprintExit:
-		return SprintExitAnimation;
+	case ELocomotionState::RunEnter:
+		return RunEnterAnimation;
+	case ELocomotionState::RunLoop:
+		return RunLoopAnimation;
+	case ELocomotionState::RunExit:
+		return RunExitAnimation;
 	case ELocomotionState::Falling:
 		return JumpAnimation;
 	default:

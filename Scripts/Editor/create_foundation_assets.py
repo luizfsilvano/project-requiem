@@ -9,6 +9,7 @@ LOG_PREFIX = "[ProjectRequiem.Foundation]"
 GAME_ROOT = "/Game/ProjectRequiem"
 INPUT_PATH = f"{GAME_ROOT}/Core/Input"
 ACTION_PATH = f"{INPUT_PATH}/Actions"
+LEGACY_SPRINT_ACTION = f"{ACTION_PATH}/IA_Sprint"
 FRAMEWORK_PATH = f"{GAME_ROOT}/Core/Blueprints/GameFramework"
 CHARACTER_PATH = f"{GAME_ROOT}/Characters/Player/Blueprints"
 MAP_PATH = f"{GAME_ROOT}/World/Maps/Dev/L_Dev_Foundation"
@@ -135,19 +136,6 @@ def make_mapping(action, key_name: str, outer, modifier_classes=(), triggers=())
     return mapping
 
 
-def make_tap_trigger(outer):
-    trigger = unreal.new_object(unreal.InputTriggerTap, outer=outer)
-    trigger.set_editor_property("tap_release_time_threshold", 0.2)
-    return trigger
-
-
-def make_hold_trigger(outer):
-    trigger = unreal.new_object(unreal.InputTriggerHold, outer=outer)
-    trigger.set_editor_property("hold_time_threshold", 0.2)
-    trigger.set_editor_property("is_one_shot", False)
-    return trigger
-
-
 def make_mouse_look_mapping(action, outer):
     mapping = make_mapping(action, "Mouse2D", outer)
     invert_vertical = unreal.new_object(unreal.InputModifierNegate, outer=outer)
@@ -162,7 +150,6 @@ def create_input_assets(asset_tools):
     move_action = create_data_asset(asset_tools, "IA_Move", ACTION_PATH, unreal.InputAction)
     look_action = create_data_asset(asset_tools, "IA_Look", ACTION_PATH, unreal.InputAction)
     jump_action = create_data_asset(asset_tools, "IA_Jump", ACTION_PATH, unreal.InputAction)
-    sprint_action = create_data_asset(asset_tools, "IA_Sprint", ACTION_PATH, unreal.InputAction)
     mapping_context = create_data_asset(
         asset_tools, "IMC_Exploration", INPUT_PATH, unreal.InputMappingContext
     )
@@ -170,12 +157,6 @@ def create_input_assets(asset_tools):
     move_action.set_editor_property("value_type", unreal.InputActionValueType.AXIS2D)
     look_action.set_editor_property("value_type", unreal.InputActionValueType.AXIS2D)
     jump_action.set_editor_property("value_type", unreal.InputActionValueType.BOOLEAN)
-    sprint_action.set_editor_property("value_type", unreal.InputActionValueType.BOOLEAN)
-
-    keyboard_tap = make_tap_trigger(mapping_context)
-    gamepad_tap = make_tap_trigger(mapping_context)
-    keyboard_hold = make_hold_trigger(mapping_context)
-    gamepad_hold = make_hold_trigger(mapping_context)
 
     mappings = [
         make_mapping(move_action, "W", mapping_context, (unreal.InputModifierSwizzleAxis,)),
@@ -190,26 +171,29 @@ def create_input_assets(asset_tools):
         make_mapping(move_action, "Gamepad_Left2D", mapping_context),
         make_mouse_look_mapping(look_action, mapping_context),
         make_mapping(look_action, "Gamepad_Right2D", mapping_context),
-        make_mapping(jump_action, "SpaceBar", mapping_context, triggers=(keyboard_tap,)),
-        make_mapping(
-            jump_action,
-            "Gamepad_FaceButton_Bottom",
-            mapping_context,
-            triggers=(gamepad_tap,),
-        ),
-        make_mapping(sprint_action, "SpaceBar", mapping_context, triggers=(keyboard_hold,)),
-        make_mapping(
-            sprint_action,
-            "Gamepad_FaceButton_Bottom",
-            mapping_context,
-            triggers=(gamepad_hold,),
-        ),
+        make_mapping(jump_action, "SpaceBar", mapping_context),
+        make_mapping(jump_action, "Gamepad_FaceButton_Bottom", mapping_context),
     ]
     mapping_data = unreal.InputMappingContextMappingData()
     mapping_data.set_editor_property("mappings", mappings)
     mapping_context.set_editor_property("default_key_mappings", mapping_data)
 
-    return move_action, look_action, jump_action, sprint_action, mapping_context
+    return move_action, look_action, jump_action, mapping_context
+
+
+def remove_legacy_input_assets():
+    if unreal.EditorAssetLibrary.does_asset_exist(LEGACY_SPRINT_ACTION):
+        referencers = unreal.EditorAssetLibrary.find_package_referencers_for_asset(
+            LEGACY_SPRINT_ACTION, load_assets_to_confirm=True
+        )
+        require(
+            not referencers,
+            f"Cannot remove {LEGACY_SPRINT_ACTION}; still referenced by {referencers}",
+        )
+        require(
+            unreal.EditorAssetLibrary.delete_asset(LEGACY_SPRINT_ACTION),
+            f"Failed to remove obsolete {LEGACY_SPRINT_ACTION}",
+        )
 
 
 def create_framework_blueprints(asset_tools, move_action, look_action, jump_action, mapping_context):
@@ -358,9 +342,7 @@ def main():
             f"Failed to create content folder {folder}",
         )
 
-    move_action, look_action, jump_action, sprint_action, mapping_context = create_input_assets(
-        asset_tools
-    )
+    move_action, look_action, jump_action, mapping_context = create_input_assets(asset_tools)
     blueprints = create_framework_blueprints(
         asset_tools, move_action, look_action, jump_action, mapping_context
     )
@@ -368,11 +350,12 @@ def main():
         move_action,
         look_action,
         jump_action,
-        sprint_action,
         mapping_context,
         *blueprints,
     ]
     require(asset_subsystem.save_loaded_assets(assets_to_save), "Failed to save foundation assets")
+
+    remove_legacy_input_assets()
 
     create_development_map(asset_subsystem, level_subsystem, actor_subsystem)
     unreal.log(f"{LOG_PREFIX} Foundation assets created successfully")
