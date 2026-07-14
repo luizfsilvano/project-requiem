@@ -56,8 +56,8 @@ void ARequiemCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 
 	if (JumpAction)
 	{
-		EnhancedInputComponent->BindAction(JumpAction, ETriggerEvent::Started, this, &ACharacter::Jump);
-		EnhancedInputComponent->BindAction(JumpAction, ETriggerEvent::Completed, this, &ACharacter::StopJumping);
+		// IA_Jump uses a Tap trigger, so Triggered fires on a short release.
+		EnhancedInputComponent->BindAction(JumpAction, ETriggerEvent::Triggered, this, &ACharacter::Jump);
 	}
 }
 

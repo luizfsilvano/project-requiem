@@ -123,7 +123,7 @@ def default_object(blueprint):
     )
 
 
-def make_mapping(action, key_name: str, outer, modifier_classes=()):
+def make_mapping(action, key_name: str, outer, modifier_classes=(), triggers=()):
     mapping = unreal.EnhancedActionKeyMapping()
     mapping.set_editor_property("action", action)
     key = unreal.Key()
@@ -131,7 +131,21 @@ def make_mapping(action, key_name: str, outer, modifier_classes=()):
     mapping.set_editor_property("key", key)
     modifiers = [unreal.new_object(modifier_class, outer=outer) for modifier_class in modifier_classes]
     mapping.set_editor_property("modifiers", modifiers)
+    mapping.set_editor_property("triggers", list(triggers))
     return mapping
+
+
+def make_tap_trigger(outer):
+    trigger = unreal.new_object(unreal.InputTriggerTap, outer=outer)
+    trigger.set_editor_property("tap_release_time_threshold", 0.2)
+    return trigger
+
+
+def make_hold_trigger(outer):
+    trigger = unreal.new_object(unreal.InputTriggerHold, outer=outer)
+    trigger.set_editor_property("hold_time_threshold", 0.2)
+    trigger.set_editor_property("is_one_shot", False)
+    return trigger
 
 
 def make_mouse_look_mapping(action, outer):
@@ -148,6 +162,7 @@ def create_input_assets(asset_tools):
     move_action = create_data_asset(asset_tools, "IA_Move", ACTION_PATH, unreal.InputAction)
     look_action = create_data_asset(asset_tools, "IA_Look", ACTION_PATH, unreal.InputAction)
     jump_action = create_data_asset(asset_tools, "IA_Jump", ACTION_PATH, unreal.InputAction)
+    sprint_action = create_data_asset(asset_tools, "IA_Sprint", ACTION_PATH, unreal.InputAction)
     mapping_context = create_data_asset(
         asset_tools, "IMC_Exploration", INPUT_PATH, unreal.InputMappingContext
     )
@@ -155,6 +170,12 @@ def create_input_assets(asset_tools):
     move_action.set_editor_property("value_type", unreal.InputActionValueType.AXIS2D)
     look_action.set_editor_property("value_type", unreal.InputActionValueType.AXIS2D)
     jump_action.set_editor_property("value_type", unreal.InputActionValueType.BOOLEAN)
+    sprint_action.set_editor_property("value_type", unreal.InputActionValueType.BOOLEAN)
+
+    keyboard_tap = make_tap_trigger(mapping_context)
+    gamepad_tap = make_tap_trigger(mapping_context)
+    keyboard_hold = make_hold_trigger(mapping_context)
+    gamepad_hold = make_hold_trigger(mapping_context)
 
     mappings = [
         make_mapping(move_action, "W", mapping_context, (unreal.InputModifierSwizzleAxis,)),
@@ -169,14 +190,26 @@ def create_input_assets(asset_tools):
         make_mapping(move_action, "Gamepad_Left2D", mapping_context),
         make_mouse_look_mapping(look_action, mapping_context),
         make_mapping(look_action, "Gamepad_Right2D", mapping_context),
-        make_mapping(jump_action, "SpaceBar", mapping_context),
-        make_mapping(jump_action, "Gamepad_FaceButton_Bottom", mapping_context),
+        make_mapping(jump_action, "SpaceBar", mapping_context, triggers=(keyboard_tap,)),
+        make_mapping(
+            jump_action,
+            "Gamepad_FaceButton_Bottom",
+            mapping_context,
+            triggers=(gamepad_tap,),
+        ),
+        make_mapping(sprint_action, "SpaceBar", mapping_context, triggers=(keyboard_hold,)),
+        make_mapping(
+            sprint_action,
+            "Gamepad_FaceButton_Bottom",
+            mapping_context,
+            triggers=(gamepad_hold,),
+        ),
     ]
     mapping_data = unreal.InputMappingContextMappingData()
     mapping_data.set_editor_property("mappings", mappings)
     mapping_context.set_editor_property("default_key_mappings", mapping_data)
 
-    return move_action, look_action, jump_action, mapping_context
+    return move_action, look_action, jump_action, sprint_action, mapping_context
 
 
 def create_framework_blueprints(asset_tools, move_action, look_action, jump_action, mapping_context):
@@ -325,11 +358,20 @@ def main():
             f"Failed to create content folder {folder}",
         )
 
-    move_action, look_action, jump_action, mapping_context = create_input_assets(asset_tools)
+    move_action, look_action, jump_action, sprint_action, mapping_context = create_input_assets(
+        asset_tools
+    )
     blueprints = create_framework_blueprints(
         asset_tools, move_action, look_action, jump_action, mapping_context
     )
-    assets_to_save = [move_action, look_action, jump_action, mapping_context, *blueprints]
+    assets_to_save = [
+        move_action,
+        look_action,
+        jump_action,
+        sprint_action,
+        mapping_context,
+        *blueprints,
+    ]
     require(asset_subsystem.save_loaded_assets(assets_to_save), "Failed to save foundation assets")
 
     create_development_map(asset_subsystem, level_subsystem, actor_subsystem)

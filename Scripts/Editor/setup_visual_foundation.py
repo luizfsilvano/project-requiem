@@ -26,7 +26,11 @@ SKELETON_ASSET = f"{MESH_PATH}/SKEL_Temp_SuperheroFemale"
 IDLE_ASSET = f"{ANIMATION_PATH}/A_Temp_Idle"
 MOVE_ASSET = f"{ANIMATION_PATH}/A_Temp_Walk"
 JUMP_ASSET = f"{ANIMATION_PATH}/A_Temp_JumpLoop"
+SPRINT_ENTER_ASSET = f"{ANIMATION_PATH}/A_Temp_SprintEnter"
+SPRINT_LOOP_ASSET = f"{ANIMATION_PATH}/A_Temp_SprintLoop"
+SPRINT_EXIT_ASSET = f"{ANIMATION_PATH}/A_Temp_SprintExit"
 LEGACY_MOVE_ASSET = f"{ANIMATION_PATH}/A_Temp_Jog"
+SPRINT_INPUT_ASSET = f"{PROJECT_ROOT}/Core/Input/Actions/IA_Sprint"
 CHARACTER_MATERIALS = (
     (
         (f"{MESH_PATH}/M_Temp_Hair_2", f"{MESH_PATH}/MI_Hair_2"),
@@ -55,10 +59,10 @@ CHARACTER_TEXTURES = (
 )
 
 BASE_ZIP_NAME = "Universal Base Characters[Standard].zip"
-ANIMATION_ZIP_NAME = "Universal Animation Library[Standard].zip"
+ANIMATION_ZIP_NAME = "Universal Animation Library[Pro].zip"
 BASE_ARCHIVE_ROOT = "Universal Base Characters[Standard]/Base Characters/Godot - UE"
 ANIMATION_ARCHIVE_PATH = (
-    "Universal Animation Library[Standard]/Unreal-Godot/UAL1_Standard.glb"
+    "Unreal-Godot/UAL1.glb"
 )
 
 CHARACTER_SOURCE_FILES = (
@@ -71,7 +75,14 @@ CHARACTER_SOURCE_FILES = (
     "T_Superhero_Female_Dark_BaseColor.png",
     "T_Superhero_Female_Roughness.png",
 )
-SELECTED_ANIMATIONS = ("Idle_Loop", "Walk_Loop", "Jump_Loop")
+SELECTED_ANIMATIONS = (
+    "Idle_Loop",
+    "Walk_Loop",
+    "Jump_Loop",
+    "Sprint_Enter",
+    "Sprint_Loop",
+    "Sprint_Exit",
+)
 
 
 def require(value, message: str):
@@ -431,6 +442,9 @@ def import_animations(asset_tools, asset_subsystem, source_path: Path, skeleton)
         "Idle_Loop": IDLE_ASSET,
         "Walk_Loop": MOVE_ASSET,
         "Jump_Loop": JUMP_ASSET,
+        "Sprint_Enter": SPRINT_ENTER_ASSET,
+        "Sprint_Loop": SPRINT_LOOP_ASSET,
+        "Sprint_Exit": SPRINT_EXIT_ASSET,
     }
     if any(load_existing(f"{ANIMATION_PATH}/{name}") for name in expected_names):
         reconcile_animation_assets(expected_names, replace_existing=True)
@@ -449,7 +463,14 @@ def import_animations(asset_tools, asset_subsystem, source_path: Path, skeleton)
 
     return tuple(
         require(load_existing(path), f"Missing animation {path}")
-        for path in (IDLE_ASSET, MOVE_ASSET, JUMP_ASSET)
+        for path in (
+            IDLE_ASSET,
+            MOVE_ASSET,
+            JUMP_ASSET,
+            SPRINT_ENTER_ASSET,
+            SPRINT_LOOP_ASSET,
+            SPRINT_EXIT_ASSET,
+        )
     )
 
 
@@ -512,14 +533,25 @@ def configure_character_blueprint(asset_subsystem, skeletal_mesh, animations):
     mesh_component.modify()
     movement_component.modify()
     mesh_component.set_editor_property("skeletal_mesh_asset", skeletal_mesh)
-    mesh_component.set_editor_property("relative_location", unreal.Vector(0.0, 0.0, -88.0))
+    # CharacterMovement intentionally leaves a ~2.15 cm floor gap; the imported
+    # sole adds another ~0.8 cm. Offset only the visual mesh to preserve collision.
+    mesh_component.set_editor_property("relative_location", unreal.Vector(0.0, 0.0, -91.0))
     mesh_component.set_editor_property(
         "relative_rotation", unreal.Rotator(pitch=0.0, yaw=-90.0, roll=0.0)
     )
     character_cdo.set_editor_property("idle_animation", animations[0])
     character_cdo.set_editor_property("move_animation", animations[1])
     character_cdo.set_editor_property("jump_animation", animations[2])
-    movement_component.set_editor_property("max_walk_speed", 250.0)
+    character_cdo.set_editor_property("sprint_enter_animation", animations[3])
+    character_cdo.set_editor_property("sprint_loop_animation", animations[4])
+    character_cdo.set_editor_property("sprint_exit_animation", animations[5])
+    character_cdo.set_editor_property(
+        "sprint_action",
+        require(load_existing(SPRINT_INPUT_ASSET), f"Missing {SPRINT_INPUT_ASSET}"),
+    )
+    movement_component.set_editor_property("max_walk_speed", 97.5)
+    movement_component.set_editor_property("max_acceleration", 1400.0)
+    movement_component.set_editor_property("braking_deceleration_walking", 1600.0)
 
     require(
         unreal.BlueprintEditorLibrary.compile_blueprint(blueprint),
