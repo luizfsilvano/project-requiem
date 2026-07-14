@@ -1,41 +1,35 @@
-# Unity generated folders
-[Ll]ibrary/
-[Tt]emp/
-[Oo]bj/
-[Bb]uild/
-[Bb]uilds/
-[Ll]ogs/
-[Uu]ser[Ss]ettings/
+# Unreal generated output and local caches
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+Build/
 
-# Unity generated files
-*.csproj
-*.sln
-*.slnx
-*.user
-*.userprefs
-*.pidb
-*.booproj
-*.svd
-*.pdb
-*.mdb
-*.opendb
-*.VC.db
-
-# Unity crash reports
-sysinfo.txt
-
-# Unity packages/build artifacts
-*.unitypackage
-*.apk
-*.aab
-*.app
-
-# OS/editor
-.DS_Store
-Thumbs.db
-.vscode/
+# IDE/editor-local files
+.vs/
 .idea/
-
-# Codex local project config
+.vscode/
 .codex/
 .agents/
+*.sln
+*.suo
+*.user
+*.opensdf
+*.sdf
+*.VC.db
+
+# Logs, crash data and packaged builds
+*.log
+*.dmp
+Packaged/
+StagedBuilds/
+
+# Operating system files
+Thumbs.db
+.DS_Store
+
+# Local secrets and machine-specific settings
+.env
+.env.*
+*.local
+
