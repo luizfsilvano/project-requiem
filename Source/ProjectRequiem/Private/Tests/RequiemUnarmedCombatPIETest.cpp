@@ -146,11 +146,19 @@ constexpr int32 ComboClipCount = 7;
 constexpr float ExpectedMaximumSpeed = 500.0f;
 constexpr float ExpectedMaximumAcceleration = 2000.0f;
 constexpr float ExpectedWalkingBraking = 2000.0f;
+constexpr float ExpectedUnarmedAttackPlayRate = 1.25f;
+constexpr float ExpectedUnarmedRecoveryPlayRate = 1.35f;
+constexpr float ExpectedUnarmedInputWindowStart = 0.30f;
+constexpr float ExpectedUnarmedInputWindowEnd = 0.85f;
+constexpr float ExpectedQueuedAttackHandoff = 0.72f;
+constexpr float ExpectedAutomaticRecoveryHandoff = 0.90f;
+constexpr float ExpectedQueuedRecoveryHandoff = 0.55f;
+constexpr float ExpectedUnarmedLungeSpeed = 350.0f;
+constexpr int32 InputSpamCount = 6;
 
 struct FRunState
 {
 	bool bAborted = false;
-	int32 AttackSerialBeforeAutoEntry = INDEX_NONE;
 };
 
 enum class ETestCombatCommand : uint8
@@ -163,6 +171,11 @@ enum class ETestCombatCommand : uint8
 struct FCharacterSnapshot
 {
 	FVector Location = FVector::ZeroVector;
+	FVector Velocity = FVector::ZeroVector;
+	FVector Acceleration = FVector::ZeroVector;
+	FVector PendingMovementInput = FVector::ZeroVector;
+	FVector LastMovementInput = FVector::ZeroVector;
+	FVector ActorForward = FVector::ForwardVector;
 	float GroundSpeed = 0.0f;
 	float MaximumSpeed = 0.0f;
 	float MaximumAcceleration = 0.0f;
@@ -170,6 +183,10 @@ struct FCharacterSnapshot
 	ERequiemCombatState CombatState = ERequiemCombatState::Normal;
 	FName CombatStateName = NAME_None;
 	int32 AttackRequestSerial = 0;
+	bool bUnarmedAttackActive = false;
+	bool bUnarmedAttackInputWindowOpen = false;
+	bool bQueuedUnarmedFollowUp = false;
+	bool bUnarmedAttackMovementLocked = false;
 	bool bCanBlock = true;
 	ERequiemCombatState ObservedCombatState = ERequiemCombatState::Normal;
 	FName ObservedCombatStateName = NAME_None;
@@ -183,6 +200,13 @@ struct FCharacterSnapshot
 	bool bPresentationMontageIsPlaying = false;
 	FName PresentationMontageSlot = NAME_None;
 	float PresentationMontageBlendOutTriggerTime = -1.0f;
+	float PresentationMontagePlayRate = 1.0f;
+	float PresentationMontagePosition = 0.0f;
+	float PresentationAnimationLength = 0.0f;
+	float PresentationNormalizedTime = 0.0f;
+	float CombatNormalizedTime = 0.0f;
+	float ActivePresentationPlayRate = 1.0f;
+	bool bHasRootMotionSources = false;
 	ERootMotionMode::Type RootMotionMode = ERootMotionMode::NoRootMotionExtraction;
 };
 
@@ -240,6 +264,11 @@ bool ReadCharacterSnapshot(FCharacterSnapshot& OutSnapshot)
 	}
 
 	OutSnapshot.Location = Character->GetActorLocation();
+	OutSnapshot.Velocity = Character->GetVelocity();
+	OutSnapshot.Acceleration = MovementComponent->GetCurrentAcceleration();
+	OutSnapshot.PendingMovementInput = Character->GetPendingMovementInputVector();
+	OutSnapshot.LastMovementInput = Character->GetLastMovementInputVector();
+	OutSnapshot.ActorForward = Character->GetActorForwardVector().GetSafeNormal2D();
 	OutSnapshot.GroundSpeed = Character->GetVelocity().Size2D();
 	OutSnapshot.MaximumSpeed = MovementComponent->GetMaxSpeed();
 	OutSnapshot.MaximumAcceleration = MovementComponent->GetMaxAcceleration();
@@ -247,6 +276,12 @@ bool ReadCharacterSnapshot(FCharacterSnapshot& OutSnapshot)
 	OutSnapshot.CombatState = CombatComponent->GetCombatState();
 	OutSnapshot.CombatStateName = CombatComponent->GetCombatStateName();
 	OutSnapshot.AttackRequestSerial = CombatComponent->GetAttackRequestSerial();
+	OutSnapshot.bUnarmedAttackActive = CombatComponent->IsUnarmedAttackActive();
+	OutSnapshot.bUnarmedAttackInputWindowOpen =
+		CombatComponent->IsUnarmedAttackInputWindowOpen();
+	OutSnapshot.bQueuedUnarmedFollowUp = CombatComponent->HasQueuedUnarmedFollowUp();
+	OutSnapshot.bUnarmedAttackMovementLocked =
+		CombatComponent->IsUnarmedAttackMovementLocked();
 	OutSnapshot.bCanBlock = CombatComponent->CanBlock();
 	OutSnapshot.ObservedCombatState = AnimInstance->GetObservedCombatState();
 	OutSnapshot.ObservedCombatStateName = AnimInstance->GetObservedCombatStateName();
@@ -271,6 +306,26 @@ bool ReadCharacterSnapshot(FCharacterSnapshot& OutSnapshot)
 	OutSnapshot.PresentationMontageBlendOutTriggerTime = ActiveMontage
 		? ActiveMontage->BlendOutTriggerTime
 		: -1.0f;
+	OutSnapshot.PresentationMontagePlayRate = ActiveMontage
+		? AnimInstance->Montage_GetPlayRate(ActiveMontage)
+		: 1.0f;
+	OutSnapshot.PresentationMontagePosition = ActiveMontage
+		? AnimInstance->Montage_GetPosition(ActiveMontage)
+		: 0.0f;
+	OutSnapshot.PresentationAnimationLength = ActiveAnimation
+		? ActiveAnimation->GetPlayLength()
+		: 0.0f;
+	OutSnapshot.PresentationNormalizedTime =
+		OutSnapshot.PresentationAnimationLength > UE_KINDA_SMALL_NUMBER
+			? FMath::Clamp(
+				OutSnapshot.PresentationMontagePosition
+					/ OutSnapshot.PresentationAnimationLength,
+				0.0f,
+				1.0f)
+			: 0.0f;
+	OutSnapshot.CombatNormalizedTime = AnimInstance->GetCombatAnimationNormalizedTime();
+	OutSnapshot.ActivePresentationPlayRate = AnimInstance->GetActivePresentationPlayRate();
+	OutSnapshot.bHasRootMotionSources = MovementComponent->HasRootMotionSources();
 	OutSnapshot.RootMotionMode = ReadRootMotionMode(AnimInstance);
 	return true;
 }
@@ -304,6 +359,29 @@ bool HasValidCombatOneShotPlayback(const FCharacterSnapshot& Snapshot)
 		&& FMath::IsNearlyZero(Snapshot.PresentationMontageBlendOutTriggerTime);
 }
 
+float GetExpectedCombatPlayRate(const int32 ComboIndex)
+{
+	return ComboIndex == 3 || ComboIndex == 5
+		? ExpectedUnarmedRecoveryPlayRate
+		: ExpectedUnarmedAttackPlayRate;
+}
+
+bool HasConsistentCombatTiming(const FCharacterSnapshot& Snapshot, const float ExpectedPlayRate)
+{
+	return FMath::IsNearlyEqual(
+			Snapshot.ActivePresentationPlayRate,
+			ExpectedPlayRate,
+			0.01f)
+		&& FMath::IsNearlyEqual(
+			Snapshot.PresentationMontagePlayRate,
+			ExpectedPlayRate,
+			0.01f)
+		&& FMath::IsNearlyEqual(
+			Snapshot.CombatNormalizedTime,
+			Snapshot.PresentationNormalizedTime,
+			0.04f);
+}
+
 UEnhancedInputLocalPlayerSubsystem* FindEnhancedInputSubsystem()
 {
 	APlayerController* PlayerController = FindPIEPlayerController();
@@ -333,6 +411,23 @@ bool SetContinuousAction(const TCHAR* ActionPath, const FInputActionValue& Value
 	return true;
 }
 
+URequiemCombatComponent* FindPIECombatComponent()
+{
+	APlayerController* PlayerController = FindPIEPlayerController();
+	ARequiemCharacter* Character = PlayerController
+		? Cast<ARequiemCharacter>(PlayerController->GetPawn())
+		: nullptr;
+	return Character ? Character->GetCombatComponent() : nullptr;
+}
+
+ERequiemUnarmedAttackRequestResult RequestPrimaryAttack()
+{
+	URequiemCombatComponent* CombatComponent = FindPIECombatComponent();
+	return CombatComponent
+		? CombatComponent->RequestUnarmedAttack()
+		: ERequiemUnarmedAttackRequestResult::Rejected;
+}
+
 bool InvokeCombatContract(const ETestCombatCommand Command)
 {
 	APlayerController* PlayerController = FindPIEPlayerController();
@@ -360,9 +455,11 @@ bool InvokeCombatContract(const ETestCombatCommand Command)
 	case ETestCombatCommand::PrimaryAttack:
 	{
 		const int32 SerialBeforeRequest = CombatComponent->GetAttackRequestSerial();
-		CombatComponent->RequestUnarmedAttack();
+		const ERequiemUnarmedAttackRequestResult Result =
+			CombatComponent->RequestUnarmedAttack();
 		return CombatComponent->GetCombatState() == ERequiemCombatState::CombatUnarmed
-			&& CombatComponent->GetAttackRequestSerial() != SerialBeforeRequest;
+			&& CombatComponent->GetAttackRequestSerial() != SerialBeforeRequest
+			&& Result == ERequiemUnarmedAttackRequestResult::InitialAccepted;
 	}
 
 	default:
@@ -438,6 +535,17 @@ UObject* GetObjectPropertyValue(
 	return Container && Property
 		? Property->GetObjectPropertyValue_InContainer(Container)
 		: nullptr;
+}
+
+float GetFloatPropertyValue(
+	const UObject* Container,
+	const UClass* OwnerClass,
+	const TCHAR* PropertyName)
+{
+	const FFloatProperty* Property = FindFProperty<FFloatProperty>(OwnerClass, PropertyName);
+	return Container && Property
+		? Property->GetPropertyValue_InContainer(Container)
+		: TNumericLimits<float>::Lowest();
 }
 
 class FTimedCommand : public IAutomationLatentCommand
@@ -828,63 +936,44 @@ private:
 	bool bSawExit = false;
 };
 
-class FRecordAttackSerialCommand final : public FTimedCommand
+int32 FindExpectedComboIndex(const FName AnimationName)
 {
-public:
-	FRecordAttackSerialCommand(
-		FAutomationTestBase* InTest,
-		TSharedRef<FRunState> InRunState)
-		: FTimedCommand(InTest, MoveTemp(InRunState), 2.0)
+	for (int32 Index = 0; Index < ComboClipCount; ++Index)
 	{
-	}
-
-	virtual bool Update() override
-	{
-		if (ShouldSkip())
+		if (CombatClips[FirstComboClipIndex + Index].AnimationName == AnimationName)
 		{
-			return true;
+			return Index;
 		}
-
-		const double ElapsedSeconds = GetElapsedSeconds();
-		FCharacterSnapshot Snapshot;
-		if (!ReadCharacterSnapshot(Snapshot))
-		{
-			return AbortIfTimedOut(ElapsedSeconds, TEXT("recording the attack serial"));
-		}
-		if (Snapshot.CombatState != ERequiemCombatState::Normal)
-		{
-			return AbortWithError(TEXT("Attack serial baseline was not recorded in Normal."));
-		}
-
-		RunState->AttackSerialBeforeAutoEntry = Snapshot.AttackRequestSerial;
-		return true;
 	}
-};
-
-double GetQueueDelayForComboIndex(const int32 ComboIndex)
-{
-	switch (ComboIndex)
-	{
-	case 0: // Punch_Cross
-		return 0.45;
-	case 1: // Punch_Jab
-		return 0.39;
-	case 2: // Melee_Knee
-		return 0.39;
-	case 4: // Melee_Hook
-		return 0.21;
-	default:
-		return -1.0;
-	}
+	return INDEX_NONE;
 }
 
-class FObserveAutoEntryComboCommand final : public FTimedCommand
+bool IsInsideExpectedInputWindow(const FCharacterSnapshot& Snapshot)
+{
+	return Snapshot.CombatNormalizedTime >= ExpectedUnarmedInputWindowStart - 0.02f
+		&& Snapshot.CombatNormalizedTime <= ExpectedUnarmedInputWindowEnd + 0.02f;
+}
+
+bool HasValidCommittedAttackPlayback(const FCharacterSnapshot& Snapshot)
+{
+	return HasValidCombatOneShotPlayback(Snapshot)
+		&& HasConsistentCombatTiming(
+			Snapshot,
+			GetExpectedCombatPlayRate(Snapshot.ActiveComboAnimationIndex))
+		&& Snapshot.bUnarmedAttackActive
+		&& Snapshot.bUnarmedAttackMovementLocked
+		&& !Snapshot.bHasRootMotionSources
+		&& Snapshot.PendingMovementInput.IsNearlyZero(0.01f)
+		&& Snapshot.Acceleration.IsNearlyZero(1.0f);
+}
+
+class FObserveAutoEntrySpamCommand final : public FTimedCommand
 {
 public:
-	FObserveAutoEntryComboCommand(
+	FObserveAutoEntrySpamCommand(
 		FAutomationTestBase* InTest,
 		TSharedRef<FRunState> InRunState)
-		: FTimedCommand(InTest, MoveTemp(InRunState), 14.0)
+		: FTimedCommand(InTest, MoveTemp(InRunState), 10.0)
 	{
 	}
 
@@ -897,35 +986,17 @@ public:
 		}
 
 		const double ElapsedSeconds = GetElapsedSeconds();
-		if (bWaitingForFinalIdle || bSawMeaningfulMovement)
-		{
-			StopContinuousAction(MoveActionPath);
-		}
-		else if (!SetContinuousAction(
-			MoveActionPath,
-			FInputActionValue(FVector2D(0.35, 0.35))))
-		{
-			return AbortIfTimedOut(ElapsedSeconds, TEXT("injecting movement during the combo"));
-		}
 		FCharacterSnapshot Snapshot;
 		if (!ReadCharacterSnapshot(Snapshot))
 		{
-			return AbortIfTimedOut(ElapsedSeconds, TEXT("reading the unarmed combo"));
-		}
-		if (!bHasStartLocation)
-		{
-			StartLocation = Snapshot.Location;
-			bHasStartLocation = true;
+			return AbortIfTimedOut(ElapsedSeconds, TEXT("reading the single-slot spam combo"));
 		}
 
-		bSawMeaningfulMovement |= Snapshot.GroundSpeed >= 50.0f
-			&& (Snapshot.Location - StartLocation).Size2D() >= 100.0f;
 		if (Snapshot.bActivePresentationUsesRootMotion
-			|| Snapshot.RootMotionMode != ERootMotionMode::IgnoreRootMotion)
+			|| Snapshot.RootMotionMode != ERootMotionMode::IgnoreRootMotion
+			|| Snapshot.bHasRootMotionSources)
 		{
-			return AbortWithError(FString::Printf(
-				TEXT("Combo presentation %s used root motion."),
-				*Snapshot.ActivePresentationAnimationName.ToString()));
+			return AbortWithError(TEXT("Single-slot combo used animation or movement root motion."));
 		}
 		if (Snapshot.bCanBlock)
 		{
@@ -936,7 +1007,8 @@ public:
 		{
 			bSawAutomaticEnter |= Snapshot.CombatAnimationStateName == EnterAnimationStateName
 				&& Snapshot.CombatState == ERequiemCombatState::CombatUnarmed
-				&& HasValidCombatOneShotPlayback(Snapshot);
+				&& HasValidCombatOneShotPlayback(Snapshot)
+				&& HasConsistentCombatTiming(Snapshot, 1.0f);
 		}
 
 		const int32 ComboIndex = FindExpectedComboIndex(Snapshot.ActivePresentationAnimationName);
@@ -946,117 +1018,341 @@ public:
 			{
 				return AbortWithError(TEXT("LMB started a combo clip before PunchKick_Enter was observed."));
 			}
-			if (ComboIndex != ObservedComboClipCount)
+			if (ComboIndex != ObservedComboClipCount || ComboIndex > 1)
 			{
 				return AbortWithError(FString::Printf(
-					TEXT("Combo order mismatch: expected index %d but observed %s at index %d."),
+					TEXT("Input backlog escaped the single slot: expected index %d, observed %s at %d."),
 					ObservedComboClipCount,
 					*Snapshot.ActivePresentationAnimationName.ToString(),
 					ComboIndex));
 			}
 
-			const FClipExpectation& Expectation = CombatClips[FirstComboClipIndex + ComboIndex];
-			if (Snapshot.CombatAnimationStateName != Expectation.PresentationStateName
-				|| Snapshot.ActiveComboAnimationIndex != ComboIndex
-				|| !HasValidCombatOneShotPlayback(Snapshot))
-			{
-				return AbortWithError(FString::Printf(
-					TEXT("Combo clip %s had state=%s index=%d playback=%d."),
-					*Snapshot.ActivePresentationAnimationName.ToString(),
-					*Snapshot.CombatAnimationStateName.ToString(),
-					Snapshot.ActiveComboAnimationIndex,
-					HasValidPresentationPlayback(Snapshot)));
-			}
-
 			LastObservedComboClip = Snapshot.ActivePresentationAnimationName;
-			CurrentComboClipStartSeconds = ElapsedSeconds;
 			++ObservedComboClipCount;
+			if (ComboIndex == 0)
+			{
+				AttackStartLocation = Snapshot.Location;
+				AttackForward = Snapshot.ActorForward;
+				bHasAttackStart = true;
+			}
 		}
 
 		if (ComboIndex != INDEX_NONE)
 		{
-			QueueNextAttackIfNeeded(ComboIndex, ElapsedSeconds);
+			if (!HasValidCommittedAttackPlayback(Snapshot))
+			{
+				return AbortWithError(FString::Printf(
+					TEXT("Committed clip %s did not preserve timing, lock, or CharacterMovement ownership."),
+					*Snapshot.ActivePresentationAnimationName.ToString()));
+			}
+
+			if (!bInputInjectionStopped
+				&& !SetContinuousAction(
+					MoveActionPath,
+					FInputActionValue(FVector2D(-1.0, -1.0))))
+			{
+				return AbortIfTimedOut(ElapsedSeconds, TEXT("injecting movement against the attack lock"));
+			}
+
+			if (ComboIndex == 1 && Snapshot.CombatNormalizedTime >= 0.80f)
+			{
+				StopContinuousAction(MoveActionPath);
+				bInputInjectionStopped = true;
+			}
+
+			if (ComboIndex == 0 && Snapshot.bUnarmedAttackInputWindowOpen && !bBurstSubmitted)
+			{
+				if (!IsInsideExpectedInputWindow(Snapshot))
+				{
+					return AbortWithError(TEXT("The accepted Cross input window was outside 0.30-0.85."));
+				}
+
+				for (int32 RequestIndex = 0; RequestIndex < InputSpamCount; ++RequestIndex)
+				{
+					const ERequiemUnarmedAttackRequestResult Result = RequestPrimaryAttack();
+					if (Result == ERequiemUnarmedAttackRequestResult::FollowUpBuffered)
+					{
+						++AcceptedBurstRequests;
+					}
+					else if (Result == ERequiemUnarmedAttackRequestResult::Rejected)
+					{
+						++RejectedBurstRequests;
+					}
+					else
+					{
+						return AbortWithError(TEXT("Spam request was misclassified as an initial attack."));
+					}
+				}
+				bBurstSubmitted = true;
+
+				URequiemCombatComponent* CombatComponent = FindPIECombatComponent();
+				if (AcceptedBurstRequests != 1
+					|| RejectedBurstRequests != InputSpamCount - 1
+					|| !CombatComponent
+					|| !CombatComponent->HasQueuedUnarmedFollowUp()
+					|| CombatComponent->IsUnarmedAttackInputWindowOpen())
+				{
+					return AbortWithError(TEXT("Spam did not occupy exactly one follow-up slot."));
+				}
+			}
 		}
 
-		if (ObservedComboClipCount == ComboClipCount
-			&& Snapshot.ActiveComboAnimationIndex == INDEX_NONE)
+		if (bHasAttackStart)
+		{
+			const FVector AttackDelta = Snapshot.Location - AttackStartLocation;
+			const float ForwardDisplacement = FVector::DotProduct(AttackDelta, AttackForward);
+			const FVector LateralDelta = AttackDelta - AttackForward * ForwardDisplacement;
+			FVector PlanarVelocity = Snapshot.Velocity;
+			PlanarVelocity.Z = 0.0f;
+			const float ForwardSpeed = FVector::DotProduct(PlanarVelocity, Snapshot.ActorForward);
+			const FVector LateralVelocity =
+				PlanarVelocity - Snapshot.ActorForward * ForwardSpeed;
+			MaximumForwardDisplacement = FMath::Max(
+				MaximumForwardDisplacement,
+				ForwardDisplacement);
+			MaximumForwardSpeed = FMath::Max(MaximumForwardSpeed, ForwardSpeed);
+			bSawForwardLunge |=
+				(ForwardSpeed >= 75.0f && LateralVelocity.Size2D() <= 50.0f)
+				|| (ForwardDisplacement >= 5.0f && LateralDelta.Size2D() <= 60.0f);
+		}
+
+		if (ObservedComboClipCount == 2 && ComboIndex == INDEX_NONE)
 		{
 			StopContinuousAction(MoveActionPath);
-			bWaitingForFinalIdle = true;
+			bInputInjectionStopped = true;
 		}
 
-		const int32 ExpectedSerial = RunState->AttackSerialBeforeAutoEntry + 5;
-		const bool bReachedFinalIdle = bWaitingForFinalIdle
+		const bool bReachedFinalIdle = ObservedComboClipCount == 2
 			&& Snapshot.CombatState == ERequiemCombatState::CombatUnarmed
 			&& Snapshot.ObservedCombatState == ERequiemCombatState::CombatUnarmed
 			&& Snapshot.CombatAnimationStateName == IdleAnimationStateName
 			&& Snapshot.ActiveComboAnimationIndex == INDEX_NONE
 			&& Snapshot.ActivePresentationAnimationName == CombatIdleAnimationName
 			&& HasValidPresentationPlayback(Snapshot)
-			&& Snapshot.AttackRequestSerial == ExpectedSerial
-			&& AdditionalAttackBindingsExecuted == 4
-			&& bSawMeaningfulMovement
+			&& !Snapshot.bUnarmedAttackActive
+			&& !Snapshot.bUnarmedAttackInputWindowOpen
+			&& !Snapshot.bQueuedUnarmedFollowUp
+			&& !Snapshot.bUnarmedAttackMovementLocked
+			&& AcceptedBurstRequests == 1
+			&& RejectedBurstRequests == InputSpamCount - 1
+			&& bSawForwardLunge
 			&& HasConfiguredMovement(Snapshot);
 		if (bSawAutomaticEnter && bReachedFinalIdle)
 		{
-			Test->AddInfo(TEXT("LMB auto-entered combat and five clicks played all seven combo clips in order."));
+			Test->AddInfo(TEXT("Six clicks in one window produced only Cross -> Jab, then stopped without backlog."));
 			return true;
 		}
 
 		return AbortIfTimedOut(
 			ElapsedSeconds,
 			FString::Printf(
-				TEXT("auto-entry combo (combat=%s, presentation=%s, animation=%s, clips=%d/7, extraPulses=%d, serial=%d/%d, moved=%d)"),
+				TEXT("single-slot spam (combat=%s, presentation=%s, animation=%s, clips=%d/2, accepted=%d, rejected=%d, lunged=%d, maxForwardSpeed=%.1f, maxForwardDistance=%.1f)"),
 				*Snapshot.CombatStateName.ToString(),
 				*Snapshot.CombatAnimationStateName.ToString(),
 				*Snapshot.ActivePresentationAnimationName.ToString(),
 				ObservedComboClipCount,
-				AdditionalAttackBindingsExecuted,
-				Snapshot.AttackRequestSerial,
-				ExpectedSerial,
-				bSawMeaningfulMovement));
+				AcceptedBurstRequests,
+				RejectedBurstRequests,
+				bSawForwardLunge,
+				MaximumForwardSpeed,
+				MaximumForwardDisplacement));
 	}
 
 private:
-	int32 FindExpectedComboIndex(const FName AnimationName) const
+	FVector AttackStartLocation = FVector::ZeroVector;
+	FVector AttackForward = FVector::ForwardVector;
+	FName LastObservedComboClip = NAME_None;
+	int32 ObservedComboClipCount = 0;
+	int32 AcceptedBurstRequests = 0;
+	int32 RejectedBurstRequests = 0;
+	float MaximumForwardSpeed = 0.0f;
+	float MaximumForwardDisplacement = 0.0f;
+	bool bHasAttackStart = false;
+	bool bSawAutomaticEnter = false;
+	bool bBurstSubmitted = false;
+	bool bInputInjectionStopped = false;
+	bool bSawForwardLunge = false;
+};
+
+class FObserveWindowedFullComboCommand final : public FTimedCommand
+{
+public:
+	FObserveWindowedFullComboCommand(
+		FAutomationTestBase* InTest,
+		TSharedRef<FRunState> InRunState)
+		: FTimedCommand(InTest, MoveTemp(InRunState), 12.0)
 	{
-		for (int32 Index = 0; Index < ComboClipCount; ++Index)
+	}
+
+	virtual bool Update() override
+	{
+		if (ShouldSkip())
 		{
-			if (CombatClips[FirstComboClipIndex + Index].AnimationName == AnimationName)
+			ReleaseAllTestInput();
+			return true;
+		}
+
+		const double ElapsedSeconds = GetElapsedSeconds();
+		FCharacterSnapshot Snapshot;
+		if (!ReadCharacterSnapshot(Snapshot))
+		{
+			return AbortIfTimedOut(ElapsedSeconds, TEXT("reading the windowed full combo"));
+		}
+
+		if (Snapshot.bActivePresentationUsesRootMotion
+			|| Snapshot.RootMotionMode != ERootMotionMode::IgnoreRootMotion
+			|| Snapshot.bHasRootMotionSources)
+		{
+			return AbortWithError(TEXT("Windowed combo used animation or movement root motion."));
+		}
+		if (Snapshot.bCanBlock)
+		{
+			return AbortWithError(TEXT("Blocking became available during the full unarmed combo."));
+		}
+
+		const int32 ComboIndex = FindExpectedComboIndex(Snapshot.ActivePresentationAnimationName);
+		if (ComboIndex != INDEX_NONE && Snapshot.ActivePresentationAnimationName != LastObservedComboClip)
+		{
+			if (ComboIndex != ObservedComboClipCount)
 			{
-				return Index;
+				return AbortWithError(FString::Printf(
+					TEXT("Windowed combo order mismatch: expected %d, observed %s at %d."),
+					ObservedComboClipCount,
+					*Snapshot.ActivePresentationAnimationName.ToString(),
+					ComboIndex));
+			}
+
+			LastObservedComboClip = Snapshot.ActivePresentationAnimationName;
+			++ObservedComboClipCount;
+			if (ComboIndex == 0)
+			{
+				AttackStartLocation = Snapshot.Location;
+				AttackForward = Snapshot.ActorForward;
+				bHasAttackStart = true;
 			}
 		}
-		return INDEX_NONE;
-	}
 
-	void QueueNextAttackIfNeeded(const int32 ComboIndex, const double ElapsedSeconds)
-	{
-		const double QueueDelay = GetQueueDelayForComboIndex(ComboIndex);
-		if (QueueDelay < 0.0
-			|| QueuedFromComboIndices.Contains(ComboIndex)
-			|| ElapsedSeconds - CurrentComboClipStartSeconds < QueueDelay)
+		if (ComboIndex != INDEX_NONE)
 		{
-			return;
+			if (!HasValidCommittedAttackPlayback(Snapshot))
+			{
+				return AbortWithError(FString::Printf(
+					TEXT("Full combo clip %s did not preserve timing, lock, or CharacterMovement ownership."),
+					*Snapshot.ActivePresentationAnimationName.ToString()));
+			}
+
+			if (!bInputInjectionStopped
+				&& !SetContinuousAction(
+					MoveActionPath,
+					FInputActionValue(FVector2D(-1.0, -1.0))))
+			{
+				return AbortIfTimedOut(ElapsedSeconds, TEXT("injecting movement during the full combo"));
+			}
+
+			if (ComboIndex == 6 && Snapshot.CombatNormalizedTime >= 0.80f)
+			{
+				StopContinuousAction(MoveActionPath);
+				bInputInjectionStopped = true;
+			}
+
+			const bool bShouldQueueHere = ComboIndex == 0
+				|| ComboIndex == 1
+				|| ComboIndex == 3
+				|| ComboIndex == 5;
+			if (bShouldQueueHere
+				&& Snapshot.bUnarmedAttackInputWindowOpen
+				&& !QueuedFromComboIndices.Contains(ComboIndex))
+			{
+				if (!IsInsideExpectedInputWindow(Snapshot))
+				{
+					return AbortWithError(TEXT("A full-combo request was accepted outside 0.30-0.85."));
+				}
+
+				const ERequiemUnarmedAttackRequestResult AcceptedResult = RequestPrimaryAttack();
+				const ERequiemUnarmedAttackRequestResult ExtraResult = RequestPrimaryAttack();
+				if (AcceptedResult != ERequiemUnarmedAttackRequestResult::FollowUpBuffered
+					|| ExtraResult != ERequiemUnarmedAttackRequestResult::Rejected)
+				{
+					return AbortWithError(TEXT("A full-combo window accepted more than one follow-up."));
+				}
+
+				QueuedFromComboIndices.Add(ComboIndex);
+				++RejectedExtraRequests;
+			}
 		}
 
-		if (InvokeCombatContract(ETestCombatCommand::PrimaryAttack))
+		if (bHasAttackStart)
 		{
-			QueuedFromComboIndices.Add(ComboIndex);
-			++AdditionalAttackBindingsExecuted;
+			const FVector AttackDelta = Snapshot.Location - AttackStartLocation;
+			const float ForwardDisplacement = FVector::DotProduct(AttackDelta, AttackForward);
+			const FVector LateralDelta = AttackDelta - AttackForward * ForwardDisplacement;
+			FVector PlanarVelocity = Snapshot.Velocity;
+			PlanarVelocity.Z = 0.0f;
+			const float ForwardSpeed = FVector::DotProduct(PlanarVelocity, Snapshot.ActorForward);
+			const FVector LateralVelocity =
+				PlanarVelocity - Snapshot.ActorForward * ForwardSpeed;
+			MaximumForwardDisplacement = FMath::Max(
+				MaximumForwardDisplacement,
+				ForwardDisplacement);
+			MaximumForwardSpeed = FMath::Max(MaximumForwardSpeed, ForwardSpeed);
+			bSawForwardLunge |=
+				(ForwardSpeed >= 75.0f && LateralVelocity.Size2D() <= 50.0f)
+				|| (ForwardDisplacement >= 20.0f && LateralDelta.Size2D() <= 90.0f);
 		}
+
+		if (ObservedComboClipCount == ComboClipCount && ComboIndex == INDEX_NONE)
+		{
+			StopContinuousAction(MoveActionPath);
+			bInputInjectionStopped = true;
+		}
+
+		const bool bReachedFinalIdle = ObservedComboClipCount == ComboClipCount
+			&& Snapshot.CombatState == ERequiemCombatState::CombatUnarmed
+			&& Snapshot.ObservedCombatState == ERequiemCombatState::CombatUnarmed
+			&& Snapshot.CombatAnimationStateName == IdleAnimationStateName
+			&& Snapshot.ActiveComboAnimationIndex == INDEX_NONE
+			&& Snapshot.ActivePresentationAnimationName == CombatIdleAnimationName
+			&& HasValidPresentationPlayback(Snapshot)
+			&& !Snapshot.bUnarmedAttackActive
+			&& !Snapshot.bUnarmedAttackInputWindowOpen
+			&& !Snapshot.bQueuedUnarmedFollowUp
+			&& !Snapshot.bUnarmedAttackMovementLocked
+			&& QueuedFromComboIndices.Num() == 4
+			&& RejectedExtraRequests == 4
+			&& bSawForwardLunge
+			&& HasConfiguredMovement(Snapshot);
+		if (bReachedFinalIdle)
+		{
+			Test->AddInfo(TEXT("Five windowed inputs played the finite seven-clip combo with movement locked and forward lunges."));
+			return true;
+		}
+
+		return AbortIfTimedOut(
+			ElapsedSeconds,
+			FString::Printf(
+				TEXT("windowed full combo (presentation=%s, animation=%s, clips=%d/7, windows=%d/4, rejected=%d/4, lunged=%d, maxForwardSpeed=%.1f, maxForwardDistance=%.1f)"),
+				*Snapshot.CombatAnimationStateName.ToString(),
+				*Snapshot.ActivePresentationAnimationName.ToString(),
+				ObservedComboClipCount,
+				QueuedFromComboIndices.Num(),
+				RejectedExtraRequests,
+				bSawForwardLunge,
+				MaximumForwardSpeed,
+				MaximumForwardDisplacement));
 	}
 
-	FVector StartLocation = FVector::ZeroVector;
+private:
+	FVector AttackStartLocation = FVector::ZeroVector;
+	FVector AttackForward = FVector::ForwardVector;
 	TSet<int32> QueuedFromComboIndices;
 	FName LastObservedComboClip = NAME_None;
-	double CurrentComboClipStartSeconds = 0.0;
 	int32 ObservedComboClipCount = 0;
-	int32 AdditionalAttackBindingsExecuted = 0;
-	bool bHasStartLocation = false;
-	bool bSawAutomaticEnter = false;
-	bool bSawMeaningfulMovement = false;
-	bool bWaitingForFinalIdle = false;
+	int32 RejectedExtraRequests = 0;
+	float MaximumForwardSpeed = 0.0f;
+	float MaximumForwardDisplacement = 0.0f;
+	bool bHasAttackStart = false;
+	bool bInputInjectionStopped = false;
+	bool bSawForwardLunge = false;
 };
 
 class FMoveAfterCombatCommand final : public FTimedCommand
@@ -1246,6 +1542,15 @@ bool FRequiemUnarmedCombatPIETest::RunTest(const FString& Parameters)
 			TestFalse(
 				TEXT("Nearby enemies prevent future auto-exit"),
 				CombatCDO->CanAutoExit(true));
+			TestTrue(
+				TEXT("Unarmed lunge target remains 350 uu/s"),
+				FMath::IsNearlyEqual(
+					GetFloatPropertyValue(
+						CombatCDO,
+						CombatCDO->GetClass(),
+						TEXT("UnarmedAttackLungeSpeed")),
+					ExpectedUnarmedLungeSpeed,
+					0.01f));
 		}
 	}
 
@@ -1261,6 +1566,69 @@ bool FRequiemUnarmedCombatPIETest::RunTest(const FString& Parameters)
 			TEXT("ABP ignores root motion"),
 			ReadRootMotionMode(AnimInstanceCDO),
 			ERootMotionMode::IgnoreRootMotion);
+		TestTrue(
+			TEXT("Unarmed attack play rate remains 1.25x"),
+			FMath::IsNearlyEqual(
+				GetFloatPropertyValue(
+					AnimInstanceCDO,
+					AnimInstanceClass,
+					TEXT("UnarmedAttackPlayRate")),
+				ExpectedUnarmedAttackPlayRate,
+				0.01f));
+		TestTrue(
+			TEXT("Unarmed recovery play rate remains 1.35x"),
+			FMath::IsNearlyEqual(
+				GetFloatPropertyValue(
+					AnimInstanceCDO,
+					AnimInstanceClass,
+					TEXT("UnarmedRecoveryPlayRate")),
+				ExpectedUnarmedRecoveryPlayRate,
+				0.01f));
+		TestTrue(
+			TEXT("Unarmed input window starts at 0.30"),
+			FMath::IsNearlyEqual(
+				GetFloatPropertyValue(
+					AnimInstanceCDO,
+					AnimInstanceClass,
+					TEXT("UnarmedInputWindowStartNormalized")),
+				ExpectedUnarmedInputWindowStart,
+				0.001f));
+		TestTrue(
+			TEXT("Unarmed input window ends at 0.85"),
+			FMath::IsNearlyEqual(
+				GetFloatPropertyValue(
+					AnimInstanceCDO,
+					AnimInstanceClass,
+					TEXT("UnarmedInputWindowEndNormalized")),
+				ExpectedUnarmedInputWindowEnd,
+				0.001f));
+		TestTrue(
+			TEXT("Queued attack handoff remains 0.72"),
+			FMath::IsNearlyEqual(
+				GetFloatPropertyValue(
+					AnimInstanceCDO,
+					AnimInstanceClass,
+					TEXT("UnarmedQueuedAttackHandoffNormalized")),
+				ExpectedQueuedAttackHandoff,
+				0.001f));
+		TestTrue(
+			TEXT("Automatic recovery handoff remains 0.90"),
+			FMath::IsNearlyEqual(
+				GetFloatPropertyValue(
+					AnimInstanceCDO,
+					AnimInstanceClass,
+					TEXT("UnarmedAutomaticRecoveryHandoffNormalized")),
+				ExpectedAutomaticRecoveryHandoff,
+				0.001f));
+		TestTrue(
+			TEXT("Queued recovery handoff remains 0.55"),
+			FMath::IsNearlyEqual(
+				GetFloatPropertyValue(
+					AnimInstanceCDO,
+					AnimInstanceClass,
+					TEXT("UnarmedQueuedRecoveryHandoffNormalized")),
+				ExpectedQueuedRecoveryHandoff,
+				0.001f));
 	}
 
 	USkeleton* PlayerSkeleton = LoadObject<USkeleton>(nullptr, PlayerSkeletonPath);
@@ -1321,13 +1689,19 @@ bool FRequiemUnarmedCombatPIETest::RunTest(const FString& Parameters)
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitForExitToNormalCommand(
 		this, RunState, TEXT("manual Z exit")));
 
-	ADD_LATENT_AUTOMATION_COMMAND(FRecordAttackSerialCommand(this, RunState));
 	ADD_LATENT_AUTOMATION_COMMAND(FInvokeCombatContractCommand(
 		this,
 		RunState,
 		ETestCombatCommand::PrimaryAttack,
 		TEXT("initial primary attack contract (LMB mapping verified)")));
-	ADD_LATENT_AUTOMATION_COMMAND(FObserveAutoEntryComboCommand(this, RunState));
+	ADD_LATENT_AUTOMATION_COMMAND(FObserveAutoEntrySpamCommand(this, RunState));
+
+	ADD_LATENT_AUTOMATION_COMMAND(FInvokeCombatContractCommand(
+		this,
+		RunState,
+		ETestCombatCommand::PrimaryAttack,
+		TEXT("windowed full-combo initial attack")));
+	ADD_LATENT_AUTOMATION_COMMAND(FObserveWindowedFullComboCommand(this, RunState));
 
 	ADD_LATENT_AUTOMATION_COMMAND(FInvokeCombatContractCommand(
 		this,

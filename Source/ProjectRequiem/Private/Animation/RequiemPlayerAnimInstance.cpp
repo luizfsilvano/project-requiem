@@ -16,7 +16,6 @@ namespace
 // Dynamic montages require a finite loop count. Ten thousand cycles is effectively
 // continuous for these states without risking overflow in montage length calculations.
 constexpr int32 LoopingMontageCount = 10000;
-constexpr int32 MaximumBufferedAttackRequests = 8;
 constexpr float OneShotLeadTime = 0.04f;
 constexpr float CombatOneShotLeadTime = 0.015f;
 constexpr float MinimumLoopPlayRate = 0.35f;
@@ -89,14 +88,14 @@ void URequiemPlayerAnimInstance::NativeInitializeAnimation()
 	StateElapsedSeconds = 0.0f;
 	CombatAnimationElapsedSeconds = 0.0f;
 	ActiveAnimationPlayRate = 1.0f;
-	LastConsumedAttackRequestSerial = CombatComponent
-		? CombatComponent->GetAttackRequestSerial()
-		: 0;
-	PendingAttackRequestCount = 0;
 	bNeedsInitialState = true;
 	bEnterQueued = false;
 	bExitQueued = false;
 	bCombatAssetsInvalid = false;
+	if (CombatComponent)
+	{
+		CombatComponent->EndUnarmedAttackSequence();
+	}
 	ScheduleNextLookAround();
 }
 
@@ -124,7 +123,6 @@ void URequiemPlayerAnimInstance::NativeUpdateAnimation(const float DeltaSeconds)
 		TransitionTo(ERequiemLocomotionState::Idle, true);
 	}
 
-	ObserveCombatRequests();
 	HandleCombatStateChange();
 	UpdateCombatPresentation();
 
@@ -200,38 +198,6 @@ void URequiemPlayerAnimInstance::UpdateObservedMovement()
 	MovementDirection = QuantizeDirection(ObservedDirectionDegrees, bHasDirection);
 }
 
-void URequiemPlayerAnimInstance::ObserveCombatRequests()
-{
-	if (!CombatComponent)
-	{
-		return;
-	}
-
-	const int32 CurrentSerial = CombatComponent->GetAttackRequestSerial();
-	if (CombatComponent->GetCombatState() == ERequiemCombatState::Normal)
-	{
-		// Covers an attack followed by an immediate toggle before this AnimInstance
-		// observes either edge; the stale request must not fire on the next entry.
-		LastConsumedAttackRequestSerial = CurrentSerial;
-		PendingAttackRequestCount = 0;
-		return;
-	}
-
-	if (CurrentSerial == LastConsumedAttackRequestSerial)
-	{
-		return;
-	}
-
-	// A lower value is only possible when the component deliberately wraps MAX_int32 to one.
-	const int32 NewRequestCount = CurrentSerial > LastConsumedAttackRequestSerial
-		? CurrentSerial - LastConsumedAttackRequestSerial
-		: 1;
-	PendingAttackRequestCount = FMath::Min(
-		PendingAttackRequestCount + NewRequestCount,
-		MaximumBufferedAttackRequests);
-	LastConsumedAttackRequestSerial = CurrentSerial;
-}
-
 void URequiemPlayerAnimInstance::HandleCombatStateChange()
 {
 	if (!CombatComponent)
@@ -248,7 +214,7 @@ void URequiemPlayerAnimInstance::HandleCombatStateChange()
 	ObservedCombatState = CurrentState;
 	if (bCombatAssetsInvalid)
 	{
-		PendingAttackRequestCount = 0;
+		CombatComponent->EndUnarmedAttackSequence();
 		bEnterQueued = false;
 		bExitQueued = false;
 		if (CombatAnimationState != ERequiemCombatAnimationState::Inactive)
@@ -284,9 +250,9 @@ void URequiemPlayerAnimInstance::HandleCombatStateChange()
 		return;
 	}
 
-	// Leaving combat cancels buffered follow-ups. A Knee/Hook recovery already in
+	// Leaving combat cancels the single buffered follow-up. A Knee/Hook recovery already in
 	// progress still finishes before PunchKick_Exit so the pose remains continuous.
-	PendingAttackRequestCount = 0;
+	CombatComponent->SetUnarmedAttackInputWindowOpen(false);
 	bEnterQueued = false;
 	if (CombatAnimationState == ERequiemCombatAnimationState::Attack
 		|| CombatAnimationState == ERequiemCombatAnimationState::Recovery
@@ -319,8 +285,7 @@ void URequiemPlayerAnimInstance::UpdateCombatPresentation()
 	}
 
 	// Airborne and crouched locomotion have immediate visual priority. Enter/Exit
-	// are deferred and an in-progress combo is safely abandoned without affecting
-	// CharacterMovement.
+	// are deferred and an in-progress combo releases its movement commitment.
 	if ((bObservedIsFalling || bObservedIsCrouched)
 		&& CombatAnimationState != ERequiemCombatAnimationState::Inactive)
 	{
@@ -335,12 +300,14 @@ void URequiemPlayerAnimInstance::UpdateCombatPresentation()
 		else if (CombatAnimationState == ERequiemCombatAnimationState::Attack
 			|| CombatAnimationState == ERequiemCombatAnimationState::Recovery)
 		{
-			PendingAttackRequestCount = 0;
+			CombatComponent->EndUnarmedAttackSequence();
 		}
 
 		ResumeLocomotionPresentation();
 		return;
 	}
+
+	UpdateCombatInputWindow();
 
 	switch (CombatAnimationState)
 	{
@@ -355,7 +322,7 @@ void URequiemPlayerAnimInstance::UpdateCombatPresentation()
 				}
 				return;
 			}
-			if (!TryConsumeAttackRequest(0) && ShouldUseCombatIdle())
+			if (!TryStartInitialUnarmedAttack() && ShouldUseCombatIdle())
 			{
 				StartCombatIdle();
 			}
@@ -372,7 +339,7 @@ void URequiemPlayerAnimInstance::UpdateCombatPresentation()
 			StartCombatExit();
 			return;
 		}
-		if (TryConsumeAttackRequest(0))
+		if (TryStartInitialUnarmedAttack())
 		{
 			return;
 		}
@@ -386,7 +353,7 @@ void URequiemPlayerAnimInstance::UpdateCombatPresentation()
 	case ERequiemCombatAnimationState::Attack:
 	case ERequiemCombatAnimationState::Recovery:
 	case ERequiemCombatAnimationState::Exit:
-		if (HasCombatOneShotFinished())
+		if (ShouldAdvanceCombatOneShot())
 		{
 			HandleFinishedCombatOneShot();
 		}
@@ -395,6 +362,27 @@ void URequiemPlayerAnimInstance::UpdateCombatPresentation()
 	default:
 		return;
 	}
+}
+
+void URequiemPlayerAnimInstance::UpdateCombatInputWindow()
+{
+	if (!CombatComponent)
+	{
+		return;
+	}
+
+	const float NormalizedTime = GetCombatAnimationNormalizedTime();
+	const bool bInsideWindow =
+		NormalizedTime >= UnarmedInputWindowStartNormalized
+		&& NormalizedTime <= UnarmedInputWindowEndNormalized;
+	const bool bAttackCanQueue =
+		CombatAnimationState == ERequiemCombatAnimationState::Attack
+		&& CanQueueFollowUpFromComboIndex(ActiveComboAnimationIndex);
+	const bool bRecoveryCanQueue =
+		CombatAnimationState == ERequiemCombatAnimationState::Recovery
+		&& (ActiveComboAnimationIndex == 3 || ActiveComboAnimationIndex == 5);
+	CombatComponent->SetUnarmedAttackInputWindowOpen(
+		bInsideWindow && (bAttackCanQueue || bRecoveryCanQueue));
 }
 
 void URequiemPlayerAnimInstance::StartCombatEnter()
@@ -417,6 +405,10 @@ void URequiemPlayerAnimInstance::StartCombatIdle()
 void URequiemPlayerAnimInstance::StartCombatExit()
 {
 	bExitQueued = false;
+	if (CombatComponent)
+	{
+		CombatComponent->EndUnarmedAttackSequence();
+	}
 	PlayCombatAnimation(
 		ERequiemCombatAnimationState::Exit,
 		CombatExitAnimation,
@@ -426,6 +418,10 @@ void URequiemPlayerAnimInstance::StartCombatExit()
 void URequiemPlayerAnimInstance::StartCombatComboClip(const int32 ComboIndex)
 {
 	const bool bRecovery = ComboIndex == 3 || ComboIndex == 5;
+	if (!bRecovery && CombatComponent)
+	{
+		CombatComponent->BeginUnarmedAttackStep(true);
+	}
 	PlayCombatAnimation(
 		bRecovery
 			? ERequiemCombatAnimationState::Recovery
@@ -435,14 +431,28 @@ void URequiemPlayerAnimInstance::StartCombatComboClip(const int32 ComboIndex)
 		ComboIndex);
 }
 
-bool URequiemPlayerAnimInstance::TryConsumeAttackRequest(const int32 ComboIndex)
+bool URequiemPlayerAnimInstance::TryStartInitialUnarmedAttack()
 {
-	if (PendingAttackRequestCount <= 0 || !CanStartUnarmedAttack())
+	if (!CombatComponent
+		|| !CanStartUnarmedAttack()
+		|| !CombatComponent->ConsumeInitialUnarmedAttackRequest())
 	{
 		return false;
 	}
 
-	--PendingAttackRequestCount;
+	StartCombatComboClip(0);
+	return true;
+}
+
+bool URequiemPlayerAnimInstance::TryStartQueuedUnarmedFollowUp(const int32 ComboIndex)
+{
+	if (!CombatComponent
+		|| !CanStartUnarmedAttack()
+		|| !CombatComponent->ConsumeQueuedUnarmedFollowUp())
+	{
+		return false;
+	}
+
 	StartCombatComboClip(ComboIndex);
 	return true;
 }
@@ -451,6 +461,10 @@ void URequiemPlayerAnimInstance::HandleFinishedCombatOneShot()
 {
 	const auto ReturnToCombatPosture = [this]()
 	{
+		if (CombatComponent)
+		{
+			CombatComponent->EndUnarmedAttackSequence();
+		}
 		if (ShouldUseCombatIdle())
 		{
 			StartCombatIdle();
@@ -468,7 +482,7 @@ void URequiemPlayerAnimInstance::HandleFinishedCombatOneShot()
 		{
 			StartCombatExit();
 		}
-		else if (!TryConsumeAttackRequest(0))
+		else if (!TryStartInitialUnarmedAttack())
 		{
 			ReturnToCombatPosture();
 		}
@@ -492,15 +506,11 @@ void URequiemPlayerAnimInstance::HandleFinishedCombatOneShot()
 			StartCombatExit();
 			return;
 		}
-		if (ActiveComboAnimationIndex == 0 && TryConsumeAttackRequest(1))
+		if (ActiveComboAnimationIndex == 0 && TryStartQueuedUnarmedFollowUp(1))
 		{
 			return;
 		}
-		if (ActiveComboAnimationIndex == 1 && TryConsumeAttackRequest(2))
-		{
-			return;
-		}
-		if (ActiveComboAnimationIndex == 6 && TryConsumeAttackRequest(0))
+		if (ActiveComboAnimationIndex == 1 && TryStartQueuedUnarmedFollowUp(2))
 		{
 			return;
 		}
@@ -514,11 +524,11 @@ void URequiemPlayerAnimInstance::HandleFinishedCombatOneShot()
 			StartCombatExit();
 			return;
 		}
-		if (ActiveComboAnimationIndex == 3 && TryConsumeAttackRequest(4))
+		if (ActiveComboAnimationIndex == 3 && TryStartQueuedUnarmedFollowUp(4))
 		{
 			return;
 		}
-		if (ActiveComboAnimationIndex == 5 && TryConsumeAttackRequest(6))
+		if (ActiveComboAnimationIndex == 5 && TryStartQueuedUnarmedFollowUp(6))
 		{
 			return;
 		}
@@ -536,6 +546,13 @@ void URequiemPlayerAnimInstance::HandleFinishedCombatOneShot()
 
 void URequiemPlayerAnimInstance::ResumeLocomotionPresentation()
 {
+	if (CombatComponent
+		&& (CombatAnimationState == ERequiemCombatAnimationState::Attack
+			|| CombatAnimationState == ERequiemCombatAnimationState::Recovery))
+	{
+		CombatComponent->EndUnarmedAttackSequence();
+	}
+
 	CombatAnimationState = ERequiemCombatAnimationState::Inactive;
 	ActiveComboAnimationIndex = INDEX_NONE;
 	CombatAnimationElapsedSeconds = 0.0f;
@@ -554,7 +571,7 @@ void URequiemPlayerAnimInstance::PlayCombatAnimation(
 	CombatAnimationState = NewState;
 	ActiveComboAnimationIndex = ComboIndex;
 	CombatAnimationElapsedSeconds = 0.0f;
-	ActiveAnimationPlayRate = 1.0f;
+	ActiveAnimationPlayRate = GetCombatPlayRate(NewState);
 
 	if (!NewAnimation)
 	{
@@ -568,6 +585,10 @@ void URequiemPlayerAnimInstance::PlayCombatAnimation(
 		bCombatAssetsInvalid = true;
 		ActiveAnimation = nullptr;
 		ActiveLocomotionMontage = nullptr;
+		if (CombatComponent)
+		{
+			CombatComponent->EndUnarmedAttackSequence();
+		}
 		TransitionTo(LocomotionState, true);
 		return;
 	}
@@ -602,7 +623,7 @@ void URequiemPlayerAnimInstance::PlayCombatAnimation(
 		LocomotionSlotName,
 		BlendTime,
 		BlendTime,
-		1.0f,
+		ActiveAnimationPlayRate,
 		bLooping ? LoopingMontageCount : 1,
 		// The combat state machine owns one-shot handoffs. Prevent the montage from
 		// fading back to the locomotion source pose before the next clip starts.
@@ -644,6 +665,36 @@ bool URequiemPlayerAnimInstance::CanStartUnarmedAttack() const
 		&& CanPlayCombatStanceTransition();
 }
 
+bool URequiemPlayerAnimInstance::ShouldAdvanceCombatOneShot() const
+{
+	const float NormalizedTime = GetCombatAnimationNormalizedTime();
+	if (CombatAnimationState == ERequiemCombatAnimationState::Attack)
+	{
+		if ((ActiveComboAnimationIndex == 2 || ActiveComboAnimationIndex == 4)
+			&& NormalizedTime >= UnarmedAutomaticRecoveryHandoffNormalized)
+		{
+			return true;
+		}
+
+		if (CombatComponent
+			&& CombatComponent->HasQueuedUnarmedFollowUp()
+			&& (ActiveComboAnimationIndex == 0 || ActiveComboAnimationIndex == 1)
+			&& NormalizedTime >= UnarmedQueuedAttackHandoffNormalized)
+		{
+			return true;
+		}
+	}
+	else if (CombatAnimationState == ERequiemCombatAnimationState::Recovery
+		&& CombatComponent
+		&& CombatComponent->HasQueuedUnarmedFollowUp()
+		&& NormalizedTime >= UnarmedQueuedRecoveryHandoffNormalized)
+	{
+		return true;
+	}
+
+	return HasCombatOneShotFinished();
+}
+
 bool URequiemPlayerAnimInstance::HasCombatOneShotFinished() const
 {
 	if (!ActiveAnimation)
@@ -652,7 +703,64 @@ bool URequiemPlayerAnimInstance::HasCombatOneShotFinished() const
 	}
 
 	const float Duration = ActiveAnimation->GetPlayLength();
-	return CombatAnimationElapsedSeconds >= FMath::Max(0.0f, Duration - CombatOneShotLeadTime);
+	if (Duration <= UE_KINDA_SMALL_NUMBER)
+	{
+		return true;
+	}
+
+	const float FinishThreshold = FMath::Max(
+		0.0f,
+		1.0f - CombatOneShotLeadTime / Duration);
+	return GetCombatAnimationNormalizedTime() >= FinishThreshold;
+}
+
+float URequiemPlayerAnimInstance::GetCombatAnimationNormalizedTime() const
+{
+	if (!ActiveAnimation)
+	{
+		return 0.0f;
+	}
+
+	const float Duration = ActiveAnimation->GetPlayLength();
+	if (Duration <= UE_KINDA_SMALL_NUMBER)
+	{
+		return 1.0f;
+	}
+
+	if (ActiveLocomotionMontage && Montage_IsPlaying(ActiveLocomotionMontage))
+	{
+		return FMath::Clamp(
+			Montage_GetPosition(ActiveLocomotionMontage) / Duration,
+			0.0f,
+			1.0f);
+	}
+
+	return FMath::Clamp(
+		CombatAnimationElapsedSeconds * ActiveAnimationPlayRate / Duration,
+		0.0f,
+		1.0f);
+}
+
+bool URequiemPlayerAnimInstance::CanQueueFollowUpFromComboIndex(const int32 ComboIndex) const
+{
+	return ComboIndex == 0
+		|| ComboIndex == 1
+		|| ComboIndex == 2
+		|| ComboIndex == 4;
+}
+
+float URequiemPlayerAnimInstance::GetCombatPlayRate(
+	const ERequiemCombatAnimationState State) const
+{
+	if (State == ERequiemCombatAnimationState::Attack)
+	{
+		return FMath::Max(UnarmedAttackPlayRate, 0.1f);
+	}
+	if (State == ERequiemCombatAnimationState::Recovery)
+	{
+		return FMath::Max(UnarmedRecoveryPlayRate, 0.1f);
+	}
+	return 1.0f;
 }
 
 UAnimSequenceBase* URequiemPlayerAnimInstance::GetComboAnimation(const int32 ComboIndex) const

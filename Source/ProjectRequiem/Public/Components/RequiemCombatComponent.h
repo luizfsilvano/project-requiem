@@ -23,6 +23,14 @@ enum class ERequiemCombatEntryReason : uint8
 	ReceivedDamage
 };
 
+UENUM(BlueprintType)
+enum class ERequiemUnarmedAttackRequestResult : uint8
+{
+	InitialAccepted,
+	FollowUpBuffered,
+	Rejected
+};
+
 /**
  * Minimal gameplay contract for the player's current combat mode.
  * Animation observes this component; it does not own movement or combat state.
@@ -45,7 +53,7 @@ public:
 	void ToggleUnarmedCombat();
 
 	UFUNCTION(BlueprintCallable, Category = "Combat")
-	void RequestUnarmedAttack();
+	ERequiemUnarmedAttackRequestResult RequestUnarmedAttack();
 
 	/** Shared entry point for manual input and future lock-on or damage systems. */
 	UFUNCTION(BlueprintCallable, Category = "Combat")
@@ -54,9 +62,41 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Combat")
 	void ExitCombat();
 
-	/** Monotonic request revision observed by presentation code so clicks are not lost. */
+	/** Monotonic diagnostic revision for every primary-attack input attempt. */
 	UFUNCTION(BlueprintPure, Category = "Combat")
 	int32 GetAttackRequestSerial() const { return AttackRequestSerial; }
+
+	/** Consumes the single initial attack request used to start a combo. */
+	bool ConsumeInitialUnarmedAttackRequest();
+
+	/** Starts one committed attack step and optionally applies its short forward lunge. */
+	void BeginUnarmedAttackStep(bool bApplyForwardLunge);
+
+	/** Presentation publishes its normalized input window through this gameplay contract. */
+	void SetUnarmedAttackInputWindowOpen(bool bOpen);
+
+	/** Consumes at most one accepted follow-up for the current combo step. */
+	bool ConsumeQueuedUnarmedFollowUp();
+
+	/** Releases movement and clears the current attack-step runtime state. */
+	void EndUnarmedAttackSequence();
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Unarmed")
+	bool IsUnarmedAttackActive() const { return bUnarmedAttackActive; }
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Unarmed")
+	bool IsUnarmedAttackInputWindowOpen() const
+	{
+		return bUnarmedAttackActive
+			&& bUnarmedAttackInputWindowOpen
+			&& !bQueuedUnarmedFollowUp;
+	}
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Unarmed")
+	bool HasQueuedUnarmedFollowUp() const { return bQueuedUnarmedFollowUp; }
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Unarmed")
+	bool IsUnarmedAttackMovementLocked() const { return bUnarmedAttackMovementLocked; }
 
 	/** Unarmed combat has no blocking capability in this stage. */
 	UFUNCTION(BlueprintPure, Category = "Combat")
@@ -79,9 +119,26 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Tuning", meta = (ClampMin = "0.0"))
 	float AutoExitDelay = 30.0f;
 
+	/** Target planar speed for the collision-aware CharacterMovement attack commitment. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed|Tuning", meta = (ClampMin = "0.0"))
+	float UnarmedAttackLungeSpeed = 350.0f;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Combat|Unarmed|Runtime")
+	bool bUnarmedAttackActive = false;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Combat|Unarmed|Runtime")
+	bool bUnarmedAttackInputWindowOpen = false;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Combat|Unarmed|Runtime")
+	bool bQueuedUnarmedFollowUp = false;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Combat|Unarmed|Runtime")
+	bool bUnarmedAttackMovementLocked = false;
+
 private:
 	void MarkCombatActivity();
 
 	int32 AttackRequestSerial = 0;
 	float LastCombatActivityTimeSeconds = -1.0f;
+	bool bInitialUnarmedAttackRequested = false;
 };

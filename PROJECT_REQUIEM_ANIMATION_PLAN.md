@@ -105,7 +105,9 @@ Punch_Cross
 → Melee_Uppercut
 ```
 
-O combo recebe cinco comandos de ataque. `Melee_Knee_Rec` e `Melee_Hook_Rec` são recuperações automáticas dos golpes anteriores, portanto a reprodução mantém a ordem completa dos sete clipes sem exigir cliques exclusivos para recuperação.
+O combo recebe no máximo cinco comandos de ataque. `Melee_Knee_Rec` e `Melee_Hook_Rec` são recuperações automáticas dos golpes anteriores, portanto a reprodução mantém a ordem completa dos sete clipes sem exigir cliques exclusivos para recuperação. Cada golpe ou recuperação que aceita continuação abre uma janela normalizada entre `0.30` e `0.85` e possui somente um slot de follow-up. O primeiro clique válido ocupa esse slot; cliques adicionais na mesma janela são descartados. Assim, spam contínuo sustenta o combo somente enquanto novos cliques alcançam novas janelas, sem criar backlog depois que o jogador para.
+
+Para tornar a cadeia mais dinâmica sem editar os assets, golpes usam play rate inicial de `1.25x` e recuperações `1.35x`, ambos ajustáveis. Quando existe um follow-up confirmado, `Punch_Cross` e `Punch_Jab` podem fazer handoff a partir de `0.72` do clipe; as recuperações podem entregar o próximo golpe a partir de `0.55`. `Melee_Knee` e `Melee_Hook` entram nas respectivas recuperações a partir de `0.90`. Sem follow-up, a sequência termina na postura de combate, e `Melee_Uppercut` nunca reinicia automaticamente o combo.
 
 Saída manual:
 
@@ -115,7 +117,7 @@ Combat → PunchKick_Exit → Normal
 
 Sem armas, o jogador não pode bloquear. O contrato expõe a elegibilidade futura para encerrar o combate após 30 segundos sem atacar e longe de inimigos, mas nenhuma saída automática é executada nesta etapa porque ainda não existem inimigos.
 
-Todas as animações deste passe usam as fontes UAL1/UAL2 sem root motion. O modo de combate e o combo não alteram velocidade, aceleração ou desaceleração; o deslocamento continua pertencendo ao `CharacterMovement`. Em `CombatUnarmed`, o idle de combate aparece parado e a locomoção direcional existente permanece ativa durante movimento.
+Todas as animações deste passe usam as fontes UAL1/UAL2 sem root motion. O modo de combate e o combo não alteram os parâmetros globais de velocidade, aceleração ou desaceleração; o deslocamento continua pertencendo ao `CharacterMovement`. Em `CombatUnarmed`, o idle de combate aparece parado e a locomoção direcional existente permanece ativa enquanto nenhum golpe está comprometido. Durante `Attack` e `Recovery`, `IA_Move` é ignorado. Cada golpe real substitui brevemente a velocidade planar por um avanço frontal de referência de `350 uu/s`, resolvido pelo próprio `CharacterMovement` com colisão e frenagem; recuperações não criam um novo avanço.
 
 ## Reações de dano e morte — futuro
 

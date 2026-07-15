@@ -118,7 +118,8 @@ void ARequiemCharacter::OnEndCrouch(const float HalfHeightAdjust, const float Sc
 void ARequiemCharacter::Move(const FInputActionValue& Value)
 {
 	const FVector2D MovementVector = Value.Get<FVector2D>();
-	if (!Controller)
+	if (!Controller
+		|| (CombatComponent && CombatComponent->IsUnarmedAttackMovementLocked()))
 	{
 		return;
 	}

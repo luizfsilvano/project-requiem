@@ -98,6 +98,12 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Combat")
 	int32 GetActiveComboAnimationIndex() const { return ActiveComboAnimationIndex; }
 
+	UFUNCTION(BlueprintPure, Category = "Combat")
+	float GetActivePresentationPlayRate() const { return ActiveAnimationPlayRate; }
+
+	UFUNCTION(BlueprintPure, Category = "Combat")
+	float GetCombatAnimationNormalizedTime() const;
+
 protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Locomotion|Idle")
 	TObjectPtr<UAnimSequenceBase> IdleAnimation;
@@ -201,6 +207,27 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed|Combo")
 	TObjectPtr<UAnimSequenceBase> MeleeUppercutAnimation;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed|Tuning", meta = (ClampMin = "0.1"))
+	float UnarmedAttackPlayRate = 1.25f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed|Tuning", meta = (ClampMin = "0.1"))
+	float UnarmedRecoveryPlayRate = 1.35f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed|Tuning", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float UnarmedInputWindowStartNormalized = 0.30f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed|Tuning", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float UnarmedInputWindowEndNormalized = 0.85f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed|Tuning", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float UnarmedQueuedAttackHandoffNormalized = 0.72f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed|Tuning", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float UnarmedAutomaticRecoveryHandoffNormalized = 0.90f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed|Tuning", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float UnarmedQueuedRecoveryHandoffNormalized = 0.55f;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Locomotion|Tuning", meta = (ClampMin = "0.0"))
 	float JogAuthoredSpeed = 500.0f;
 
@@ -246,14 +273,15 @@ protected:
 private:
 	void CacheCharacterReferences();
 	void UpdateObservedMovement();
-	void ObserveCombatRequests();
 	void HandleCombatStateChange();
 	void UpdateCombatPresentation();
+	void UpdateCombatInputWindow();
 	void StartCombatEnter();
 	void StartCombatIdle();
 	void StartCombatExit();
 	void StartCombatComboClip(int32 ComboIndex);
-	bool TryConsumeAttackRequest(int32 ComboIndex);
+	bool TryStartInitialUnarmedAttack();
+	bool TryStartQueuedUnarmedFollowUp(int32 ComboIndex);
 	void HandleFinishedCombatOneShot();
 	void ResumeLocomotionPresentation();
 	void PlayCombatAnimation(
@@ -264,7 +292,10 @@ private:
 	bool ShouldUseCombatIdle() const;
 	bool CanPlayCombatStanceTransition() const;
 	bool CanStartUnarmedAttack() const;
+	bool ShouldAdvanceCombatOneShot() const;
 	bool HasCombatOneShotFinished() const;
+	bool CanQueueFollowUpFromComboIndex(int32 ComboIndex) const;
+	float GetCombatPlayRate(ERequiemCombatAnimationState State) const;
 	UAnimSequenceBase* GetComboAnimation(int32 ComboIndex) const;
 	void UpdateLocomotionState(float DeltaSeconds);
 	void UpdateGroundedState(float DeltaSeconds);
@@ -306,8 +337,6 @@ private:
 	float CombatAnimationElapsedSeconds = 0.0f;
 	float ActiveAnimationPlayRate = 1.0f;
 	float LookAroundCountdown = 0.0f;
-	int32 LastConsumedAttackRequestSerial = 0;
-	int32 PendingAttackRequestCount = 0;
 	bool bNeedsInitialState = true;
 	bool bEnterQueued = false;
 	bool bExitQueued = false;
