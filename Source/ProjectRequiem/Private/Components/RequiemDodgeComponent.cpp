@@ -60,7 +60,8 @@ bool URequiemDodgeComponent::RequestDodge(const FVector& Direction)
 		|| MovementComponent->IsFalling()
 		|| !MovementComponent->IsMovingOnGround()
 		|| (CombatComponent
-			&& (CombatComponent->IsUnarmedAttackMovementLocked()
+			&& (CombatComponent->IsUnarmedAttackActive()
+				|| CombatComponent->IsUnarmedAttackMovementLocked()
 				|| CombatComponent->HasPendingInitialUnarmedAttackRequest())))
 	{
 		return false;
@@ -178,15 +179,9 @@ void URequiemDodgeComponent::ApplyMovementRecoveryIfNeeded()
 	}
 
 	bMovementRecoveryApplied = true;
-	if (ACharacter* Character = Cast<ACharacter>(GetOwner()))
-	{
-		if (UCharacterMovementComponent* MovementComponent = Character->GetCharacterMovement())
-		{
-			// Discard the last root-motion velocity so CharacterMovement can react
-			// immediately to held input during the authored final recovery.
-			MovementComponent->StopMovementImmediately();
-		}
-	}
+	// Preserve the velocity produced by the final moving root key. Once animation
+	// root motion is ignored, CharacterMovement blends from it using its normal
+	// acceleration and braking instead of introducing a forced stop.
 }
 
 void URequiemDodgeComponent::RestoreCharacterRotationPolicy()

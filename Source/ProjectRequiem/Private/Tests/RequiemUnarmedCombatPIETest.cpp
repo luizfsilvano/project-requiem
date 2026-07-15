@@ -154,6 +154,8 @@ constexpr float ExpectedUnarmedInputWindowEnd = 0.85f;
 constexpr float ExpectedQueuedAttackHandoff = 0.72f;
 constexpr float ExpectedAutomaticRecoveryHandoff = 0.90f;
 constexpr float ExpectedQueuedRecoveryHandoff = 0.55f;
+constexpr float ExpectedUnarmedMovementUnlock = 0.60f;
+constexpr float MovementUnlockSamplingTolerance = 0.02f;
 constexpr float ExpectedUnarmedLungeSpeed = 350.0f;
 constexpr int32 InputSpamCount = 6;
 
@@ -373,6 +375,35 @@ float GetExpectedCombatPlayRate(const int32 ComboIndex)
 	return ComboIndex == 3 || ComboIndex == 5
 		? ExpectedUnarmedRecoveryPlayRate
 		: ExpectedUnarmedAttackPlayRate;
+}
+
+bool IsRecoveryComboIndex(const int32 ComboIndex)
+{
+	return ComboIndex == 3 || ComboIndex == 5;
+}
+
+bool IsAttackComboIndex(const int32 ComboIndex)
+{
+	return ComboIndex >= 0
+		&& ComboIndex < ComboClipCount
+		&& !IsRecoveryComboIndex(ComboIndex);
+}
+
+int32 GetPreviousAttackComboIndex(const int32 ComboIndex)
+{
+	switch (ComboIndex)
+	{
+	case 1:
+		return 0;
+	case 2:
+		return 1;
+	case 4:
+		return 2;
+	case 6:
+		return 4;
+	default:
+		return INDEX_NONE;
+	}
 }
 
 bool HasConsistentCombatTiming(const FCharacterSnapshot& Snapshot, const float ExpectedPlayRate)
@@ -1170,15 +1201,56 @@ bool IsInsideExpectedInputWindow(const FCharacterSnapshot& Snapshot)
 
 bool HasValidCommittedAttackPlayback(const FCharacterSnapshot& Snapshot)
 {
-	return HasValidCombatOneShotPlayback(Snapshot)
+	const bool bHasValidBasePlayback = HasValidCombatOneShotPlayback(Snapshot)
 		&& HasConsistentCombatTiming(
 			Snapshot,
 			GetExpectedCombatPlayRate(Snapshot.ActiveComboAnimationIndex))
 		&& Snapshot.bUnarmedAttackActive
-		&& Snapshot.bUnarmedAttackMovementLocked
-		&& !Snapshot.bHasRootMotionSources
-		&& Snapshot.PendingMovementInput.IsNearlyZero(0.01f)
-		&& Snapshot.Acceleration.IsNearlyZero(1.0f);
+		&& !Snapshot.bHasRootMotionSources;
+	if (!bHasValidBasePlayback)
+	{
+		return false;
+	}
+
+	if (IsRecoveryComboIndex(Snapshot.ActiveComboAnimationIndex))
+	{
+		// Recovery remains part of the active combo/input contract, but must not
+		// recommit CharacterMovement after the strike has released it.
+		return Snapshot.CombatAnimationStateName == RecoveryAnimationStateName
+			&& !Snapshot.bUnarmedAttackMovementLocked;
+	}
+	if (!IsAttackComboIndex(Snapshot.ActiveComboAnimationIndex)
+		|| Snapshot.CombatAnimationStateName != AttackAnimationStateName)
+	{
+		return false;
+	}
+
+	const float LockedSamplingEnd =
+		ExpectedUnarmedMovementUnlock - MovementUnlockSamplingTolerance;
+	const float UnlockedSamplingStart =
+		ExpectedUnarmedMovementUnlock + MovementUnlockSamplingTolerance;
+	if (Snapshot.CombatNormalizedTime <= LockedSamplingEnd)
+	{
+		return Snapshot.bUnarmedAttackMovementLocked
+			&& Snapshot.PendingMovementInput.IsNearlyZero(0.01f);
+	}
+	if (Snapshot.CombatNormalizedTime >= UnlockedSamplingStart)
+	{
+		return !Snapshot.bUnarmedAttackMovementLocked;
+	}
+
+	// Allow one small sampling band around 0.60 because input, movement and the
+	// animation instance are updated in different engine tick groups.
+	return true;
+}
+
+bool HasResumedMovementInputAfterUnlock(const FCharacterSnapshot& Snapshot)
+{
+	return IsAttackComboIndex(Snapshot.ActiveComboAnimationIndex)
+		&& Snapshot.CombatNormalizedTime
+			>= ExpectedUnarmedMovementUnlock + MovementUnlockSamplingTolerance
+		&& !Snapshot.bUnarmedAttackMovementLocked
+		&& !Snapshot.Acceleration.IsNearlyZero(1.0f);
 }
 
 class FObserveAutoEntrySpamCommand final : public FTimedCommand
@@ -1284,8 +1356,42 @@ public:
 			if (!HasValidCommittedAttackPlayback(Snapshot))
 			{
 				return AbortWithError(FString::Printf(
-					TEXT("Committed clip %s did not preserve timing, lock, or CharacterMovement ownership."),
+					TEXT("Committed clip %s did not preserve timing, its 0.60 movement release, or CharacterMovement ownership."),
 					*Snapshot.ActivePresentationAnimationName.ToString()));
+			}
+
+			if (IsAttackComboIndex(ComboIndex))
+			{
+				if (Snapshot.CombatNormalizedTime
+					<= ExpectedUnarmedMovementUnlock - MovementUnlockSamplingTolerance
+					&& Snapshot.bUnarmedAttackMovementLocked
+					&& Snapshot.PendingMovementInput.IsNearlyZero(0.01f)
+					&& Snapshot.Acceleration.IsNearlyZero(1.0f))
+				{
+					LockedAttackIndices.Add(ComboIndex);
+				}
+				if (Snapshot.CombatNormalizedTime
+					>= ExpectedUnarmedMovementUnlock + MovementUnlockSamplingTolerance
+					&& !Snapshot.bUnarmedAttackMovementLocked)
+				{
+					UnlockedAttackIndices.Add(ComboIndex);
+					if (ComboIndex == 0
+						&& bBurstSubmitted
+						&& Snapshot.bQueuedUnarmedFollowUp)
+					{
+						bSawQueuePreservedThroughUnlock = true;
+					}
+				}
+				if (HasResumedMovementInputAfterUnlock(Snapshot))
+				{
+					MovementResumedAttackIndices.Add(ComboIndex);
+				}
+				if (ComboIndex == 1
+					&& UnlockedAttackIndices.Contains(0)
+					&& Snapshot.bUnarmedAttackMovementLocked)
+				{
+					bSawFollowUpRelock = true;
+				}
 			}
 
 			if (!bInputInjectionStopped
@@ -1382,16 +1488,21 @@ public:
 		if (bSawNaturalAutoEntryBraking
 			&& bSawAutomaticEnter
 			&& bSawPendingEntryMovementLock
+			&& LockedAttackIndices.Num() == 2
+			&& UnlockedAttackIndices.Num() == 2
+			&& MovementResumedAttackIndices.Num() == 2
+			&& bSawQueuePreservedThroughUnlock
+			&& bSawFollowUpRelock
 			&& bReachedFinalIdle)
 		{
-			Test->AddInfo(TEXT("Six clicks in one window produced only Cross -> Jab, then stopped without backlog."));
+			Test->AddInfo(TEXT("Cross and Jab released movement at 0.60, the queued Jab relocked, and six clicks still occupied one slot."));
 			return true;
 		}
 
 		return AbortIfTimedOut(
 			ElapsedSeconds,
 			FString::Printf(
-				TEXT("single-slot spam (combat=%s, presentation=%s, animation=%s, clips=%d/2, accepted=%d, rejected=%d, lunged=%d, maxForwardSpeed=%.1f, maxForwardDistance=%.1f, brake=%.1f..%.1f, enter=%d, pendingLock=%d)"),
+				TEXT("single-slot spam (combat=%s, presentation=%s, animation=%s, clips=%d/2, accepted=%d, rejected=%d, lunged=%d, locked=%d/2, unlocked=%d/2, resumed=%d/2, relock=%d, queuePreserved=%d, brake=%.1f..%.1f, enter=%d, pendingLock=%d)"),
 				*Snapshot.CombatStateName.ToString(),
 				*Snapshot.CombatAnimationStateName.ToString(),
 				*Snapshot.ActivePresentationAnimationName.ToString(),
@@ -1399,8 +1510,11 @@ public:
 				AcceptedBurstRequests,
 				RejectedBurstRequests,
 				bSawForwardLunge,
-				MaximumForwardSpeed,
-				MaximumForwardDisplacement,
+				LockedAttackIndices.Num(),
+				UnlockedAttackIndices.Num(),
+				MovementResumedAttackIndices.Num(),
+				bSawFollowUpRelock,
+				bSawQueuePreservedThroughUnlock,
 				MinimumAutoEntryBrakingSpeed,
 				MaximumAutoEntryBrakingSpeed,
 				bSawAutomaticEnter,
@@ -1410,6 +1524,9 @@ public:
 private:
 	FVector AttackStartLocation = FVector::ZeroVector;
 	FVector AttackForward = FVector::ForwardVector;
+	TSet<int32> LockedAttackIndices;
+	TSet<int32> UnlockedAttackIndices;
+	TSet<int32> MovementResumedAttackIndices;
 	FName LastObservedComboClip = NAME_None;
 	int32 ObservedComboClipCount = 0;
 	int32 AcceptedBurstRequests = 0;
@@ -1425,6 +1542,8 @@ private:
 	bool bBurstSubmitted = false;
 	bool bInputInjectionStopped = false;
 	bool bSawForwardLunge = false;
+	bool bSawQueuePreservedThroughUnlock = false;
+	bool bSawFollowUpRelock = false;
 };
 
 class FObserveWindowedFullComboCommand final : public FTimedCommand
@@ -1490,8 +1609,52 @@ public:
 			if (!HasValidCommittedAttackPlayback(Snapshot))
 			{
 				return AbortWithError(FString::Printf(
-					TEXT("Full combo clip %s did not preserve timing, lock, or CharacterMovement ownership."),
+					TEXT("Full combo clip %s did not preserve timing, its 0.60 movement release, or CharacterMovement ownership."),
 					*Snapshot.ActivePresentationAnimationName.ToString()));
+			}
+
+			if (IsAttackComboIndex(ComboIndex))
+			{
+				if (Snapshot.CombatNormalizedTime
+					<= ExpectedUnarmedMovementUnlock - MovementUnlockSamplingTolerance
+					&& Snapshot.bUnarmedAttackMovementLocked
+					&& Snapshot.PendingMovementInput.IsNearlyZero(0.01f)
+					&& Snapshot.Acceleration.IsNearlyZero(1.0f))
+				{
+					LockedAttackIndices.Add(ComboIndex);
+					const int32 PreviousAttackIndex = GetPreviousAttackComboIndex(ComboIndex);
+					if (PreviousAttackIndex != INDEX_NONE
+						&& UnlockedAttackIndices.Contains(PreviousAttackIndex))
+					{
+						RelockedAttackIndices.Add(ComboIndex);
+					}
+				}
+				if (Snapshot.CombatNormalizedTime
+					>= ExpectedUnarmedMovementUnlock + MovementUnlockSamplingTolerance
+					&& !Snapshot.bUnarmedAttackMovementLocked)
+				{
+					UnlockedAttackIndices.Add(ComboIndex);
+					if ((ComboIndex == 0 || ComboIndex == 1)
+						&& Snapshot.bQueuedUnarmedFollowUp
+						&& !Snapshot.bUnarmedAttackInputWindowOpen)
+					{
+						QueuedAttackIndicesPreservedAtUnlock.Add(ComboIndex);
+					}
+					if ((ComboIndex == 2 || ComboIndex == 4)
+						&& Snapshot.bUnarmedAttackInputWindowOpen
+						&& !Snapshot.bQueuedUnarmedFollowUp)
+					{
+						OpenWindowAttackIndicesAtUnlock.Add(ComboIndex);
+					}
+				}
+				if (HasResumedMovementInputAfterUnlock(Snapshot))
+				{
+					MovementResumedAttackIndices.Add(ComboIndex);
+				}
+			}
+			else if (!Snapshot.bUnarmedAttackMovementLocked)
+			{
+				UnlockedRecoveryIndices.Add(ComboIndex);
 			}
 
 			if (!bInputInjectionStopped
@@ -1572,32 +1735,51 @@ public:
 			&& !Snapshot.bUnarmedAttackMovementLocked
 			&& QueuedFromComboIndices.Num() == 4
 			&& RejectedExtraRequests == 4
+			&& LockedAttackIndices.Num() == 5
+			&& UnlockedAttackIndices.Num() == 5
+			&& MovementResumedAttackIndices.Num() == 5
+			&& RelockedAttackIndices.Num() == 4
+			&& UnlockedRecoveryIndices.Num() == 2
+			&& QueuedAttackIndicesPreservedAtUnlock.Num() == 2
+			&& OpenWindowAttackIndicesAtUnlock.Num() == 2
 			&& bSawForwardLunge
 			&& HasConfiguredMovement(Snapshot);
 		if (bReachedFinalIdle)
 		{
-			Test->AddInfo(TEXT("Five windowed inputs played the finite seven-clip combo with movement locked and forward lunges."));
+			Test->AddInfo(TEXT("The finite combo released movement at 0.60, kept recoveries free, and relocked only for each next strike."));
 			return true;
 		}
 
 		return AbortIfTimedOut(
 			ElapsedSeconds,
 			FString::Printf(
-				TEXT("windowed full combo (presentation=%s, animation=%s, clips=%d/7, windows=%d/4, rejected=%d/4, lunged=%d, maxForwardSpeed=%.1f, maxForwardDistance=%.1f)"),
+				TEXT("windowed full combo (presentation=%s, animation=%s, clips=%d/7, windows=%d/4, rejected=%d/4, locked=%d/5, unlocked=%d/5, resumed=%d/5, relocked=%d/4, recoveryFree=%d/2, queueKept=%d/2, openWindow=%d/2, lunged=%d)"),
 				*Snapshot.CombatAnimationStateName.ToString(),
 				*Snapshot.ActivePresentationAnimationName.ToString(),
 				ObservedComboClipCount,
 				QueuedFromComboIndices.Num(),
 				RejectedExtraRequests,
-				bSawForwardLunge,
-				MaximumForwardSpeed,
-				MaximumForwardDisplacement));
+				LockedAttackIndices.Num(),
+				UnlockedAttackIndices.Num(),
+				MovementResumedAttackIndices.Num(),
+				RelockedAttackIndices.Num(),
+				UnlockedRecoveryIndices.Num(),
+				QueuedAttackIndicesPreservedAtUnlock.Num(),
+				OpenWindowAttackIndicesAtUnlock.Num(),
+				bSawForwardLunge));
 	}
 
 private:
 	FVector AttackStartLocation = FVector::ZeroVector;
 	FVector AttackForward = FVector::ForwardVector;
 	TSet<int32> QueuedFromComboIndices;
+	TSet<int32> LockedAttackIndices;
+	TSet<int32> UnlockedAttackIndices;
+	TSet<int32> MovementResumedAttackIndices;
+	TSet<int32> RelockedAttackIndices;
+	TSet<int32> UnlockedRecoveryIndices;
+	TSet<int32> QueuedAttackIndicesPreservedAtUnlock;
+	TSet<int32> OpenWindowAttackIndicesAtUnlock;
 	FName LastObservedComboClip = NAME_None;
 	int32 ObservedComboClipCount = 0;
 	int32 RejectedExtraRequests = 0;
@@ -1883,6 +2065,15 @@ bool FRequiemUnarmedCombatPIETest::RunTest(const FString& Parameters)
 					AnimInstanceClass,
 					TEXT("UnarmedQueuedRecoveryHandoffNormalized")),
 				ExpectedQueuedRecoveryHandoff,
+				0.001f));
+		TestTrue(
+			TEXT("Unarmed attacks release movement at 0.60"),
+			FMath::IsNearlyEqual(
+				GetFloatPropertyValue(
+					AnimInstanceCDO,
+					AnimInstanceClass,
+					TEXT("UnarmedMovementUnlockNormalized")),
+				ExpectedUnarmedMovementUnlock,
 				0.001f));
 	}
 

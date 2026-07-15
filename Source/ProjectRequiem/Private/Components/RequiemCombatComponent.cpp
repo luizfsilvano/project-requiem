@@ -211,11 +211,24 @@ bool URequiemCombatComponent::ConsumeQueuedUnarmedFollowUp()
 	return true;
 }
 
+void URequiemCombatComponent::ReleaseUnarmedAttackMovementLock()
+{
+	if (!bUnarmedAttackMovementLocked)
+	{
+		return;
+	}
+
+	bUnarmedAttackMovementLocked = false;
+	// CharacterMovement keeps the current planar velocity and blends it into the
+	// held direction using its configured acceleration/braking. The active combo
+	// step, input window and single buffered follow-up remain untouched.
+}
+
 void URequiemCombatComponent::EndUnarmedAttackSequence()
 {
 	const bool bWasMovementLocked = bUnarmedAttackMovementLocked;
+	ReleaseUnarmedAttackMovementLock();
 	bUnarmedAttackActive = false;
-	bUnarmedAttackMovementLocked = false;
 	bUnarmedAttackInputWindowOpen = false;
 	bQueuedUnarmedFollowUp = false;
 
@@ -225,8 +238,8 @@ void URequiemCombatComponent::EndUnarmedAttackSequence()
 		: nullptr;
 	if (bWasMovementLocked && MovementComponent)
 	{
-		// Release only the planar commitment. Jump/fall velocity remains owned by
-		// CharacterMovement when an airborne transition interrupts the attack.
+		// An interruption before normal movement recovery still cancels the
+		// authored lunge. Normal completion never stops movement a second time.
 		SetPlanarVelocity(MovementComponent, FVector::ZeroVector);
 	}
 }

@@ -67,10 +67,11 @@ Não há, neste momento, uma animação específica de queda. `Jump_Loop` cobre 
 - A janela central entre `0.25` e `0.65` normalizado concede i-frames. O contrato
   `URequiemDodgeComponent::ShouldIgnoreIncomingDamage` deve ser consultado por
   futuros ataques; o fallback de dano genérico da Unreal também retorna zero nessa janela.
-- O deslocamento root motion permanece comprometido na direção capturada até `0.80`
-  normalizado. Nesse limite a velocidade residual é limpa, o root motion deixa de ser
-  aplicado e o `CharacterMovement` volta a aceitar input durante os `20%` finais de
-  recovery visual; outras ações e a orientação do Roll continuam bloqueadas até o fim.
+- O asset conclui o deslocamento root motion em aproximadamente `0.59` normalizado.
+  O root motion permanece comprometido até `0.62`, com uma margem após a última key;
+  então o `CharacterMovement` volta a aceitar input preservando a velocidade corrente
+  e usando sua própria aceleração/frenagem. Outras ações e a orientação do Roll
+  continuam bloqueadas até o fim do clipe.
 - A esquiva funciona sem alterar os estados `Normal` e `CombatUnarmed`; ao terminar,
   a apresentação retorna ao estado de locomoção/postura compatível com o modo preservado.
 
@@ -125,7 +126,7 @@ Punch_Cross
 
 O combo recebe no máximo cinco comandos de ataque. `Melee_Knee_Rec` e `Melee_Hook_Rec` são recuperações automáticas dos golpes anteriores, portanto a reprodução mantém a ordem completa dos sete clipes sem exigir cliques exclusivos para recuperação. Cada golpe ou recuperação que aceita continuação abre uma janela normalizada entre `0.30` e `0.85` e possui somente um slot de follow-up. O primeiro clique válido ocupa esse slot; cliques adicionais na mesma janela são descartados. Assim, spam contínuo sustenta o combo somente enquanto novos cliques alcançam novas janelas, sem criar backlog depois que o jogador para.
 
-Para tornar a cadeia mais dinâmica sem editar os assets, golpes usam play rate inicial de `1.25x` e recuperações `1.35x`, ambos ajustáveis. Quando existe um follow-up confirmado, `Punch_Cross` e `Punch_Jab` podem fazer handoff a partir de `0.72` do clipe; as recuperações podem entregar o próximo golpe a partir de `0.55`. `Melee_Knee` e `Melee_Hook` entram nas respectivas recuperações a partir de `0.90`. Sem follow-up, a sequência termina na postura de combate, e `Melee_Uppercut` nunca reinicia automaticamente o combo.
+Para tornar a cadeia mais dinâmica sem editar os assets, golpes usam play rate inicial de `1.25x` e recuperações `1.35x`, ambos ajustáveis. O lock de movimento termina em `0.60` de cada golpe, sem encerrar o ataque ativo, sua janela ou o follow-up já aceito; recuperações permanecem livres para locomoção e o próximo golpe volta a aplicar seu próprio lock e avanço. Quando existe um follow-up confirmado, `Punch_Cross` e `Punch_Jab` podem fazer handoff a partir de `0.72` do clipe; as recuperações podem entregar o próximo golpe a partir de `0.55`. `Melee_Knee` e `Melee_Hook` entram nas respectivas recuperações a partir de `0.90`. Sem follow-up, a sequência termina na postura de combate, e `Melee_Uppercut` nunca reinicia automaticamente o combo.
 
 Saída manual:
 
@@ -135,7 +136,7 @@ Combat → PunchKick_Exit → Normal
 
 Sem armas, o jogador não pode bloquear. O contrato expõe a elegibilidade futura para encerrar o combate após 30 segundos sem atacar e longe de inimigos, mas nenhuma saída automática é executada nesta etapa porque ainda não existem inimigos.
 
-Todas as animações deste passe usam as fontes UAL1/UAL2 sem root motion. O modo de combate e o combo não alteram os parâmetros globais de velocidade, aceleração ou desaceleração; o deslocamento continua pertencendo ao `CharacterMovement`. Em `CombatUnarmed`, o idle de combate aparece parado e a locomoção direcional existente permanece ativa enquanto nenhum golpe está comprometido. Um LMB aceito durante movimento bloqueia novos `IA_Move`, mantém o Jog durante a frenagem do `CharacterMovement` e só então executa `PunchKick_Enter` antes do primeiro golpe; durante `Attack` e `Recovery`, o bloqueio continua. Cada golpe real substitui brevemente a velocidade planar por um avanço frontal de referência de `350 uu/s`, resolvido pelo próprio `CharacterMovement` com colisão e frenagem; recuperações não criam um novo avanço.
+Todas as animações deste passe usam as fontes UAL1/UAL2 sem root motion. O modo de combate e o combo não alteram os parâmetros globais de velocidade, aceleração ou desaceleração; o deslocamento continua pertencendo ao `CharacterMovement`. Em `CombatUnarmed`, o idle de combate aparece parado e a locomoção direcional existente permanece ativa enquanto nenhum golpe está comprometido. Um LMB aceito durante movimento bloqueia novos `IA_Move`, mantém o Jog durante a frenagem do `CharacterMovement` e só então executa `PunchKick_Enter` antes do primeiro golpe. Durante cada `Attack`, o lock físico termina em `0.60`; o restante do clipe continua comprometido visualmente e para o combo, mas já aceita locomoção. Cada golpe real substitui brevemente a velocidade planar por um avanço frontal de referência de `350 uu/s`, resolvido pelo próprio `CharacterMovement` com colisão, aceleração e frenagem; recuperações não criam um novo avanço nem relock de movimento.
 
 ## Reações de dano e morte — futuro
 
@@ -179,8 +180,8 @@ O sistema futuro deverá escolher a reação com base na região e na direção 
 
 - Usar animações sem root motion para locomoção, corrida, agachamento e pulo comum.
 - Reservar root motion para ações pontuais que precisam deslocar o personagem pela própria animação, como esquiva e knockback.
-- Durante os `80%` comprometidos de `Roll`, o AnimInstance usa
-  `RootMotionFromMontagesOnly`; no recovery final e fora da esquiva retorna a
+- Durante o trecho de deslocamento comprometido de `Roll`, até `0.62`, o AnimInstance
+  usa `RootMotionFromMontagesOnly`; na cauda visual e fora da esquiva retorna a
   `IgnoreRootMotion`, preservando o controle do `CharacterMovement` e o combo sem root motion.
 - A velocidade real deve continuar sob responsabilidade do `CharacterMovement`.
 - O Animation Blueprint deve reagir ao estado do personagem; não deve definir sozinho a velocidade de movimento.

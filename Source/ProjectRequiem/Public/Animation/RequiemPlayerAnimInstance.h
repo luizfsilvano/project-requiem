@@ -240,6 +240,10 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed|Tuning", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float UnarmedQueuedRecoveryHandoffNormalized = 0.55f;
 
+	/** Movement returns before the visual follow-through ends; the attack and combo remain committed. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed|Tuning", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float UnarmedMovementUnlockNormalized = 0.60f;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Locomotion|Tuning", meta = (ClampMin = "0.0"))
 	float JogAuthoredSpeed = 500.0f;
 
@@ -291,6 +295,7 @@ private:
 	void HandleCombatStateChange();
 	void UpdateCombatPresentation();
 	void UpdateCombatInputWindow();
+	void UpdateCombatMovementRecovery();
 	void StartCombatEnter();
 	void StartCombatIdle();
 	void StartCombatExit();

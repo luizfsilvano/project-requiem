@@ -183,7 +183,7 @@ Componentes como interação e combate serão criados somente nas etapas em que 
 
 O primeiro uso concreto de composição de combate é `URequiemCombatComponent`, anexado a `ARequiemCharacter`. O componente é a fonte de verdade dos estados `Normal` e `CombatUnarmed`, recebe pedidos de entrada e ataque e expõe pontos futuros de entrada por lock-on e dano. Para o combo desarmado, ele aceita somente um pedido inicial e um único follow-up por janela; cliques excedentes são descartados, nunca acumulados como uma fila de golpes futuros. Ele não implementa armas, dano, hitboxes, inimigos ou bloqueio.
 
-`ARequiemCharacter` encaminha `IA_ToggleCombat` e `IA_PrimaryAttack` ao componente e ignora `IA_Move` desde a aceitação de um ataque inicial até o fim do golpe ou recuperação comprometidos. Em uma autoentrada ainda em movimento, isso permite que o `CharacterMovement` freie a velocidade herdada antes de `PunchKick_Enter`, sem acumular novo input. Movimento, colisão, velocidade, aceleração e frenagem continuam pertencendo ao `CharacterMovement`; o pequeno avanço de cada golpe é aplicado pelo componente como uma substituição curta da velocidade planar, sem root motion e sem alterar os parâmetros globais de locomoção.
+`ARequiemCharacter` encaminha `IA_ToggleCombat` e `IA_PrimaryAttack` ao componente e ignora `IA_Move` durante os `60%` iniciais de cada golpe. O componente separa esse lock físico do ataque ativo e da janela de combo: o movimento pode retornar durante o follow-through sem cancelar a animação nem o follow-up, e cada golpe seguinte reaplica seu próprio lock. Em uma autoentrada ainda em movimento, o lock inicial permite que o `CharacterMovement` freie a velocidade herdada antes de `PunchKick_Enter`, sem acumular novo input. Movimento, colisão, velocidade, aceleração e frenagem continuam pertencendo ao `CharacterMovement`; o pequeno avanço de cada golpe é aplicado pelo componente como uma substituição curta da velocidade planar, sem root motion e sem alterar os parâmetros globais de locomoção.
 
 `URequiemPlayerAnimInstance` observa o componente e cuida da apresentação e do relógio autoral: entrada, postura parada, combo, recuperações, saída, play rate e abertura da janela em tempo normalizado. O componente continua decidindo se o input cabe no slot disponível. Durante movimento sem um golpe ativo, a mesma máquina direcional de locomoção permanece responsável pela animação. `PunchKick_Enter` e `PunchKick_Exit` só assumem o `DefaultSlot` sem intenção e com velocidade planar efetivamente zerada; movimento durante esses one-shots devolve imediatamente a apresentação à locomoção e deixa a transição pendente para a próxima parada. Os demais clipes de combate também usam `DefaultSlot` sem root motion.
 
@@ -199,10 +199,11 @@ implementa stamina, hitboxes, inimigos ou um sistema de dano.
 
 `ARequiemCharacter` encaminha `IA_Roll` no `Shift`, usa o input direcional atual
 relativo à câmera ou a própria frente como fallback e bloqueia ataque, pulo,
-entrada em agachamento e novas esquivas até o fim da ação. O deslocamento root motion
-e o movimento ficam comprometidos até `0.80` normalizado; nesse limite a velocidade
-residual é zerada e o root motion deixa de ser aplicado. Nos `20%` finais o
-`CharacterMovement` volta a responder ao input, enquanto a orientação capturada e os
+entrada em agachamento e novas esquivas até o fim da ação. O asset encerra seu
+deslocamento de raiz em aproximadamente `0.59`; root motion e movimento ficam
+comprometidos até `0.62`, quando o root motion deixa de ser aplicado sem zerar a
+velocidade corrente. Na cauda visual o `CharacterMovement` volta a responder ao input
+com sua aceleração e frenagem, enquanto a orientação capturada e os
 demais locks permanecem até o fim. `TakeDamage` retorna zero
 durante os i-frames como proteção mínima, e futuros resolvedores de hit devem
 consultar `ShouldIgnoreIncomingDamage` antes de aplicar impacto.

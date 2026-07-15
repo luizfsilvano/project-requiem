@@ -89,9 +89,9 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Dodge|Tuning", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float IFrameEndNormalized = 0.65f;
 
-	/** Movement input can resume here; restricted actions remain locked until 100%. */
+	/** Movement resumes just after Roll's authored root displacement; actions stay locked to 100%. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Dodge|Tuning", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	float MovementControlRecoveryNormalized = 0.80f;
+	float MovementControlRecoveryNormalized = 0.62f;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Dodge|Runtime")
 	bool bDodgeActive = false;

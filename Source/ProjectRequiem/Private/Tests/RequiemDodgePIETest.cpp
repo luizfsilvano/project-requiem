@@ -55,10 +55,24 @@ constexpr TCHAR PlayerSkeletonPath[] =
 	TEXT("/Game/ProjectRequiem/Characters/Player/Meshes/Temporary/"
 		 "SKEL_Temp_SuperheroFemale.SKEL_Temp_SuperheroFemale");
 
-constexpr float ExpectedMovementRecoveryNormalized = 0.80f;
+constexpr float ExpectedMovementRecoveryNormalized = 0.62f;
 constexpr float DirectionDotTolerance = 0.90f;
 constexpr float MinimumDodgeDisplacement = 25.0f;
+constexpr float MinimumPostDodgeJogSpeed = 100.0f;
+constexpr float MinimumPostDodgeDisplacement = 2.0f;
 constexpr float NormalizedBoundaryTolerance = 0.025f;
+constexpr double MaximumPostDodgeJogResumeSeconds = 0.15;
+
+const FName DirectionalJogAnimationNames[] = {
+	FName(TEXT("Jog_Fwd_L_Loop")),
+	FName(TEXT("Jog_Fwd_Loop")),
+	FName(TEXT("Jog_Fwd_R_Loop")),
+	FName(TEXT("Jog_Bwd_L_Loop")),
+	FName(TEXT("Jog_Bwd_Loop")),
+	FName(TEXT("Jog_Bwd_R_Loop")),
+	FName(TEXT("Jog_Left_Loop")),
+	FName(TEXT("Jog_Right_Loop")),
+};
 
 struct FRunState
 {
@@ -222,6 +236,27 @@ bool HasValidDodgePlayback(const FCharacterSnapshot& Snapshot, const FRunState& 
 {
 	return Snapshot.LocomotionState == ERequiemLocomotionState::Dodge
 		&& Snapshot.ActivePresentationAnimationName == RunState.RollAnimationName
+		&& Snapshot.bActivePresentationIsSequence
+		&& Snapshot.bPresentationMontageIsPlaying
+		&& Snapshot.PresentationMontageSlot == FName(TEXT("DefaultSlot"))
+		&& Snapshot.PresentationMontagePlayRate > UE_KINDA_SMALL_NUMBER
+		&& Snapshot.ActivePresentationPlayRate > UE_KINDA_SMALL_NUMBER;
+}
+
+bool HasValidDirectionalJogPlayback(const FCharacterSnapshot& Snapshot)
+{
+	bool bUsesDirectionalJogAnimation = false;
+	for (const FName AnimationName : DirectionalJogAnimationNames)
+	{
+		if (Snapshot.ActivePresentationAnimationName == AnimationName)
+		{
+			bUsesDirectionalJogAnimation = true;
+			break;
+		}
+	}
+
+	return Snapshot.LocomotionState == ERequiemLocomotionState::Jog
+		&& bUsesDirectionalJogAnimation
 		&& Snapshot.bActivePresentationIsSequence
 		&& Snapshot.bPresentationMontageIsPlaying
 		&& Snapshot.PresentationMontageSlot == FName(TEXT("DefaultSlot"))
@@ -579,10 +614,12 @@ public:
 		FAutomationTestBase* InTest,
 		TSharedRef<FRunState> InRunState,
 		const FVector2D InMovementInput,
-		FString InDirectionLabel)
+		FString InDirectionLabel,
+		const bool bInRequirePhysicalContinuation)
 		: FTimedCommand(InTest, MoveTemp(InRunState), 6.0)
 		, MovementInput(InMovementInput.GetSafeNormal())
 		, DirectionLabel(MoveTemp(InDirectionLabel))
+		, bRequirePhysicalContinuation(bInRequirePhysicalContinuation)
 	{
 	}
 
@@ -693,7 +730,7 @@ public:
 				if (!Snapshot.bDodgeMovementLocked)
 				{
 					return AbortWithError(FString::Printf(
-						TEXT("%s dodge released movement before 80%% recovery (t=%.3f)."),
+						TEXT("%s dodge released movement before its configured recovery cutoff (t=%.3f)."),
 						*DirectionLabel,
 						Snapshot.DodgeNormalizedTime));
 				}
@@ -713,7 +750,6 @@ public:
 
 		if (bSawDodge)
 		{
-			StopContinuousAction(MoveActionPath);
 			const FVector Displacement = (Snapshot.Location - DodgeStartLocation).GetSafeNormal2D();
 			const float DisplacementDistance =
 				(Snapshot.Location - DodgeStartLocation).Size2D();
@@ -722,18 +758,73 @@ public:
 				!Snapshot.bDodgeMovementLocked
 				&& !Snapshot.bDodgeRestrictedActionsLocked
 				&& !Snapshot.bDodgeInvulnerable;
-			if (bSawCommittedMovementLock
+			const bool bCompletedValidDodge = bSawCommittedMovementLock
 				&& DisplacementDistance >= MinimumDodgeDisplacement
 				&& DirectionDot >= DirectionDotTolerance
 				&& bReturnedUnlocked
 				&& Snapshot.CombatState == CombatStateBefore
-				&& Snapshot.AttackRequestSerial == AttackRequestSerialBefore)
+				&& Snapshot.AttackRequestSerial == AttackRequestSerialBefore;
+
+			if (MovementInput.IsNearlyZero() && bCompletedValidDodge)
 			{
+				StopContinuousAction(MoveActionPath);
 				Test->AddInfo(FString::Printf(
 					TEXT("%s dodge captured its direction and displaced %.1f uu without touching combat."),
 					*DirectionLabel,
 					DisplacementDistance));
 				return true;
+			}
+
+			if (!MovementInput.IsNearlyZero())
+			{
+				if (PostDodgeObservationStartSeconds < 0.0)
+				{
+					PostDodgeObservationStartSeconds = ElapsedSeconds;
+					PostDodgeStartLocation = Snapshot.Location;
+					return false;
+				}
+
+				const double PostDodgeElapsedSeconds =
+					ElapsedSeconds - PostDodgeObservationStartSeconds;
+				const FVector PostDodgeDelta = Snapshot.Location - PostDodgeStartLocation;
+				const float PostDodgeForwardDisplacement = FVector::DotProduct(
+					PostDodgeDelta.GetSafeNormal2D(),
+					ExpectedDirection);
+				const FVector AccelerationDirection = Snapshot.Acceleration.GetSafeNormal2D();
+				const bool bMovementInputResumed = !AccelerationDirection.IsNearlyZero()
+					&& FVector::DotProduct(AccelerationDirection, ExpectedDirection) >= 0.75f;
+				const bool bUsefulMovementResumed =
+					Snapshot.GroundSpeed >= MinimumPostDodgeJogSpeed
+					&& PostDodgeDelta.Size2D() >= MinimumPostDodgeDisplacement
+					&& PostDodgeForwardDisplacement >= 0.75f;
+				const bool bJogResumed = HasValidDirectionalJogPlayback(Snapshot)
+					&& bMovementInputResumed
+					&& (!bRequirePhysicalContinuation || bUsefulMovementResumed);
+
+				if (bCompletedValidDodge && bJogResumed)
+				{
+					StopContinuousAction(MoveActionPath);
+					Test->AddInfo(FString::Printf(
+						TEXT("%s dodge handed off immediately to %s at %.1f uu/s within %.3fs of Roll ending."),
+						*DirectionLabel,
+						*Snapshot.ActivePresentationAnimationName.ToString(),
+						Snapshot.GroundSpeed,
+						PostDodgeElapsedSeconds));
+					return true;
+				}
+
+				if (PostDodgeElapsedSeconds > MaximumPostDodgeJogResumeSeconds)
+				{
+					return AbortWithError(FString::Printf(
+						TEXT("%s dodge did not resume useful directional Jog within %.2fs (state=%d, animation=%s, speed=%.1f, acceleration=%.1f, postDistance=%.1f)."),
+						*DirectionLabel,
+						MaximumPostDodgeJogResumeSeconds,
+						static_cast<int32>(Snapshot.LocomotionState),
+						*Snapshot.ActivePresentationAnimationName.ToString(),
+						Snapshot.GroundSpeed,
+						Snapshot.Acceleration.Size2D(),
+						PostDodgeDelta.Size2D()));
+				}
 			}
 		}
 
@@ -756,10 +847,13 @@ private:
 	ERequiemCombatState CombatStateBefore = ERequiemCombatState::Normal;
 	int32 AttackRequestSerialBefore = 0;
 	int32 DodgeRequestSerialBefore = 0;
+	double PostDodgeObservationStartSeconds = -1.0;
+	FVector PostDodgeStartLocation = FVector::ZeroVector;
 	bool bRollInputInjected = false;
 	bool bRollInputReleased = false;
 	bool bSawDodge = false;
 	bool bSawCommittedMovementLock = false;
+	bool bRequirePhysicalContinuation = false;
 };
 
 class FObserveSameFrameDirectionalDodgeCommand final : public FTimedCommand
@@ -1036,7 +1130,7 @@ public:
 				&& Snapshot.bDodgeMovementLocked)
 			{
 				return AbortWithError(FString::Printf(
-					TEXT("Dodge movement remained locked past 80%% recovery (t=%.3f)."),
+					TEXT("Dodge movement remained locked past its configured recovery cutoff (t=%.3f)."),
 					NormalizedTime));
 			}
 
@@ -1144,7 +1238,7 @@ public:
 				&& Snapshot.AttackRequestSerial == AttackRequestSerialBefore
 				&& Snapshot.CombatState == ERequiemCombatState::Normal)
 			{
-				Test->AddInfo(TEXT("Dodge kept a fixed commitment, rejected queued actions, exposed central i-frames, and returned movement at 80%."));
+				Test->AddInfo(TEXT("Dodge kept a fixed commitment, rejected queued actions, exposed central i-frames, and returned movement at its configured recovery cutoff."));
 				return true;
 			}
 		}
@@ -1220,8 +1314,7 @@ private:
 		}
 		else if (NormalizedTime
 			> Snapshot.IFrameEndNormalized + NormalizedBoundaryTolerance
-			&& NormalizedTime
-			< Snapshot.MovementRecoveryNormalized - NormalizedBoundaryTolerance)
+			&& NormalizedTime < 1.0f - NormalizedBoundaryTolerance)
 		{
 			bSawPostIFrame = true;
 			if (Snapshot.bDodgeInvulnerable)
@@ -1438,12 +1531,17 @@ public:
 		{
 			if (Snapshot.CombatAnimationState != ERequiemCombatAnimationState::Attack
 				|| !Snapshot.bUnarmedAttackActive
-				|| Snapshot.ActiveComboAnimationIndex == INDEX_NONE)
+				|| Snapshot.ActiveComboAnimationIndex == INDEX_NONE
+				|| Snapshot.CombatNormalizedTime < 0.65f
+				|| Snapshot.bUnarmedAttackMovementLocked)
 			{
-				return AbortIfTimedOut(ElapsedSeconds, TEXT("waiting for committed Cross before Shift"));
+				return AbortIfTimedOut(
+					ElapsedSeconds,
+					TEXT("waiting for committed Cross movement recovery before Shift"));
 			}
 
 			AttackRequestSerialAfterInitial = Snapshot.AttackRequestSerial;
+			DodgeRequestSerialBeforeLateShift = Snapshot.DodgeRequestSerial;
 			CommittedComboIndex = Snapshot.ActiveComboAnimationIndex;
 			CommittedAnimationName = Snapshot.ActivePresentationAnimationName;
 			if (!SetContinuousAction(RollActionPath, FInputActionValue(true)))
@@ -1459,9 +1557,10 @@ public:
 		{
 			if (Snapshot.bDodgeActive
 				|| Snapshot.LocomotionState == ERequiemLocomotionState::Dodge
-				|| Snapshot.ActivePresentationAnimationName == RunState->RollAnimationName)
+				|| Snapshot.ActivePresentationAnimationName == RunState->RollAnimationName
+				|| Snapshot.DodgeRequestSerial != DodgeRequestSerialBeforeLateShift)
 			{
-				return AbortWithError(TEXT("Shift interrupted a committed combo clip with Dodge."));
+				return AbortWithError(TEXT("Shift was accepted after the committed attack released movement."));
 			}
 			if (Snapshot.AttackRequestSerial != AttackRequestSerialAfterInitial
 				|| Snapshot.bQueuedUnarmedFollowUp)
@@ -1489,7 +1588,7 @@ public:
 			&& Snapshot.ActiveComboAnimationIndex == INDEX_NONE
 			&& !Snapshot.bDodgeActive)
 		{
-			Test->AddInfo(TEXT("Shift was rejected during a committed Cross and the combo returned normally to combat idle."));
+			Test->AddInfo(TEXT("Shift was rejected after Cross released movement, while the committed combo returned normally to combat idle."));
 			return true;
 		}
 
@@ -1506,6 +1605,7 @@ public:
 private:
 	FName CommittedAnimationName = NAME_None;
 	int32 AttackRequestSerialAfterInitial = 0;
+	int32 DodgeRequestSerialBeforeLateShift = 0;
 	int32 CommittedComboIndex = INDEX_NONE;
 	double ValidationStartedSeconds = -1.0;
 	bool bAttackRequested = false;
@@ -1616,16 +1716,16 @@ bool FRequiemDodgePIETest::RunTest(const FString& Parameters)
 			const float MovementRecovery =
 				DodgeCDO->GetMovementControlRecoveryNormalized();
 			TestTrue(
-				TEXT("Dodge movement control recovers at 0.80"),
+				TEXT("Dodge movement control recovers at 0.62"),
 				FMath::IsNearlyEqual(
 					MovementRecovery,
 					ExpectedMovementRecoveryNormalized,
 					0.001f));
 			TestTrue(
-				TEXT("Dodge i-frames form a central window before movement recovery"),
+				TEXT("Dodge i-frames form a central window"),
 				IFrameStart > 0.0f
 					&& IFrameEnd > IFrameStart + 0.10f
-					&& IFrameEnd < MovementRecovery - 0.05f);
+					&& IFrameEnd < 0.90f);
 		}
 	}
 
@@ -1675,17 +1775,18 @@ bool FRequiemDodgePIETest::RunTest(const FString& Parameters)
 	{
 		FVector2D Input;
 		const TCHAR* Label;
+		bool bRequirePhysicalContinuation;
 	};
 	const FDirectionCase DirectionCases[] = {
-		{FVector2D::ZeroVector, TEXT("Neutral")},
-		{FVector2D(0.0f, 1.0f), TEXT("Forward")},
-		{FVector2D(1.0f, 1.0f), TEXT("ForwardRight")},
-		{FVector2D(1.0f, 0.0f), TEXT("Right")},
-		{FVector2D(1.0f, -1.0f), TEXT("BackwardRight")},
-		{FVector2D(0.0f, -1.0f), TEXT("Backward")},
-		{FVector2D(-1.0f, -1.0f), TEXT("BackwardLeft")},
-		{FVector2D(-1.0f, 0.0f), TEXT("Left")},
-		{FVector2D(-1.0f, 1.0f), TEXT("ForwardLeft")},
+		{FVector2D::ZeroVector, TEXT("Neutral"), false},
+		{FVector2D(0.0f, 1.0f), TEXT("Forward"), false},
+		{FVector2D(1.0f, 1.0f), TEXT("ForwardRight"), false},
+		{FVector2D(1.0f, 0.0f), TEXT("Right"), true},
+		{FVector2D(1.0f, -1.0f), TEXT("BackwardRight"), false},
+		{FVector2D(0.0f, -1.0f), TEXT("Backward"), false},
+		{FVector2D(-1.0f, -1.0f), TEXT("BackwardLeft"), false},
+		{FVector2D(-1.0f, 0.0f), TEXT("Left"), false},
+		{FVector2D(-1.0f, 1.0f), TEXT("ForwardLeft"), false},
 	};
 	for (const FDirectionCase& DirectionCase : DirectionCases)
 	{
@@ -1694,7 +1795,8 @@ bool FRequiemDodgePIETest::RunTest(const FString& Parameters)
 			this,
 			RunState,
 			DirectionCase.Input,
-			DirectionCase.Label));
+			DirectionCase.Label,
+			DirectionCase.bRequirePhysicalContinuation));
 	}
 
 	ADD_LATENT_AUTOMATION_COMMAND(FResetCharacterToStartCommand(this, RunState));

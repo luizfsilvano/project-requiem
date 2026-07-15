@@ -351,8 +351,8 @@ void URequiemPlayerAnimInstance::UpdateDodgePresentation()
 		DodgeComponent->FinishDodge();
 	}
 
-	// Root motion owns only the committed 0-80% portion. During the final
-	// recovery CharacterMovement receives held input and controls displacement.
+	// Root motion owns only the authored displacement. During the stationary tail,
+	// CharacterMovement receives held input and controls acceleration/displacement.
 	SetRootMotionMode(DodgeComponent->IsDodgeMovementLocked()
 		? ERootMotionMode::RootMotionFromMontagesOnly
 		: ERootMotionMode::IgnoreRootMotion);
@@ -552,6 +552,7 @@ void URequiemPlayerAnimInstance::UpdateCombatPresentation()
 	}
 
 	UpdateCombatInputWindow();
+	UpdateCombatMovementRecovery();
 
 	switch (CombatAnimationState)
 	{
@@ -637,6 +638,21 @@ void URequiemPlayerAnimInstance::UpdateCombatInputWindow()
 		bInsideWindow && (bAttackCanQueue || bRecoveryCanQueue));
 }
 
+void URequiemPlayerAnimInstance::UpdateCombatMovementRecovery()
+{
+	if (!CombatComponent
+		|| CombatAnimationState != ERequiemCombatAnimationState::Attack
+		|| !CombatComponent->IsUnarmedAttackMovementLocked())
+	{
+		return;
+	}
+
+	if (GetCombatAnimationNormalizedTime() >= UnarmedMovementUnlockNormalized)
+	{
+		CombatComponent->ReleaseUnarmedAttackMovementLock();
+	}
+}
+
 void URequiemPlayerAnimInstance::StartCombatEnter()
 {
 	bEnterQueued = false;
@@ -692,9 +708,16 @@ void URequiemPlayerAnimInstance::StartCombatComboClip(const int32 ComboIndex)
 	// so a later return to Normal may still use the authored stance exit.
 	bCombatStanceEstablished = true;
 	const bool bRecovery = ComboIndex == 3 || ComboIndex == 5;
-	if (!bRecovery && CombatComponent)
+	if (CombatComponent)
 	{
-		CombatComponent->BeginUnarmedAttackStep(true);
+		if (bRecovery)
+		{
+			CombatComponent->ReleaseUnarmedAttackMovementLock();
+		}
+		else
+		{
+			CombatComponent->BeginUnarmedAttackStep(true);
+		}
 	}
 	PlayCombatAnimation(
 		bRecovery
@@ -1332,8 +1355,13 @@ void URequiemPlayerAnimInstance::ScheduleNextLookAround()
 
 bool URequiemPlayerAnimInstance::HasMovementIntent() const
 {
-	return OwningMovementComponent
-		&& !OwningMovementComponent->GetCurrentAcceleration().IsNearlyZero(1.0f);
+	const bool bMovementLocked =
+		(CombatComponent && CombatComponent->IsUnarmedAttackMovementLocked())
+		|| (DodgeComponent && DodgeComponent->IsDodgeMovementLocked());
+	return !bMovementLocked
+		&& ((OwningMovementComponent
+				&& !OwningMovementComponent->GetCurrentAcceleration().IsNearlyZero(1.0f))
+			|| (OwningCharacter && OwningCharacter->HasCurrentMovementInput()));
 }
 
 bool URequiemPlayerAnimInstance::HasOneShotFinished() const

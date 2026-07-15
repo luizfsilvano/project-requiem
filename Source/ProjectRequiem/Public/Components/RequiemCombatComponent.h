@@ -78,7 +78,10 @@ public:
 	/** Consumes at most one accepted follow-up for the current combo step. */
 	bool ConsumeQueuedUnarmedFollowUp();
 
-	/** Releases movement and clears the current attack-step runtime state. */
+	/** Returns movement to CharacterMovement without ending the active combo step. */
+	void ReleaseUnarmedAttackMovementLock();
+
+	/** Clears the current attack-step runtime state. */
 	void EndUnarmedAttackSequence();
 
 	UFUNCTION(BlueprintPure, Category = "Combat|Unarmed")

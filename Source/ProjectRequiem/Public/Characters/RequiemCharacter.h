@@ -40,6 +40,13 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Dodge")
 	bool IsDodgeInvulnerable() const;
 
+	/** Raw camera-relative movement intent, retained while a committed action owns movement. */
+	UFUNCTION(BlueprintPure, Category = "Movement")
+	bool HasCurrentMovementInput() const
+	{
+		return !CurrentMovementInputDirection.IsNearlyZero();
+	}
+
 protected:
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 	virtual void OnStartCrouch(float HalfHeightAdjust, float ScaledHalfHeightAdjust) override;
