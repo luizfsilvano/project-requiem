@@ -16,8 +16,6 @@ namespace
 // Dynamic montages require a finite loop count. Ten thousand cycles is effectively
 // continuous for these states without risking overflow in montage length calculations.
 constexpr int32 LoopingMontageCount = 10000;
-constexpr float FullSprintSpeedFraction = 0.9f;
-constexpr float ReversalDotThreshold = -0.95f;
 constexpr float OneShotLeadTime = 0.04f;
 constexpr float MinimumLoopPlayRate = 0.35f;
 constexpr float MaximumLoopPlayRate = 1.2f;
@@ -30,12 +28,8 @@ FName StateToName(const ERequiemLocomotionState State)
 		return TEXT("Idle");
 	case ERequiemLocomotionState::IdleLookAround:
 		return TEXT("Idle_LookAround");
-	case ERequiemLocomotionState::SprintEnter:
-		return TEXT("Sprint_Enter");
-	case ERequiemLocomotionState::SprintLoop:
-		return TEXT("Sprint_Loop");
-	case ERequiemLocomotionState::SprintExit:
-		return TEXT("Sprint_Exit");
+	case ERequiemLocomotionState::Jog:
+		return TEXT("Jog");
 	case ERequiemLocomotionState::JumpStart:
 		return TEXT("Jump_Start");
 	case ERequiemLocomotionState::JumpLoop:
@@ -65,11 +59,8 @@ void URequiemPlayerAnimInstance::NativeInitializeAnimation()
 	MovementDirection = ERequiemMovementDirection::None;
 	ActiveLocomotionMontage = nullptr;
 	ActiveAnimation = nullptr;
-	PreviousMovementIntent = FVector::ZeroVector;
 	StateElapsedSeconds = 0.0f;
 	ActiveAnimationPlayRate = 1.0f;
-	bReachedFullSprintSpeed = false;
-	bSprintExitForReversal = false;
 	bNeedsInitialState = true;
 	ScheduleNextLookAround();
 }
@@ -99,10 +90,10 @@ void URequiemPlayerAnimInstance::NativeUpdateAnimation(const float DeltaSeconds)
 
 	UpdateLocomotionState(DeltaSeconds);
 
-	if (LocomotionState == ERequiemLocomotionState::SprintLoop && ActiveLocomotionMontage)
+	if (LocomotionState == ERequiemLocomotionState::Jog && ActiveLocomotionMontage)
 	{
-		ActiveAnimationPlayRate = SprintAuthoredSpeed > UE_KINDA_SMALL_NUMBER
-			? FMath::Clamp(ObservedGroundSpeed / SprintAuthoredSpeed, MinimumLoopPlayRate, MaximumLoopPlayRate)
+		ActiveAnimationPlayRate = JogAuthoredSpeed > UE_KINDA_SMALL_NUMBER
+			? FMath::Clamp(ObservedGroundSpeed / JogAuthoredSpeed, MinimumLoopPlayRate, MaximumLoopPlayRate)
 			: 1.0f;
 		Montage_SetPlayRate(ActiveLocomotionMontage, ActiveAnimationPlayRate);
 	}
@@ -138,13 +129,15 @@ void URequiemPlayerAnimInstance::UpdateObservedMovement()
 	bObservedIsFalling = OwningMovementComponent->IsFalling();
 	bObservedIsCrouched = OwningCharacter->IsCrouched();
 
-	const FVector LocalVelocity = OwningCharacter->GetActorTransform().InverseTransformVectorNoScale(Velocity);
-	ObservedDirectionDegrees = ObservedGroundSpeed > UE_KINDA_SMALL_NUMBER
-		? FMath::RadiansToDegrees(FMath::Atan2(LocalVelocity.Y, LocalVelocity.X))
+	const FVector DirectionSource = ObservedGroundSpeed >= DirectionalLoopMinimumSpeed
+		? Velocity
+		: OwningMovementComponent->GetCurrentAcceleration();
+	const FVector LocalDirection = OwningCharacter->GetActorTransform().InverseTransformVectorNoScale(DirectionSource);
+	const bool bHasDirection = !DirectionSource.IsNearlyZero(1.0f);
+	ObservedDirectionDegrees = bHasDirection
+		? FMath::RadiansToDegrees(FMath::Atan2(LocalDirection.Y, LocalDirection.X))
 		: 0.0f;
-	MovementDirection = QuantizeDirection(
-		ObservedDirectionDegrees,
-		ObservedGroundSpeed >= DirectionalLoopMinimumSpeed);
+	MovementDirection = QuantizeDirection(ObservedDirectionDegrees, bHasDirection);
 }
 
 void URequiemPlayerAnimInstance::UpdateLocomotionState(const float DeltaSeconds)
@@ -164,7 +157,11 @@ void URequiemPlayerAnimInstance::UpdateLocomotionState(const float DeltaSeconds)
 	if (LocomotionState == ERequiemLocomotionState::JumpStart
 		|| LocomotionState == ERequiemLocomotionState::JumpLoop)
 	{
-		TransitionTo(ERequiemLocomotionState::JumpLand);
+		const bool bShouldJog = HasMovementIntent()
+			|| ObservedGroundSpeed >= DirectionalLoopMinimumSpeed;
+		TransitionTo(bShouldJog
+			? ERequiemLocomotionState::Jog
+			: ERequiemLocomotionState::JumpLand);
 		return;
 	}
 
@@ -181,33 +178,15 @@ void URequiemPlayerAnimInstance::UpdateLocomotionState(const float DeltaSeconds)
 void URequiemPlayerAnimInstance::UpdateGroundedState(const float DeltaSeconds)
 {
 	const bool bMovementIntent = HasMovementIntent();
-	const float MaximumSpeed = OwningMovementComponent->GetMaxSpeed();
-	const bool bAtFullSprintSpeed = MaximumSpeed > UE_KINDA_SMALL_NUMBER
-		&& ObservedGroundSpeed >= MaximumSpeed * FullSprintSpeedFraction;
-
-	if (bAtFullSprintSpeed)
-	{
-		bReachedFullSprintSpeed = true;
-	}
-
-	const FVector CurrentIntent = OwningMovementComponent->GetCurrentAcceleration().GetSafeNormal2D();
-	const bool bReversedDirection = !CurrentIntent.IsNearlyZero()
-		&& !PreviousMovementIntent.IsNearlyZero()
-		&& FVector::DotProduct(CurrentIntent, PreviousMovementIntent) <= ReversalDotThreshold;
-
-	if (!CurrentIntent.IsNearlyZero())
-	{
-		PreviousMovementIntent = CurrentIntent;
-	}
+	const bool bShouldJog = bMovementIntent
+		|| ObservedGroundSpeed >= DirectionalLoopMinimumSpeed;
 
 	switch (LocomotionState)
 	{
 	case ERequiemLocomotionState::Idle:
-		if (bMovementIntent)
+		if (bShouldJog)
 		{
-			bReachedFullSprintSpeed = false;
-			bSprintExitForReversal = false;
-			TransitionTo(ERequiemLocomotionState::SprintEnter);
+			TransitionTo(ERequiemLocomotionState::Jog);
 			return;
 		}
 
@@ -219,10 +198,9 @@ void URequiemPlayerAnimInstance::UpdateGroundedState(const float DeltaSeconds)
 		return;
 
 	case ERequiemLocomotionState::IdleLookAround:
-		if (bMovementIntent)
+		if (bShouldJog)
 		{
-			bReachedFullSprintSpeed = false;
-			TransitionTo(ERequiemLocomotionState::SprintEnter);
+			TransitionTo(ERequiemLocomotionState::Jog);
 			return;
 		}
 		if (HasOneShotFinished())
@@ -231,49 +209,19 @@ void URequiemPlayerAnimInstance::UpdateGroundedState(const float DeltaSeconds)
 		}
 		return;
 
-	case ERequiemLocomotionState::SprintEnter:
-		if (bReversedDirection)
+	case ERequiemLocomotionState::Jog:
+		if (!bShouldJog)
 		{
-			bSprintExitForReversal = true;
-			TransitionTo(ERequiemLocomotionState::SprintExit);
-			return;
-		}
-		if (!bMovementIntent)
-		{
-			TransitionTo(bReachedFullSprintSpeed
-				? ERequiemLocomotionState::SprintExit
-				: ERequiemLocomotionState::Idle);
-			return;
-		}
-		if (HasOneShotFinished())
-		{
-			HandleFinishedOneShot();
-		}
-		return;
-
-	case ERequiemLocomotionState::SprintLoop:
-		if (bReversedDirection)
-		{
-			bSprintExitForReversal = true;
-			TransitionTo(ERequiemLocomotionState::SprintExit);
-			return;
-		}
-		if (!bMovementIntent)
-		{
-			bSprintExitForReversal = false;
-			TransitionTo(bReachedFullSprintSpeed
-				? ERequiemLocomotionState::SprintExit
-				: ERequiemLocomotionState::Idle);
+			TransitionTo(ERequiemLocomotionState::Idle);
 			return;
 		}
 		RefreshDirectionalLoop();
 		return;
 
-	case ERequiemLocomotionState::SprintExit:
-		if (!bSprintExitForReversal && bMovementIntent)
+	case ERequiemLocomotionState::JumpLand:
+		if (bShouldJog)
 		{
-			bReachedFullSprintSpeed = false;
-			TransitionTo(ERequiemLocomotionState::SprintEnter);
+			TransitionTo(ERequiemLocomotionState::Jog);
 			return;
 		}
 		if (HasOneShotFinished())
@@ -282,7 +230,6 @@ void URequiemPlayerAnimInstance::UpdateGroundedState(const float DeltaSeconds)
 		}
 		return;
 
-	case ERequiemLocomotionState::JumpLand:
 	case ERequiemLocomotionState::CrouchExit:
 		if (HasOneShotFinished())
 		{
@@ -291,8 +238,8 @@ void URequiemPlayerAnimInstance::UpdateGroundedState(const float DeltaSeconds)
 		return;
 
 	default:
-		TransitionTo(bMovementIntent
-			? ERequiemLocomotionState::SprintEnter
+		TransitionTo(bShouldJog
+			? ERequiemLocomotionState::Jog
 			: ERequiemLocomotionState::Idle);
 	}
 }
@@ -348,15 +295,9 @@ void URequiemPlayerAnimInstance::TransitionTo(
 	LocomotionState = NewState;
 	StateElapsedSeconds = 0.0f;
 	ActiveAnimationPlayRate = 1.0f;
-	if (NewState == ERequiemLocomotionState::SprintEnter)
-	{
-		bReachedFullSprintSpeed = false;
-		bSprintExitForReversal = false;
-	}
 
 	if (NewState == ERequiemLocomotionState::Idle)
 	{
-		PreviousMovementIntent = FVector::ZeroVector;
 		ScheduleNextLookAround();
 	}
 
@@ -370,29 +311,11 @@ void URequiemPlayerAnimInstance::HandleFinishedOneShot()
 	case ERequiemLocomotionState::IdleLookAround:
 		TransitionTo(ERequiemLocomotionState::Idle);
 		break;
-	case ERequiemLocomotionState::SprintEnter:
-		TransitionTo(HasMovementIntent()
-			? ERequiemLocomotionState::SprintLoop
-			: ERequiemLocomotionState::Idle);
-		break;
-	case ERequiemLocomotionState::SprintExit:
-		if (bSprintExitForReversal && HasMovementIntent())
-		{
-			bSprintExitForReversal = false;
-			bReachedFullSprintSpeed = false;
-			TransitionTo(ERequiemLocomotionState::SprintEnter);
-		}
-		else
-		{
-			TransitionTo(HasMovementIntent()
-				? ERequiemLocomotionState::SprintEnter
-				: ERequiemLocomotionState::Idle);
-		}
-		break;
 	case ERequiemLocomotionState::JumpLand:
 	case ERequiemLocomotionState::CrouchExit:
 		TransitionTo(HasMovementIntent()
-			? ERequiemLocomotionState::SprintEnter
+				|| ObservedGroundSpeed >= DirectionalLoopMinimumSpeed
+			? ERequiemLocomotionState::Jog
 			: ERequiemLocomotionState::Idle);
 		break;
 	default:
@@ -485,7 +408,7 @@ bool URequiemPlayerAnimInstance::HasOneShotFinished() const
 bool URequiemPlayerAnimInstance::IsLoopingState(const ERequiemLocomotionState State) const
 {
 	return State == ERequiemLocomotionState::Idle
-		|| State == ERequiemLocomotionState::SprintLoop
+		|| State == ERequiemLocomotionState::Jog
 		|| State == ERequiemLocomotionState::JumpLoop
 		|| State == ERequiemLocomotionState::CrouchLoop;
 }
@@ -515,14 +438,8 @@ UAnimSequenceBase* URequiemPlayerAnimInstance::GetAnimationForCurrentState() con
 		return IdleAnimation;
 	case ERequiemLocomotionState::IdleLookAround:
 		return IdleLookAroundAnimation;
-	case ERequiemLocomotionState::SprintEnter:
-		return SprintEnterAnimation;
-	case ERequiemLocomotionState::SprintLoop:
-		return MovementDirection == ERequiemMovementDirection::Forward
-			? SprintLoopAnimation.Get()
-			: GetDirectionalJogAnimation();
-	case ERequiemLocomotionState::SprintExit:
-		return SprintExitAnimation;
+	case ERequiemLocomotionState::Jog:
+		return GetDirectionalJogAnimation();
 	case ERequiemLocomotionState::JumpStart:
 		return JumpStartAnimation;
 	case ERequiemLocomotionState::JumpLoop:
@@ -563,7 +480,7 @@ UAnimSequenceBase* URequiemPlayerAnimInstance::GetDirectionalJogAnimation() cons
 	case ERequiemMovementDirection::Right:
 		return JogRightAnimation;
 	default:
-		return SprintLoopAnimation;
+		return JogForwardAnimation;
 	}
 }
 

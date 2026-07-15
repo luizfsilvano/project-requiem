@@ -77,9 +77,6 @@ CHARACTER_SOURCE_FILES = (
 ANIMATION_PROPERTIES = {
     "Idle_Loop": "idle_animation",
     "Idle_LookAround_Loop": "idle_look_around_animation",
-    "Sprint_Enter": "sprint_enter_animation",
-    "Sprint_Loop": "sprint_loop_animation",
-    "Sprint_Exit": "sprint_exit_animation",
     "Jog_Fwd_L_Loop": "jog_forward_left_animation",
     "Jog_Fwd_Loop": "jog_forward_animation",
     "Jog_Fwd_R_Loop": "jog_forward_right_animation",
@@ -104,6 +101,7 @@ ANIMATION_PROPERTIES = {
     "Crouch_Exit": "crouch_exit_animation",
 }
 SELECTED_ANIMATIONS = tuple(ANIMATION_PROPERTIES)
+OBSOLETE_ANIMATIONS = ("Sprint_Enter", "Sprint_Loop", "Sprint_Exit")
 
 
 def require(value, message: str):
@@ -585,11 +583,11 @@ def configure_character_blueprint(
     mesh_component.set_editor_property("anim_class", animation_blueprint_class)
     # These are gameplay movement settings owned by CharacterMovement. The
     # AnimInstance observes them and never drives speed, acceleration or braking.
-    movement_component.set_editor_property("max_walk_speed", 825.0)
+    movement_component.set_editor_property("max_walk_speed", 500.0)
     movement_component.set_editor_property("max_walk_speed_crouched", 220.0)
-    movement_component.set_editor_property("max_acceleration", 1400.0)
+    movement_component.set_editor_property("max_acceleration", 2000.0)
     movement_component.set_editor_property("ground_friction", 6.0)
-    movement_component.set_editor_property("braking_deceleration_walking", 1600.0)
+    movement_component.set_editor_property("braking_deceleration_walking", 2000.0)
     movement_component.set_editor_property("orient_rotation_to_movement", False)
     movement_component.set_editor_property("use_controller_desired_rotation", True)
 
@@ -598,6 +596,25 @@ def configure_character_blueprint(
         "Failed to compile BP_CH_Player",
     )
     require(asset_subsystem.save_loaded_asset(blueprint), "Failed to save BP_CH_Player")
+
+
+def remove_obsolete_animation_assets():
+    for animation_name in OBSOLETE_ANIMATIONS:
+        asset_path = f"{ANIMATION_PATH}/{animation_name}"
+        if not load_existing(asset_path):
+            continue
+
+        referencers = unreal.EditorAssetLibrary.find_package_referencers_for_asset(
+            asset_path, True
+        )
+        require(
+            not referencers,
+            f"Obsolete animation {asset_path} is still referenced by {referencers}",
+        )
+        require(
+            unreal.EditorAssetLibrary.delete_asset(asset_path),
+            f"Failed to remove obsolete animation {asset_path}",
+        )
 
 
 def main():
@@ -639,6 +656,7 @@ def main():
     configure_character_blueprint(
         asset_subsystem, skeletal_mesh, animation_blueprint_class
     )
+    remove_obsolete_animation_assets()
 
     require(level_subsystem.load_level(MAP_PATH), f"Failed to load {MAP_PATH}")
     unreal.EditorAssetLibrary.save_directory(

@@ -38,9 +38,7 @@ constexpr TCHAR RollActionPath[] =
 
 const FName IdleState(TEXT("Idle"));
 const FName IdleLookAroundState(TEXT("Idle_LookAround"));
-const FName SprintEnterState(TEXT("Sprint_Enter"));
-const FName SprintLoopState(TEXT("Sprint_Loop"));
-const FName SprintExitState(TEXT("Sprint_Exit"));
+const FName JogState(TEXT("Jog"));
 const FName JumpStartState(TEXT("Jump_Start"));
 const FName JumpLoopState(TEXT("Jump_Loop"));
 const FName JumpLandState(TEXT("Jump_Land"));
@@ -55,6 +53,9 @@ const FName CrouchIdleAnimationName(TEXT("Crouch_Idle_Loop"));
 struct FRunState
 {
 	bool bAborted = false;
+	bool bHasPlayerStartTransform = false;
+	FTransform PlayerStartTransform = FTransform::Identity;
+	FRotator PlayerStartControlRotation = FRotator::ZeroRotator;
 };
 
 struct FCharacterSnapshot
@@ -62,6 +63,8 @@ struct FCharacterSnapshot
 	FVector Location = FVector::ZeroVector;
 	float GroundSpeed = 0.0f;
 	float MaximumSpeed = 0.0f;
+	float MaximumAcceleration = 0.0f;
+	float WalkingBrakingDeceleration = 0.0f;
 	bool bIsCrouched = false;
 	bool bIsFalling = false;
 	FName LocomotionState = NAME_None;
@@ -120,6 +123,8 @@ bool ReadCharacterSnapshot(FCharacterSnapshot& OutSnapshot)
 	OutSnapshot.Location = Character->GetActorLocation();
 	OutSnapshot.GroundSpeed = Character->GetVelocity().Size2D();
 	OutSnapshot.MaximumSpeed = MovementComponent->GetMaxSpeed();
+	OutSnapshot.MaximumAcceleration = MovementComponent->GetMaxAcceleration();
+	OutSnapshot.WalkingBrakingDeceleration = MovementComponent->BrakingDecelerationWalking;
 	OutSnapshot.bIsCrouched = Character->IsCrouched();
 	OutSnapshot.bIsFalling = MovementComponent->IsFalling();
 	OutSnapshot.LocomotionState = AnimInstance->GetLocomotionStateName();
@@ -299,8 +304,12 @@ public:
 
 		const double ElapsedSeconds = GetElapsedSeconds();
 		UWorld* World = FindPIEWorld();
+		APlayerController* PlayerController = FindPIEPlayerController();
+		ARequiemCharacter* Character = PlayerController
+			? Cast<ARequiemCharacter>(PlayerController->GetPawn())
+			: nullptr;
 		FCharacterSnapshot Snapshot;
-		if (World && ReadCharacterSnapshot(Snapshot))
+		if (World && Character && ReadCharacterSnapshot(Snapshot))
 		{
 			if (!World->GetMapName().Contains(TEXT("L_Dev_Foundation")))
 			{
@@ -309,6 +318,9 @@ public:
 					*World->GetMapName()));
 			}
 
+			RunState->PlayerStartTransform = Character->GetActorTransform();
+			RunState->PlayerStartControlRotation = PlayerController->GetControlRotation();
+			RunState->bHasPlayerStartTransform = true;
 			Test->AddInfo(TEXT("PIE opened L_Dev_Foundation with the Requiem player AnimInstance."));
 			return true;
 		}
@@ -365,128 +377,10 @@ private:
 	bool bSawLookAroundPlayback = false;
 };
 
-class FWaitForPartialSprintCommand final : public FTimedCommand
+class FWaitForDiagonalJogCommand final : public FTimedCommand
 {
 public:
-	FWaitForPartialSprintCommand(FAutomationTestBase* InTest, TSharedRef<FRunState> InRunState)
-		: FTimedCommand(InTest, MoveTemp(InRunState), 5.0)
-	{
-	}
-
-	virtual bool Update() override
-	{
-		if (ShouldSkip())
-		{
-			return true;
-		}
-
-		const double ElapsedSeconds = GetElapsedSeconds();
-		if (!SetContinuousAction(MoveActionPath, FInputActionValue(FVector2D(0.0, 0.3))))
-		{
-			return AbortIfTimedOut(ElapsedSeconds, TEXT("injecting partial IA_Move input"));
-		}
-
-		FCharacterSnapshot Snapshot;
-		if (!ReadCharacterSnapshot(Snapshot))
-		{
-			return AbortIfTimedOut(ElapsedSeconds, TEXT("reading the partial-sprint snapshot"));
-		}
-
-		bSawSprintEnterPlayback |= Snapshot.LocomotionState == SprintEnterState
-			&& HasExpectedLocomotionPlayback(Snapshot, SprintEnterState);
-		bSawSprintLoopPlayback |= Snapshot.LocomotionState == SprintLoopState
-			&& HasExpectedLocomotionPlayback(Snapshot, SprintLoopState);
-		const bool bAtPartialSpeed = Snapshot.MaximumSpeed > 0.0f
-			&& Snapshot.GroundSpeed >= 50.0f
-			&& Snapshot.GroundSpeed < Snapshot.MaximumSpeed * 0.75f;
-		if (bSawSprintEnterPlayback
-			&& bSawSprintLoopPlayback
-			&& bAtPartialSpeed
-			&& Snapshot.LocomotionState == SprintLoopState
-			&& Snapshot.MovementDirection == ERequiemMovementDirection::Forward)
-		{
-			Test->AddInfo(TEXT("Partial movement reached Sprint_Loop without reaching full CharacterMovement speed."));
-			return true;
-		}
-
-		return AbortIfTimedOut(
-			ElapsedSeconds,
-			FString::Printf(
-				TEXT("partial sprint (state=%s, direction=%d, speed=%.1f, max=%.1f)"),
-				*Snapshot.LocomotionState.ToString(),
-				static_cast<int32>(Snapshot.MovementDirection),
-				Snapshot.GroundSpeed,
-				Snapshot.MaximumSpeed));
-	}
-
-private:
-	bool bSawSprintEnterPlayback = false;
-	bool bSawSprintLoopPlayback = false;
-};
-
-class FWaitForPartialSprintStopCommand final : public FTimedCommand
-{
-public:
-	FWaitForPartialSprintStopCommand(FAutomationTestBase* InTest, TSharedRef<FRunState> InRunState)
-		: FTimedCommand(InTest, MoveTemp(InRunState), 5.0)
-	{
-	}
-
-	virtual bool Update() override
-	{
-		if (ShouldSkip())
-		{
-			return true;
-		}
-
-		const double ElapsedSeconds = GetElapsedSeconds();
-		StopContinuousAction(MoveActionPath);
-		FCharacterSnapshot Snapshot;
-		if (!ReadCharacterSnapshot(Snapshot))
-		{
-			return AbortIfTimedOut(ElapsedSeconds, TEXT("reading the partial-sprint release snapshot"));
-		}
-
-		if (!bHasInitialSpeed)
-		{
-			InitialSpeed = Snapshot.GroundSpeed;
-			bHasInitialSpeed = true;
-		}
-		if (Snapshot.LocomotionState == SprintExitState)
-		{
-			return AbortWithError(TEXT("Stopping before full speed incorrectly traversed Sprint_Exit."));
-		}
-
-		bSawIdlePlayback |= Snapshot.LocomotionState == IdleState
-			&& HasExpectedLocomotionPlayback(Snapshot, IdleAnimationName);
-		bSawDeceleration |= Snapshot.GroundSpeed <= FMath::Max(0.0f, InitialSpeed - 40.0f);
-		if (bSawIdlePlayback && bSawDeceleration && Snapshot.GroundSpeed <= 10.0f)
-		{
-			Test->AddInfo(TEXT("Stopping before full speed returned directly to Idle while CharacterMovement decelerated."));
-			return true;
-		}
-
-		return AbortIfTimedOut(
-			ElapsedSeconds,
-			FString::Printf(
-				TEXT("partial sprint release (state=%s, speed=%.1f, idle=%d, decelerated=%d)"),
-				*Snapshot.LocomotionState.ToString(),
-				Snapshot.GroundSpeed,
-				bSawIdlePlayback,
-				bSawDeceleration));
-	}
-
-private:
-	float InitialSpeed = 0.0f;
-	bool bHasInitialSpeed = false;
-	bool bSawIdlePlayback = false;
-	bool bSawDeceleration = false;
-};
-
-class FWaitForDiagonalSprintCommand final : public FTimedCommand
-{
-public:
-	FWaitForDiagonalSprintCommand(FAutomationTestBase* InTest, TSharedRef<FRunState> InRunState)
+	FWaitForDiagonalJogCommand(FAutomationTestBase* InTest, TSharedRef<FRunState> InRunState)
 		: FTimedCommand(InTest, MoveTemp(InRunState), 5.0)
 	{
 	}
@@ -501,13 +395,13 @@ public:
 		const double ElapsedSeconds = GetElapsedSeconds();
 		if (!SetContinuousAction(MoveActionPath, FInputActionValue(FVector2D(1.0, 1.0))))
 		{
-			return AbortIfTimedOut(ElapsedSeconds, TEXT("injecting IA_Move for the sprint stage"));
+			return AbortIfTimedOut(ElapsedSeconds, TEXT("injecting IA_Move for the jog stage"));
 		}
 
 		FCharacterSnapshot Snapshot;
 		if (!ReadCharacterSnapshot(Snapshot))
 		{
-			return AbortIfTimedOut(ElapsedSeconds, TEXT("reading the sprint player snapshot"));
+			return AbortIfTimedOut(ElapsedSeconds, TEXT("reading the jog player snapshot"));
 		}
 
 		if (!bHasStartLocation)
@@ -516,53 +410,89 @@ public:
 			bHasStartLocation = true;
 		}
 
-		bSawSprintEnter |= Snapshot.LocomotionState == SprintEnterState;
-		bSawSprintLoop |= Snapshot.LocomotionState == SprintLoopState;
-		bSawSprintEnterPlayback |= Snapshot.LocomotionState == SprintEnterState
-			&& HasExpectedLocomotionPlayback(Snapshot, SprintEnterState);
-		bSawSprintLoopPlayback |= Snapshot.LocomotionState == SprintLoopState
+		if (Snapshot.GroundSpeed >= 20.0f && Snapshot.LocomotionState != JogState)
+		{
+			return AbortWithError(FString::Printf(
+				TEXT("Movement reached %.1f cm/s without transitioning directly to Jog (state=%s)."),
+				Snapshot.GroundSpeed,
+				*Snapshot.LocomotionState.ToString()));
+		}
+
+		bSawJogPlayback |= Snapshot.LocomotionState == JogState
 			&& HasExpectedLocomotionPlayback(Snapshot, FName(TEXT("Jog_Fwd_R_Loop")));
 		bSawForwardRight |=
 			Snapshot.MovementDirection == ERequiemMovementDirection::ForwardRight;
 		bSawMeaningfulDisplacement |=
 			(Snapshot.Location - StartLocation).Size2D() >= 100.0f;
+		bSawAccelerationSample |= Snapshot.MaximumSpeed > 0.0f
+			&& Snapshot.GroundSpeed >= 20.0f
+			&& Snapshot.GroundSpeed < Snapshot.MaximumSpeed * 0.85f;
+		if (FirstMovementSeconds < 0.0 && Snapshot.GroundSpeed >= 20.0f)
+		{
+			FirstMovementSeconds = ElapsedSeconds;
+		}
 
-		const bool bAtExpectedSpeed = Snapshot.MaximumSpeed > 0.0f
-			&& Snapshot.GroundSpeed >= Snapshot.MaximumSpeed * 0.8f;
-		if (bSawSprintEnter
-			&& bSawSprintLoop
-			&& bSawSprintEnterPlayback
-			&& bSawSprintLoopPlayback
+		const bool bHasConfiguredJogSpeed = FMath::IsNearlyEqual(Snapshot.MaximumSpeed, 500.0f, 1.0f);
+		const bool bHasConfiguredAcceleration =
+			FMath::IsNearlyEqual(Snapshot.MaximumAcceleration, 2000.0f, 5.0f);
+		const bool bHasConfiguredBraking =
+			FMath::IsNearlyEqual(Snapshot.WalkingBrakingDeceleration, 2000.0f, 5.0f);
+		const bool bAtExpectedSpeed = bHasConfiguredJogSpeed
+			&& Snapshot.GroundSpeed >= Snapshot.MaximumSpeed * 0.95f;
+		if (ReachedMaximumSpeedSeconds < 0.0 && bAtExpectedSpeed)
+		{
+			ReachedMaximumSpeedSeconds = ElapsedSeconds;
+		}
+		const bool bUsedShortNonInstantRamp = FirstMovementSeconds >= 0.0
+			&& ReachedMaximumSpeedSeconds > FirstMovementSeconds
+			&& ReachedMaximumSpeedSeconds - FirstMovementSeconds <= 1.0;
+		const bool bExpectedPlayRate = FMath::IsNearlyEqual(
+			Snapshot.LocomotionMontagePlayRate,
+			FMath::Clamp(Snapshot.GroundSpeed / 500.0f, 0.35f, 1.2f),
+			0.08f);
+		if (bSawJogPlayback
 			&& bSawForwardRight
 			&& bSawMeaningfulDisplacement
+			&& bSawAccelerationSample
+			&& bHasConfiguredAcceleration
+			&& bHasConfiguredBraking
+			&& bUsedShortNonInstantRamp
 			&& bAtExpectedSpeed
-			&& Snapshot.LocomotionState == SprintLoopState
-			&& Snapshot.MovementDirection == ERequiemMovementDirection::ForwardRight)
+			&& bExpectedPlayRate
+			&& Snapshot.LocomotionState == JogState
+			&& Snapshot.MovementDirection == ERequiemMovementDirection::ForwardRight
+			&& HasValidLocomotionPlayback(Snapshot))
 		{
-			Test->AddInfo(TEXT("W+D reached Sprint_Enter, Sprint_Loop, and ForwardRight movement."));
+			Test->AddInfo(TEXT("W+D transitioned directly to Jog, accelerated under CharacterMovement, and reached 500 cm/s."));
 			return true;
 		}
 
 		return AbortIfTimedOut(
 			ElapsedSeconds,
 			FString::Printf(
-				TEXT("W+D sprint (state=%s, direction=%d, speed=%.1f, enter=%d, loop=%d)"),
+				TEXT("W+D jog (state=%s, direction=%d, speed=%.1f, max=%.1f, acceleration=%.1f, braking=%.1f, ramp=%.2fs, sampled=%d, playback=%d)"),
 				*Snapshot.LocomotionState.ToString(),
 				static_cast<int32>(Snapshot.MovementDirection),
 				Snapshot.GroundSpeed,
-				bSawSprintEnter,
-				bSawSprintLoop));
+				Snapshot.MaximumSpeed,
+				Snapshot.MaximumAcceleration,
+				Snapshot.WalkingBrakingDeceleration,
+				FirstMovementSeconds >= 0.0 && ReachedMaximumSpeedSeconds >= 0.0
+					? ReachedMaximumSpeedSeconds - FirstMovementSeconds
+					: -1.0,
+				bSawAccelerationSample,
+				bSawJogPlayback));
 	}
 
 private:
 	FVector StartLocation = FVector::ZeroVector;
 	bool bHasStartLocation = false;
-	bool bSawSprintEnter = false;
-	bool bSawSprintLoop = false;
-	bool bSawSprintEnterPlayback = false;
-	bool bSawSprintLoopPlayback = false;
+	bool bSawJogPlayback = false;
 	bool bSawForwardRight = false;
 	bool bSawMeaningfulDisplacement = false;
+	bool bSawAccelerationSample = false;
+	double FirstMovementSeconds = -1.0;
+	double ReachedMaximumSpeedSeconds = -1.0;
 };
 
 class FWaitForDirectionalLoopCommand final : public FTimedCommand
@@ -578,7 +508,7 @@ public:
 		const bool bInCrouched)
 		: FTimedCommand(InTest, MoveTemp(InRunState), 4.0)
 		// Direction selection does not need another full-speed traversal of the
-		// small dev floor; the dedicated sprint stages cover maximum speed.
+		// small dev floor; the dedicated jog stage covers maximum speed.
 		, MovementInput(InMovementInput.GetSafeNormal() * 0.35f)
 		, ExpectedDirection(InExpectedDirection)
 		, ExpectedAnimationName(InExpectedAnimationName)
@@ -609,12 +539,6 @@ public:
 				TEXT("reading %s directional snapshot"), *DirectionLabel));
 		}
 
-		if (!bCrouched && Snapshot.LocomotionState == SprintExitState)
-		{
-			return AbortWithError(FString::Printf(
-				TEXT("Changing to %s incorrectly traversed Sprint_Exit without a 180-degree reversal."),
-				*DirectionLabel));
-		}
 		if (bCrouched && !Snapshot.bIsCrouched)
 		{
 			return AbortWithError(FString::Printf(
@@ -622,7 +546,7 @@ public:
 				*DirectionLabel));
 		}
 
-		const FName ExpectedState = bCrouched ? CrouchLoopState : SprintLoopState;
+		const FName ExpectedState = bCrouched ? CrouchLoopState : JogState;
 		const float ExpectedPlayRate = Snapshot.MaximumSpeed > UE_KINDA_SMALL_NUMBER
 			? FMath::Clamp(Snapshot.GroundSpeed / Snapshot.MaximumSpeed, 0.35f, 1.2f)
 			: 1.0f;
@@ -665,10 +589,10 @@ private:
 	bool bCrouched = false;
 };
 
-class FWaitForSprintReversalCommand final : public FTimedCommand
+class FWaitForJogStopCommand final : public FTimedCommand
 {
 public:
-	FWaitForSprintReversalCommand(FAutomationTestBase* InTest, TSharedRef<FRunState> InRunState)
+	FWaitForJogStopCommand(FAutomationTestBase* InTest, TSharedRef<FRunState> InRunState)
 		: FTimedCommand(InTest, MoveTemp(InRunState), 5.0)
 	{
 	}
@@ -681,140 +605,80 @@ public:
 		}
 
 		const double ElapsedSeconds = GetElapsedSeconds();
-		if (!SetContinuousAction(MoveActionPath, FInputActionValue(FVector2D(-1.0, -1.0))))
+		if (!bReleasedMovement
+			&& !SetContinuousAction(MoveActionPath, FInputActionValue(FVector2D(0.0, 1.0))))
 		{
-			return AbortIfTimedOut(ElapsedSeconds, TEXT("injecting the 180-degree movement reversal"));
+			return AbortIfTimedOut(ElapsedSeconds, TEXT("accelerating before the jog-stop check"));
+		}
+		if (bReleasedMovement)
+		{
+			StopContinuousAction(MoveActionPath);
 		}
 
 		FCharacterSnapshot Snapshot;
 		if (!ReadCharacterSnapshot(Snapshot))
 		{
-			return AbortIfTimedOut(ElapsedSeconds, TEXT("reading the reversal player snapshot"));
+			return AbortIfTimedOut(ElapsedSeconds, TEXT("reading the jog-stop snapshot"));
 		}
 
-		bSawSprintExit |= Snapshot.LocomotionState == SprintExitState;
-		bSawSprintExitPlayback |= Snapshot.LocomotionState == SprintExitState
-			&& HasExpectedLocomotionPlayback(Snapshot, SprintExitState);
-		if (bSawSprintExit)
+		if (!bReleasedMovement)
 		{
-			bSawSprintEnterAfterExit |= Snapshot.LocomotionState == SprintEnterState;
-			bSawSprintLoopAfterExit |= Snapshot.LocomotionState == SprintLoopState;
-			bSawSprintEnterPlaybackAfterExit |= Snapshot.LocomotionState == SprintEnterState
-				&& HasExpectedLocomotionPlayback(Snapshot, SprintEnterState);
-			bSawSprintLoopPlaybackAfterExit |= Snapshot.LocomotionState == SprintLoopState
-				&& HasExpectedLocomotionPlayback(Snapshot, FName(TEXT("Jog_Bwd_L_Loop")));
-		}
-		bSawBackwardLeft |=
-			Snapshot.MovementDirection == ERequiemMovementDirection::BackwardLeft;
+			if (Snapshot.LocomotionState == JogState
+				&& Snapshot.GroundSpeed >= Snapshot.MaximumSpeed * 0.95f)
+			{
+				InitialSpeed = Snapshot.GroundSpeed;
+				bReleasedMovement = true;
+				StopContinuousAction(MoveActionPath);
+			}
 
-		const bool bAtExpectedSpeed = Snapshot.MaximumSpeed > 0.0f
-			&& Snapshot.GroundSpeed >= Snapshot.MaximumSpeed * 0.8f;
-		if (bSawSprintExit
-			&& bSawSprintExitPlayback
-			&& bSawSprintEnterAfterExit
-			&& bSawSprintEnterPlaybackAfterExit
-			&& bSawSprintLoopAfterExit
-			&& bSawSprintLoopPlaybackAfterExit
-			&& bSawBackwardLeft
-			&& bAtExpectedSpeed
-			&& Snapshot.LocomotionState == SprintLoopState
-			&& Snapshot.MovementDirection == ERequiemMovementDirection::BackwardLeft)
-		{
-			Test->AddInfo(TEXT("A 180-degree reversal traversed Sprint_Exit, Sprint_Enter, and BackwardLeft Sprint_Loop."));
-			return true;
+			return AbortIfTimedOut(
+				ElapsedSeconds,
+				FString::Printf(
+					TEXT("reaching full Jog speed before release (state=%s, speed=%.1f, max=%.1f)"),
+					*Snapshot.LocomotionState.ToString(),
+					Snapshot.GroundSpeed,
+					Snapshot.MaximumSpeed));
 		}
 
-		return AbortIfTimedOut(
-			ElapsedSeconds,
-			FString::Printf(
-				TEXT("180 reversal (state=%s, direction=%d, speed=%.1f, exit=%d, enter=%d, loop=%d)"),
-				*Snapshot.LocomotionState.ToString(),
-				static_cast<int32>(Snapshot.MovementDirection),
-				Snapshot.GroundSpeed,
-				bSawSprintExit,
-				bSawSprintEnterAfterExit,
-				bSawSprintLoopAfterExit));
-	}
-
-private:
-	bool bSawSprintExit = false;
-	bool bSawSprintExitPlayback = false;
-	bool bSawSprintEnterAfterExit = false;
-	bool bSawSprintEnterPlaybackAfterExit = false;
-	bool bSawSprintLoopAfterExit = false;
-	bool bSawSprintLoopPlaybackAfterExit = false;
-	bool bSawBackwardLeft = false;
-};
-
-class FWaitForSprintStopCommand final : public FTimedCommand
-{
-public:
-	FWaitForSprintStopCommand(FAutomationTestBase* InTest, TSharedRef<FRunState> InRunState)
-		: FTimedCommand(InTest, MoveTemp(InRunState), 5.0)
-	{
-	}
-
-	virtual bool Update() override
-	{
-		if (ShouldSkip())
-		{
-			return true;
-		}
-
-		const double ElapsedSeconds = GetElapsedSeconds();
-		StopContinuousAction(MoveActionPath);
-		FCharacterSnapshot Snapshot;
-		if (!ReadCharacterSnapshot(Snapshot))
-		{
-			return AbortIfTimedOut(ElapsedSeconds, TEXT("reading the sprint-stop snapshot"));
-		}
-
-		if (!bHasInitialSpeed)
-		{
-			InitialSpeed = Snapshot.GroundSpeed;
-			bHasInitialSpeed = true;
-		}
-
-		bSawSprintExit |= Snapshot.LocomotionState == SprintExitState;
-		bSawSprintExitPlayback |= Snapshot.LocomotionState == SprintExitState
-			&& HasExpectedLocomotionPlayback(Snapshot, SprintExitState);
 		bSawIdlePlayback |= Snapshot.LocomotionState == IdleState
 			&& HasExpectedLocomotionPlayback(Snapshot, IdleAnimationName);
+		bSawJogDuringDeceleration |= Snapshot.LocomotionState == JogState
+			&& Snapshot.GroundSpeed >= 20.0f
+			&& Snapshot.GroundSpeed <= FMath::Max(20.0f, InitialSpeed - 50.0f);
 		bSawDeceleration |= Snapshot.GroundSpeed <= FMath::Max(0.0f, InitialSpeed - 100.0f);
-		if (bSawSprintExit
-			&& bSawSprintExitPlayback
-			&& bSawIdlePlayback
+		if (bSawIdlePlayback
 			&& bSawDeceleration
 			&& Snapshot.LocomotionState == IdleState
 			&& Snapshot.GroundSpeed <= 10.0f)
 		{
-			Test->AddInfo(TEXT("Releasing W+D traversed Sprint_Exit, decelerated, and returned to Idle."));
+			Test->AddInfo(FString::Printf(
+				TEXT("Releasing movement returned to Idle under CharacterMovement braking (intermediate Jog sample=%d)."),
+				bSawJogDuringDeceleration));
 			return true;
 		}
 
 		return AbortIfTimedOut(
 			ElapsedSeconds,
 			FString::Printf(
-				TEXT("sprint release (state=%s, speed=%.1f, exit=%d, decelerated=%d)"),
+				TEXT("jog release (state=%s, speed=%.1f, jogDuringBraking=%d, decelerated=%d)"),
 				*Snapshot.LocomotionState.ToString(),
 				Snapshot.GroundSpeed,
-				bSawSprintExit,
+				bSawJogDuringDeceleration,
 				bSawDeceleration));
 	}
 
 private:
 	float InitialSpeed = 0.0f;
-	bool bHasInitialSpeed = false;
-	bool bSawSprintExit = false;
-	bool bSawSprintExitPlayback = false;
+	bool bReleasedMovement = false;
 	bool bSawIdlePlayback = false;
+	bool bSawJogDuringDeceleration = false;
 	bool bSawDeceleration = false;
 };
 
-class FObserveJumpCommand final : public FTimedCommand
+class FObserveStandingJumpCommand final : public FTimedCommand
 {
 public:
-	FObserveJumpCommand(FAutomationTestBase* InTest, TSharedRef<FRunState> InRunState)
+	FObserveStandingJumpCommand(FAutomationTestBase* InTest, TSharedRef<FRunState> InRunState)
 		: FTimedCommand(InTest, MoveTemp(InRunState), 6.0)
 	{
 	}
@@ -869,14 +733,14 @@ public:
 			&& !Snapshot.bIsFalling
 			&& Snapshot.LocomotionState == IdleState)
 		{
-			Test->AddInfo(TEXT("Space traversed Jump_Start, Jump_Loop, and Jump_Land."));
+			Test->AddInfo(TEXT("A stationary jump traversed Jump_Start, Jump_Loop, and Jump_Land."));
 			return true;
 		}
 
 		return AbortIfTimedOut(
 			ElapsedSeconds,
 			FString::Printf(
-				TEXT("jump sequence (state=%s, start=%d, loop=%d, land=%d)"),
+				TEXT("stationary jump sequence (state=%s, start=%d, loop=%d, land=%d)"),
 				*Snapshot.LocomotionState.ToString(),
 				bSawJumpStart,
 				bSawJumpLoop,
@@ -892,6 +756,312 @@ private:
 	bool bSawJumpLand = false;
 	bool bSawJumpLandPlayback = false;
 	bool bSawIdlePlaybackAfterLand = false;
+};
+
+class FInterruptJumpLandWithMovementCommand final : public FTimedCommand
+{
+public:
+	FInterruptJumpLandWithMovementCommand(
+		FAutomationTestBase* InTest,
+		TSharedRef<FRunState> InRunState)
+		: FTimedCommand(InTest, MoveTemp(InRunState), 8.0)
+	{
+	}
+
+	virtual bool Update() override
+	{
+		if (ShouldSkip())
+		{
+			return true;
+		}
+
+		const double ElapsedSeconds = GetElapsedSeconds();
+		if (bMovementStarted && !bInterruptedLand
+			&& !SetContinuousAction(MoveActionPath, FInputActionValue(FVector2D(0.0, 1.0))))
+		{
+			return AbortIfTimedOut(ElapsedSeconds, TEXT("injecting movement during Jump_Land"));
+		}
+		if (bInterruptedLand)
+		{
+			StopContinuousAction(MoveActionPath);
+		}
+
+		FCharacterSnapshot Snapshot;
+		if (!ReadCharacterSnapshot(Snapshot))
+		{
+			return AbortIfTimedOut(ElapsedSeconds, TEXT("reading the Jump_Land interruption snapshot"));
+		}
+
+		if (!bMovementStarted)
+		{
+			if (ElapsedSeconds < 0.12)
+			{
+				if (!SetContinuousAction(JumpActionPath, FInputActionValue(true)))
+				{
+					return AbortIfTimedOut(ElapsedSeconds, TEXT("injecting IA_Jump before the interruption check"));
+				}
+			}
+			else
+			{
+				StopContinuousAction(JumpActionPath);
+			}
+
+			if (Snapshot.LocomotionState == JumpLandState
+				&& HasExpectedLocomotionPlayback(Snapshot, JumpLandState))
+			{
+				if (Snapshot.GroundSpeed > 10.0f)
+				{
+					return AbortWithError(FString::Printf(
+						TEXT("Jump_Land interruption setup was not stationary (speed=%.1f)."),
+						Snapshot.GroundSpeed));
+				}
+
+				if (!SetContinuousAction(MoveActionPath, FInputActionValue(FVector2D(0.0, 1.0))))
+				{
+					return AbortIfTimedOut(ElapsedSeconds, TEXT("starting movement while Jump_Land is active"));
+				}
+				bMovementStarted = true;
+			}
+
+			return AbortIfTimedOut(
+				ElapsedSeconds,
+				FString::Printf(
+					TEXT("waiting for stationary Jump_Land playback (state=%s, speed=%.1f)"),
+					*Snapshot.LocomotionState.ToString(),
+					Snapshot.GroundSpeed));
+		}
+
+		if (Snapshot.GroundSpeed >= 20.0f && Snapshot.LocomotionState == JumpLandState)
+		{
+			return AbortWithError(FString::Printf(
+				TEXT("Jump_Land kept playing after movement began (speed=%.1f)."),
+				Snapshot.GroundSpeed));
+		}
+
+		if (!bInterruptedLand
+			&& Snapshot.GroundSpeed >= 20.0f
+			&& Snapshot.LocomotionState == JogState
+			&& Snapshot.MovementDirection == ERequiemMovementDirection::Forward
+			&& HasExpectedLocomotionPlayback(Snapshot, FName(TEXT("Jog_Fwd_Loop"))))
+		{
+			bInterruptedLand = true;
+			StopContinuousAction(MoveActionPath);
+		}
+
+		if (bInterruptedLand
+			&& Snapshot.LocomotionState == IdleState
+			&& Snapshot.GroundSpeed <= 10.0f
+			&& HasExpectedLocomotionPlayback(Snapshot, IdleAnimationName))
+		{
+			Test->AddInfo(TEXT("Movement interrupted an active stationary Jump_Land and switched directly to Jog_Fwd_Loop."));
+			return true;
+		}
+
+		return AbortIfTimedOut(
+			ElapsedSeconds,
+			FString::Printf(
+				TEXT("interrupting Jump_Land (state=%s, speed=%.1f, movementStarted=%d, interrupted=%d)"),
+				*Snapshot.LocomotionState.ToString(),
+				Snapshot.GroundSpeed,
+				bMovementStarted,
+				bInterruptedLand));
+	}
+
+private:
+	bool bMovementStarted = false;
+	bool bInterruptedLand = false;
+};
+
+class FObserveMovingJumpCommand final : public FTimedCommand
+{
+public:
+	FObserveMovingJumpCommand(FAutomationTestBase* InTest, TSharedRef<FRunState> InRunState)
+		: FTimedCommand(InTest, MoveTemp(InRunState), 8.0)
+	{
+	}
+
+	virtual bool Update() override
+	{
+		if (ShouldSkip())
+		{
+			return true;
+		}
+
+		const double ElapsedSeconds = GetElapsedSeconds();
+		if (!bReturnedToJog
+			&& !SetContinuousAction(MoveActionPath, FInputActionValue(FVector2D(0.0, 1.0))))
+		{
+			return AbortIfTimedOut(ElapsedSeconds, TEXT("injecting forward movement for the moving jump"));
+		}
+		if (bReturnedToJog)
+		{
+			StopContinuousAction(MoveActionPath);
+		}
+
+		FCharacterSnapshot Snapshot;
+		if (!ReadCharacterSnapshot(Snapshot))
+		{
+			return AbortIfTimedOut(ElapsedSeconds, TEXT("reading the moving-jump snapshot"));
+		}
+
+		if (!bJumpStarted)
+		{
+			if (Snapshot.LocomotionState == JogState
+				&& Snapshot.GroundSpeed >= Snapshot.MaximumSpeed * 0.75f)
+			{
+				if (!SetContinuousAction(JumpActionPath, FInputActionValue(true)))
+				{
+					return AbortIfTimedOut(ElapsedSeconds, TEXT("injecting IA_Jump while jogging"));
+				}
+				bJumpStarted = true;
+				JumpStartSeconds = ElapsedSeconds;
+			}
+
+			return AbortIfTimedOut(
+				ElapsedSeconds,
+				FString::Printf(
+					TEXT("waiting to begin moving jump (state=%s, speed=%.1f)"),
+					*Snapshot.LocomotionState.ToString(),
+					Snapshot.GroundSpeed));
+		}
+
+		if (ElapsedSeconds - JumpStartSeconds < 0.12)
+		{
+			if (!SetContinuousAction(JumpActionPath, FInputActionValue(true)))
+			{
+				return AbortIfTimedOut(ElapsedSeconds, TEXT("holding IA_Jump during moving jump"));
+			}
+		}
+		else
+		{
+			StopContinuousAction(JumpActionPath);
+		}
+
+		if (Snapshot.LocomotionState == JumpLandState)
+		{
+			return AbortWithError(TEXT("A moving jump incorrectly entered Jump_Land instead of returning directly to Jog."));
+		}
+
+		bSawJumpStartPlayback |= Snapshot.LocomotionState == JumpStartState
+			&& HasExpectedLocomotionPlayback(Snapshot, JumpStartState);
+		bSawJumpLoopPlayback |= Snapshot.LocomotionState == JumpLoopState
+			&& HasExpectedLocomotionPlayback(Snapshot, JumpLoopState);
+		bSawAirborne |= Snapshot.bIsFalling;
+
+		if (bSawAirborne
+			&& !Snapshot.bIsFalling
+			&& Snapshot.LocomotionState == JogState
+			&& Snapshot.MovementDirection == ERequiemMovementDirection::Forward
+			&& HasExpectedLocomotionPlayback(Snapshot, FName(TEXT("Jog_Fwd_Loop"))))
+		{
+			bReturnedToJog = true;
+			StopContinuousAction(MoveActionPath);
+		}
+
+		const bool bSettledAfterProof = bReturnedToJog
+			&& Snapshot.LocomotionState == IdleState
+			&& Snapshot.GroundSpeed <= 10.0f
+			&& HasExpectedLocomotionPlayback(Snapshot, IdleAnimationName);
+		if (bSawJumpStartPlayback
+			&& bSawJumpLoopPlayback
+			&& bSettledAfterProof)
+		{
+			Test->AddInfo(TEXT("A moving jump skipped Jump_Land and returned directly to Jog_Fwd_Loop."));
+			return true;
+		}
+
+		return AbortIfTimedOut(
+			ElapsedSeconds,
+			FString::Printf(
+				TEXT("moving jump (state=%s, falling=%d, start=%d, loop=%d, returnedJog=%d)"),
+				*Snapshot.LocomotionState.ToString(),
+				Snapshot.bIsFalling,
+				bSawJumpStartPlayback,
+				bSawJumpLoopPlayback,
+				bReturnedToJog));
+	}
+
+private:
+	double JumpStartSeconds = -1.0;
+	bool bJumpStarted = false;
+	bool bSawJumpStartPlayback = false;
+	bool bSawJumpLoopPlayback = false;
+	bool bSawAirborne = false;
+	bool bReturnedToJog = false;
+};
+
+class FResetCharacterToStartCommand final : public FTimedCommand
+{
+public:
+	FResetCharacterToStartCommand(FAutomationTestBase* InTest, TSharedRef<FRunState> InRunState)
+		: FTimedCommand(InTest, MoveTemp(InRunState), 3.0)
+	{
+	}
+
+	virtual bool Update() override
+	{
+		if (ShouldSkip())
+		{
+			return true;
+		}
+
+		const double ElapsedSeconds = GetElapsedSeconds();
+		APlayerController* PlayerController = FindPIEPlayerController();
+		ARequiemCharacter* Character = PlayerController
+			? Cast<ARequiemCharacter>(PlayerController->GetPawn())
+			: nullptr;
+		UCharacterMovementComponent* MovementComponent = Character
+			? Character->GetCharacterMovement()
+			: nullptr;
+		if (!RunState->bHasPlayerStartTransform || !PlayerController || !Character || !MovementComponent)
+		{
+			return AbortIfTimedOut(ElapsedSeconds, TEXT("recovering the PIE start transform"));
+		}
+
+		ReleaseAllTestInput();
+		if (!bTeleported)
+		{
+			MovementComponent->StopMovementImmediately();
+			Character->SetActorLocationAndRotation(
+				RunState->PlayerStartTransform.GetLocation(),
+				RunState->PlayerStartTransform.Rotator(),
+				false,
+				nullptr,
+				ETeleportType::TeleportPhysics);
+			PlayerController->SetControlRotation(RunState->PlayerStartControlRotation);
+			bTeleported = true;
+			return false;
+		}
+
+		FCharacterSnapshot Snapshot;
+		if (!ReadCharacterSnapshot(Snapshot))
+		{
+			return AbortIfTimedOut(ElapsedSeconds, TEXT("reading the recentered player snapshot"));
+		}
+
+		const bool bAtStart = Snapshot.Location.Equals(
+			RunState->PlayerStartTransform.GetLocation(),
+			1.0f);
+		if (bAtStart
+			&& Snapshot.GroundSpeed <= 10.0f
+			&& Snapshot.LocomotionState == IdleState
+			&& HasExpectedLocomotionPlayback(Snapshot, IdleAnimationName))
+		{
+			Test->AddInfo(TEXT("The player was recentered before the crouch traversal block."));
+			return true;
+		}
+
+		return AbortIfTimedOut(
+			ElapsedSeconds,
+			FString::Printf(
+				TEXT("recentering before crouch (state=%s, speed=%.1f, distance=%.1f)"),
+				*Snapshot.LocomotionState.ToString(),
+				Snapshot.GroundSpeed,
+				FVector::Dist(Snapshot.Location, RunState->PlayerStartTransform.GetLocation())));
+	}
+
+private:
+	bool bTeleported = false;
 };
 
 class FWaitForCrouchHoldCommand final : public FTimedCommand
@@ -1252,13 +1422,10 @@ bool FRequiemLocomotionPIETest::RunTest(const FString& Parameters)
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitForPIEReadyCommand(this, RunState));
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitForIdleLookAroundCommand(this, RunState));
 
-	ADD_LATENT_AUTOMATION_COMMAND(FWaitForPartialSprintCommand(this, RunState));
-	ADD_LATENT_AUTOMATION_COMMAND(FWaitForPartialSprintStopCommand(this, RunState));
-
-	ADD_LATENT_AUTOMATION_COMMAND(FWaitForDiagonalSprintCommand(this, RunState));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitForDiagonalJogCommand(this, RunState));
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitForDirectionalLoopCommand(
 		this, RunState, FVector2D(0.0, 1.0), ERequiemMovementDirection::Forward,
-		FName(TEXT("Sprint_Loop")), TEXT("Forward"), false));
+		FName(TEXT("Jog_Fwd_Loop")), TEXT("Forward"), false));
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitForDirectionalLoopCommand(
 		this, RunState, FVector2D(-1.0, 1.0), ERequiemMovementDirection::ForwardLeft,
 		FName(TEXT("Jog_Fwd_L_Loop")), TEXT("ForwardLeft"), false));
@@ -1280,18 +1447,13 @@ bool FRequiemLocomotionPIETest::RunTest(const FString& Parameters)
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitForDirectionalLoopCommand(
 		this, RunState, FVector2D(1.0, 1.0), ERequiemMovementDirection::ForwardRight,
 		FName(TEXT("Jog_Fwd_R_Loop")), TEXT("ForwardRight"), false));
-	// A 135-degree turn is not the special 180-degree reversal from the plan.
-	ADD_LATENT_AUTOMATION_COMMAND(FWaitForDirectionalLoopCommand(
-		this, RunState, FVector2D(0.0, -1.0), ERequiemMovementDirection::Backward,
-		FName(TEXT("Jog_Bwd_Loop")), TEXT("Backward 135-degree guard"), false));
-	ADD_LATENT_AUTOMATION_COMMAND(FWaitForDirectionalLoopCommand(
-		this, RunState, FVector2D(1.0, 1.0), ERequiemMovementDirection::ForwardRight,
-		FName(TEXT("Jog_Fwd_R_Loop")), TEXT("ForwardRight 135-degree guard"), false));
-	ADD_LATENT_AUTOMATION_COMMAND(FWaitForSprintReversalCommand(this, RunState));
-	ADD_LATENT_AUTOMATION_COMMAND(FWaitForSprintStopCommand(this, RunState));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitForJogStopCommand(this, RunState));
 
-	ADD_LATENT_AUTOMATION_COMMAND(FObserveJumpCommand(this, RunState));
+	ADD_LATENT_AUTOMATION_COMMAND(FObserveStandingJumpCommand(this, RunState));
+	ADD_LATENT_AUTOMATION_COMMAND(FInterruptJumpLandWithMovementCommand(this, RunState));
+	ADD_LATENT_AUTOMATION_COMMAND(FObserveMovingJumpCommand(this, RunState));
 
+	ADD_LATENT_AUTOMATION_COMMAND(FResetCharacterToStartCommand(this, RunState));
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitForCrouchHoldCommand(this, RunState));
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitForCrouchDiagonalCommand(this, RunState));
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitForDirectionalLoopCommand(

@@ -16,9 +16,7 @@ enum class ERequiemLocomotionState : uint8
 {
 	Idle,
 	IdleLookAround,
-	SprintEnter,
-	SprintLoop,
-	SprintExit,
+	Jog,
 	JumpStart,
 	JumpLoop,
 	JumpLand,
@@ -72,15 +70,6 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Locomotion|Idle")
 	TObjectPtr<UAnimSequenceBase> IdleLookAroundAnimation;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Locomotion|Sprint")
-	TObjectPtr<UAnimSequenceBase> SprintEnterAnimation;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Locomotion|Sprint")
-	TObjectPtr<UAnimSequenceBase> SprintLoopAnimation;
-
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Locomotion|Sprint")
-	TObjectPtr<UAnimSequenceBase> SprintExitAnimation;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Locomotion|Direction")
 	TObjectPtr<UAnimSequenceBase> JogForwardLeftAnimation;
@@ -149,7 +138,7 @@ protected:
 	TObjectPtr<UAnimSequenceBase> CrouchExitAnimation;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Locomotion|Tuning", meta = (ClampMin = "0.0"))
-	float SprintAuthoredSpeed = 825.0f;
+	float JogAuthoredSpeed = 500.0f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Locomotion|Tuning", meta = (ClampMin = "0.0"))
 	float DirectionalLoopMinimumSpeed = 20.0f;
@@ -214,12 +203,9 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimSequenceBase> ActiveAnimation;
 
-	FVector PreviousMovementIntent = FVector::ZeroVector;
 	float StateElapsedSeconds = 0.0f;
 	float ActiveAnimationPlayRate = 1.0f;
 	float LookAroundCountdown = 0.0f;
-	bool bReachedFullSprintSpeed = false;
-	bool bSprintExitForReversal = false;
 	bool bNeedsInitialState = true;
 
 	static const FName LocomotionSlotName;

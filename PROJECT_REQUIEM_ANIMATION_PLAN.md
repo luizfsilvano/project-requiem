@@ -19,19 +19,20 @@ As versões `_RM` dos arquivos possuem root motion. As versões normais não pos
 - Variação ocasional: `Idle_LookAround_Loop`.
 - A variação pode ser disparada após um intervalo ou por um tempo aleatório controlado. O custo de um timer simples é irrelevante para o desempenho neste contexto.
 
-### Corrida
+### Corrida em Jog
 
 Fluxo desejado:
 
 ```text
-Idle → Sprint_Enter → Sprint_Loop → Sprint_Exit → Idle
+Idle ↔ Jog direcional
 ```
 
-- `Sprint_Enter` inicia a corrida.
-- `Sprint_Loop` permanece enquanto o personagem corre.
-- `Sprint_Exit` deve ser usado ao parar depois de atingir a velocidade máxima ou ao inverter a direção em 180 graus.
-- A desaceleração deve ser gradual e controlada pelo `CharacterMovement`, mesmo que isso cause um deslizamento visual intencional.
-- Se o personagem ainda não atingiu a velocidade máxima, a transição para Idle também deve desacelerar gradualmente.
+- Usar as variações `Jog_*_Loop` em todas as oito direções, incluindo `Jog_Fwd_Loop` para frente.
+- Não usar `Sprint_Enter`, `Sprint_Loop` ou `Sprint_Exit` neste fluxo.
+- A transição visual entre `Idle` e `Jog` é direta.
+- A velocidade inicial de referência é `500 uu/s` e deve permanecer ajustável no `CharacterMovement`.
+- A aceleração e a desaceleração devem ser curtas, mas não instantâneas, para preservar resposta sem criar uma troca física brusca.
+- Durante a desaceleração, o Jog permanece até a velocidade planar chegar perto de zero; só então entra em Idle.
 - A animação não deve controlar a velocidade real do personagem.
 - As animações sem root motion devem ser usadas para locomoção.
 
@@ -44,10 +45,12 @@ O sistema deve permitir movimento em oito direções, incluindo diagonais. A dir
 Fluxo desejado:
 
 ```text
-Jump_Start → Jump_Loop → Jump_Land
+Jump_Start → Jump_Loop → Jump_Land → Idle  (aterrissagem parada)
+                      └→ Jog               (aterrissagem em movimento)
 ```
 
 Não há, neste momento, uma animação específica de queda. `Jump_Loop` cobre o estado aéreo até a aterrissagem.
+`Jump_Land` só deve tocar se o personagem aterrissar parado. Se houver movimento na aterrissagem, ou se o jogador voltar a se mover durante `Jump_Land`, a transição deve ir diretamente para o Jog direcional.
 
 ### Esquiva
 
@@ -60,7 +63,7 @@ Não há, neste momento, uma animação específica de queda. `Jump_Loop` cobre 
 
 - Entrada: `Crouch_Enter`.
 - Saída: `Crouch_Exit`.
-- Tecla planejada: `Ctrl`.
+- Tecla: `Ctrl` em hold; pressionar entra, manter permanece agachado e soltar sai.
 - Usar as variações direcionais disponíveis:
   - `Crouch_Fwd_L_Loop`;
   - `Crouch_Fwd_Loop`;
@@ -153,4 +156,3 @@ O sistema futuro deverá escolher a reação com base na região e na direção 
 - Implementar primeiro locomoção e estados gerais.
 - Implementar combate, dano e interações em etapas separadas.
 - As animações de espada não fazem parte deste plano inicial e devem ser avaliadas quando o sistema de armas for planejado.
-
