@@ -1,4 +1,4 @@
-"""Import and configure the minimal temporary character used by L_Dev_Foundation."""
+"""Import and configure the stage-one player locomotion presentation assets."""
 
 from __future__ import annotations
 
@@ -10,26 +10,26 @@ from pathlib import Path
 import unreal
 
 
-LOG_PREFIX = "[ProjectRequiem.VisualFoundation]"
+LOG_PREFIX = "[ProjectRequiem.PlayerLocomotion]"
 PROJECT_ROOT = "/Game/ProjectRequiem"
 CHARACTER_BLUEPRINT = (
     f"{PROJECT_ROOT}/Characters/Player/Blueprints/BP_CH_Player.BP_CH_Player"
 )
-VISUAL_CHARACTER_CLASS = "/Script/ProjectRequiem.RequiemVisualValidationCharacter"
+ANIMATION_BLUEPRINT = (
+    f"{PROJECT_ROOT}/Characters/Player/Animations/Locomotion/"
+    "ABP_PR_PlayerLocomotion.ABP_PR_PlayerLocomotion"
+)
+CHARACTER_CLASS = "/Script/ProjectRequiem.RequiemCharacter"
+ANIMATION_INSTANCE_CLASS = "/Script/ProjectRequiem.RequiemPlayerAnimInstance"
 MESH_PATH = f"{PROJECT_ROOT}/Characters/Player/Meshes/Temporary"
 MATERIAL_PATH = f"{PROJECT_ROOT}/Characters/Player/Materials/Temporary"
-ANIMATION_PATH = f"{PROJECT_ROOT}/Characters/Player/Animations/Temporary"
+ANIMATION_PATH = (
+    f"{PROJECT_ROOT}/Characters/Player/Animations/Locomotion/UAL1"
+)
 MAP_PATH = f"{PROJECT_ROOT}/World/Maps/Dev/L_Dev_Foundation"
 
 MESH_ASSET = f"{MESH_PATH}/SKM_Temp_SuperheroFemale"
 SKELETON_ASSET = f"{MESH_PATH}/SKEL_Temp_SuperheroFemale"
-IDLE_ASSET = f"{ANIMATION_PATH}/A_Temp_Idle"
-MOVE_ASSET = f"{ANIMATION_PATH}/A_Temp_Walk"
-JUMP_ASSET = f"{ANIMATION_PATH}/A_Temp_JumpLoop"
-RUN_ENTER_ASSET = f"{ANIMATION_PATH}/A_Temp_SprintEnter"
-RUN_LOOP_ASSET = f"{ANIMATION_PATH}/A_Temp_SprintLoop"
-RUN_EXIT_ASSET = f"{ANIMATION_PATH}/A_Temp_SprintExit"
-LEGACY_MOVE_ASSET = f"{ANIMATION_PATH}/A_Temp_Jog"
 CHARACTER_MATERIALS = (
     (
         (f"{MESH_PATH}/M_Temp_Hair_2", f"{MESH_PATH}/MI_Hair_2"),
@@ -74,14 +74,36 @@ CHARACTER_SOURCE_FILES = (
     "T_Superhero_Female_Dark_BaseColor.png",
     "T_Superhero_Female_Roughness.png",
 )
-SELECTED_ANIMATIONS = (
-    "Idle_Loop",
-    "Walk_Loop",
-    "Jump_Loop",
-    "Sprint_Enter",
-    "Sprint_Loop",
-    "Sprint_Exit",
-)
+ANIMATION_PROPERTIES = {
+    "Idle_Loop": "idle_animation",
+    "Idle_LookAround_Loop": "idle_look_around_animation",
+    "Sprint_Enter": "sprint_enter_animation",
+    "Sprint_Loop": "sprint_loop_animation",
+    "Sprint_Exit": "sprint_exit_animation",
+    "Jog_Fwd_L_Loop": "jog_forward_left_animation",
+    "Jog_Fwd_Loop": "jog_forward_animation",
+    "Jog_Fwd_R_Loop": "jog_forward_right_animation",
+    "Jog_Bwd_L_Loop": "jog_backward_left_animation",
+    "Jog_Bwd_Loop": "jog_backward_animation",
+    "Jog_Bwd_R_Loop": "jog_backward_right_animation",
+    "Jog_Left_Loop": "jog_left_animation",
+    "Jog_Right_Loop": "jog_right_animation",
+    "Jump_Start": "jump_start_animation",
+    "Jump_Loop": "jump_loop_animation",
+    "Jump_Land": "jump_land_animation",
+    "Crouch_Enter": "crouch_enter_animation",
+    "Crouch_Idle_Loop": "crouch_idle_animation",
+    "Crouch_Fwd_L_Loop": "crouch_forward_left_animation",
+    "Crouch_Fwd_Loop": "crouch_forward_animation",
+    "Crouch_Fwd_R_Loop": "crouch_forward_right_animation",
+    "Crouch_Bwd_L_Loop": "crouch_backward_left_animation",
+    "Crouch_Bwd_Loop": "crouch_backward_animation",
+    "Crouch_Bwd_R_Loop": "crouch_backward_right_animation",
+    "Crouch_Left_Loop": "crouch_left_animation",
+    "Crouch_Right_Loop": "crouch_right_animation",
+    "Crouch_Exit": "crouch_exit_animation",
+}
+SELECTED_ANIMATIONS = tuple(ANIMATION_PROPERTIES)
 
 
 def require(value, message: str):
@@ -188,7 +210,7 @@ def prepare_animation_source(
 ) -> Path:
     animation_dir = source_dir / "Animation"
     animation_dir.mkdir(parents=True, exist_ok=True)
-    output_path = animation_dir / "UAL1_VisualValidation.glb"
+    output_path = animation_dir / "UAL1_PlayerLocomotion.glb"
 
     with zipfile.ZipFile(archive_path) as archive:
         source = bytearray(archive.read(ANIMATION_ARCHIVE_PATH))
@@ -402,23 +424,6 @@ def import_character(asset_tools, asset_subsystem, source_path: Path):
     return skeletal_mesh, skeleton
 
 
-def reconcile_animation_assets(expected_names, replace_existing=False):
-    for source_name, destination_path in expected_names.items():
-        source_path = f"{ANIMATION_PATH}/{source_name}"
-        destination_asset = load_existing(destination_path)
-        source_asset = load_existing(source_path)
-        if destination_asset and source_asset:
-            asset_to_delete = destination_path if replace_existing else source_path
-            require(
-                unreal.EditorAssetLibrary.delete_asset(asset_to_delete),
-                f"Failed to remove redundant animation {asset_to_delete}",
-            )
-            if replace_existing:
-                rename_asset(source_asset, destination_path)
-        elif source_asset:
-            rename_asset(source_asset, destination_path)
-
-
 def move_asset_from_candidates(source_paths, destination_path: str):
     destination_asset = load_existing(destination_path)
     source_assets = [asset for path in source_paths if (asset := load_existing(path))]
@@ -437,40 +442,33 @@ def move_asset_from_candidates(source_paths, destination_path: str):
 
 
 def import_animations(asset_tools, asset_subsystem, source_path: Path, skeleton):
-    expected_names = {
-        "Idle_Loop": IDLE_ASSET,
-        "Walk_Loop": MOVE_ASSET,
-        "Jump_Loop": JUMP_ASSET,
-        "Sprint_Enter": RUN_ENTER_ASSET,
-        "Sprint_Loop": RUN_LOOP_ASSET,
-        "Sprint_Exit": RUN_EXIT_ASSET,
+    expected_assets = {
+        name: f"{ANIMATION_PATH}/{name}" for name in SELECTED_ANIMATIONS
     }
-    if any(load_existing(f"{ANIMATION_PATH}/{name}") for name in expected_names):
-        reconcile_animation_assets(expected_names, replace_existing=True)
-
-    needs_refresh = load_existing(LEGACY_MOVE_ASSET) or not all(
-        load_existing(path) for path in expected_names.values()
-    )
-    if needs_refresh:
+    if not all(load_existing(path) for path in expected_assets.values()):
         import_source(
             asset_tools,
             source_path,
             ANIMATION_PATH,
             make_pipeline(animations_only=True, skeleton=skeleton),
         )
-        reconcile_animation_assets(expected_names, replace_existing=True)
 
-    return tuple(
-        require(load_existing(path), f"Missing animation {path}")
-        for path in (
-            IDLE_ASSET,
-            MOVE_ASSET,
-            JUMP_ASSET,
-            RUN_ENTER_ASSET,
-            RUN_LOOP_ASSET,
-            RUN_EXIT_ASSET,
+    animations = {
+        name: require(load_existing(path), f"Missing animation {path}")
+        for name, path in expected_assets.items()
+    }
+    for name, animation in animations.items():
+        require(
+            isinstance(animation, unreal.AnimSequence),
+            f"Expected AnimSequence for {name}",
         )
-    )
+        animation.modify()
+        animation.set_editor_property("enable_root_motion", False)
+        require(
+            asset_subsystem.save_loaded_asset(animation),
+            f"Failed to save non-root-motion animation {name}",
+        )
+    return animations
 
 
 def organize_character_textures():
@@ -499,24 +497,67 @@ def configure_character_materials(asset_subsystem):
             )
 
 
-def configure_character_blueprint(asset_subsystem, skeletal_mesh, animations):
-    blueprint = require(unreal.load_asset(CHARACTER_BLUEPRINT), "Missing BP_CH_Player")
-    visual_character_class = require(
-        unreal.load_class(None, VISUAL_CHARACTER_CLASS),
-        f"Missing {VISUAL_CHARACTER_CLASS}",
+def reparent_blueprint(blueprint, parent_class, description: str):
+    if blueprint.get_blueprint_parent_class() == parent_class:
+        return
+
+    unreal.BlueprintEditorLibrary.reparent_blueprint(blueprint, parent_class)
+    require(
+        blueprint.get_blueprint_parent_class() == parent_class,
+        f"Failed to reparent {description}",
     )
-    if blueprint.get_blueprint_parent_class() != visual_character_class:
-        unreal.BlueprintEditorLibrary.reparent_blueprint(
-            blueprint, visual_character_class
-        )
-        require(
-            blueprint.get_blueprint_parent_class() == visual_character_class,
-            "Failed to reparent BP_CH_Player for visual validation",
-        )
-        require(
-            unreal.BlueprintEditorLibrary.compile_blueprint(blueprint),
-            "Failed to compile reparented BP_CH_Player",
-        )
+    require(
+        unreal.BlueprintEditorLibrary.compile_blueprint(blueprint),
+        f"Failed to compile reparented {description}",
+    )
+
+
+def configure_animation_blueprint(asset_subsystem, animations):
+    animation_blueprint = require(
+        unreal.load_asset(ANIMATION_BLUEPRINT),
+        "Missing ABP_PR_PlayerLocomotion",
+    )
+    animation_instance_class = require(
+        unreal.load_class(None, ANIMATION_INSTANCE_CLASS),
+        f"Missing {ANIMATION_INSTANCE_CLASS}",
+    )
+    reparent_blueprint(
+        animation_blueprint,
+        animation_instance_class,
+        "ABP_PR_PlayerLocomotion",
+    )
+
+    animation_cdo = require(
+        unreal.get_default_object(animation_blueprint.generated_class()),
+        "ABP_PR_PlayerLocomotion has no class default object",
+    )
+    animation_cdo.modify()
+    for animation_name, property_name in ANIMATION_PROPERTIES.items():
+        animation_cdo.set_editor_property(property_name, animations[animation_name])
+    animation_cdo.set_editor_property(
+        "root_motion_mode", unreal.RootMotionMode.IGNORE_ROOT_MOTION
+    )
+
+    require(
+        unreal.BlueprintEditorLibrary.compile_blueprint(animation_blueprint),
+        "Failed to compile ABP_PR_PlayerLocomotion",
+    )
+    require(
+        asset_subsystem.save_loaded_asset(animation_blueprint),
+        "Failed to save ABP_PR_PlayerLocomotion",
+    )
+    return animation_blueprint.generated_class()
+
+
+def configure_character_blueprint(
+    asset_subsystem, skeletal_mesh, animation_blueprint_class
+):
+    blueprint = require(unreal.load_asset(CHARACTER_BLUEPRINT), "Missing BP_CH_Player")
+    character_class = require(
+        unreal.load_class(None, CHARACTER_CLASS),
+        f"Missing {CHARACTER_CLASS}",
+    )
+    reparent_blueprint(blueprint, character_class, "BP_CH_Player")
 
     character_cdo = require(
         unreal.get_default_object(blueprint.generated_class()),
@@ -538,16 +579,19 @@ def configure_character_blueprint(asset_subsystem, skeletal_mesh, animations):
     mesh_component.set_editor_property(
         "relative_rotation", unreal.Rotator(pitch=0.0, yaw=-90.0, roll=0.0)
     )
-    character_cdo.set_editor_property("idle_animation", animations[0])
-    character_cdo.set_editor_property("jump_animation", animations[2])
-    character_cdo.set_editor_property("run_enter_animation", animations[3])
-    character_cdo.set_editor_property("run_loop_animation", animations[4])
-    character_cdo.set_editor_property("run_exit_animation", animations[5])
-    character_cdo.set_editor_property("run_start_speed", 97.5)
-    character_cdo.set_editor_property("run_speed", 825.0)
-    movement_component.set_editor_property("max_walk_speed", 97.5)
+    mesh_component.set_editor_property(
+        "animation_mode", unreal.AnimationMode.ANIMATION_BLUEPRINT
+    )
+    mesh_component.set_editor_property("anim_class", animation_blueprint_class)
+    # These are gameplay movement settings owned by CharacterMovement. The
+    # AnimInstance observes them and never drives speed, acceleration or braking.
+    movement_component.set_editor_property("max_walk_speed", 825.0)
+    movement_component.set_editor_property("max_walk_speed_crouched", 220.0)
     movement_component.set_editor_property("max_acceleration", 1400.0)
+    movement_component.set_editor_property("ground_friction", 6.0)
     movement_component.set_editor_property("braking_deceleration_walking", 1600.0)
+    movement_component.set_editor_property("orient_rotation_to_movement", False)
+    movement_component.set_editor_property("use_controller_desired_rotation", True)
 
     require(
         unreal.BlueprintEditorLibrary.compile_blueprint(blueprint),
@@ -556,16 +600,8 @@ def configure_character_blueprint(asset_subsystem, skeletal_mesh, animations):
     require(asset_subsystem.save_loaded_asset(blueprint), "Failed to save BP_CH_Player")
 
 
-def remove_legacy_animation_assets():
-    if load_existing(LEGACY_MOVE_ASSET):
-        require(
-            unreal.EditorAssetLibrary.delete_asset(LEGACY_MOVE_ASSET),
-            f"Failed to remove obsolete {LEGACY_MOVE_ASSET}",
-        )
-
-
 def main():
-    unreal.log(f"{LOG_PREFIX} Preparing minimal visual-validation assets")
+    unreal.log(f"{LOG_PREFIX} Preparing stage-one player locomotion assets")
     downloads = Path.home() / "Downloads"
     base_archive = require(downloads / BASE_ZIP_NAME, f"Missing {BASE_ZIP_NAME}")
     animation_archive = require(
@@ -574,7 +610,7 @@ def main():
     require(base_archive.is_file(), f"Missing {base_archive}")
     require(animation_archive.is_file(), f"Missing {animation_archive}")
 
-    source_dir = Path(unreal.Paths.project_saved_dir()) / "ImportSources" / "VisualFoundation"
+    source_dir = Path(unreal.Paths.project_saved_dir()) / "ImportSources" / "PlayerLocomotion"
     character_source = prepare_character_source(source_dir, base_archive)
     character_gltf = json.loads(character_source.read_text(encoding="utf-8"))
     target_pelvis_translation = node_translation(character_gltf, "pelvis")
@@ -597,8 +633,12 @@ def main():
     )
     organize_character_textures()
     configure_character_materials(asset_subsystem)
-    configure_character_blueprint(asset_subsystem, skeletal_mesh, animations)
-    remove_legacy_animation_assets()
+    animation_blueprint_class = configure_animation_blueprint(
+        asset_subsystem, animations
+    )
+    configure_character_blueprint(
+        asset_subsystem, skeletal_mesh, animation_blueprint_class
+    )
 
     require(level_subsystem.load_level(MAP_PATH), f"Failed to load {MAP_PATH}")
     unreal.EditorAssetLibrary.save_directory(
@@ -606,7 +646,7 @@ def main():
     )
     unreal.log(
         f"{LOG_PREFIX} Visual foundation configured with {skeletal_mesh.get_path_name()} "
-        f"and {[animation.get_path_name() for animation in animations]}"
+        f"and {[animation.get_path_name() for animation in animations.values()]}"
     )
 
 

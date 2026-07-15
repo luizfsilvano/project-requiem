@@ -10,12 +10,16 @@ public class ProjectRequiem : ModuleRules
 
 		PublicDependencyModuleNames.AddRange(new string[]
 		{
-			"AnimGraphRuntime",
 			"Core",
 			"CoreUObject",
 			"Engine",
 			"InputCore",
 			"EnhancedInput"
 		});
+
+		if (Target.bBuildEditor)
+		{
+			PrivateDependencyModuleNames.Add("UnrealEd");
+		}
 	}
 }

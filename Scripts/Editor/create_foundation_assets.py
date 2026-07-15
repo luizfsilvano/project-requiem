@@ -150,6 +150,8 @@ def create_input_assets(asset_tools):
     move_action = create_data_asset(asset_tools, "IA_Move", ACTION_PATH, unreal.InputAction)
     look_action = create_data_asset(asset_tools, "IA_Look", ACTION_PATH, unreal.InputAction)
     jump_action = create_data_asset(asset_tools, "IA_Jump", ACTION_PATH, unreal.InputAction)
+    crouch_action = create_data_asset(asset_tools, "IA_Crouch", ACTION_PATH, unreal.InputAction)
+    roll_action = create_data_asset(asset_tools, "IA_Roll", ACTION_PATH, unreal.InputAction)
     mapping_context = create_data_asset(
         asset_tools, "IMC_Exploration", INPUT_PATH, unreal.InputMappingContext
     )
@@ -157,6 +159,8 @@ def create_input_assets(asset_tools):
     move_action.set_editor_property("value_type", unreal.InputActionValueType.AXIS2D)
     look_action.set_editor_property("value_type", unreal.InputActionValueType.AXIS2D)
     jump_action.set_editor_property("value_type", unreal.InputActionValueType.BOOLEAN)
+    crouch_action.set_editor_property("value_type", unreal.InputActionValueType.BOOLEAN)
+    roll_action.set_editor_property("value_type", unreal.InputActionValueType.BOOLEAN)
 
     mappings = [
         make_mapping(move_action, "W", mapping_context, (unreal.InputModifierSwizzleAxis,)),
@@ -173,12 +177,14 @@ def create_input_assets(asset_tools):
         make_mapping(look_action, "Gamepad_Right2D", mapping_context),
         make_mapping(jump_action, "SpaceBar", mapping_context),
         make_mapping(jump_action, "Gamepad_FaceButton_Bottom", mapping_context),
+        make_mapping(crouch_action, "LeftControl", mapping_context),
+        make_mapping(roll_action, "LeftShift", mapping_context),
     ]
     mapping_data = unreal.InputMappingContextMappingData()
     mapping_data.set_editor_property("mappings", mappings)
     mapping_context.set_editor_property("default_key_mappings", mapping_data)
 
-    return move_action, look_action, jump_action, mapping_context
+    return move_action, look_action, jump_action, crouch_action, roll_action, mapping_context
 
 
 def remove_legacy_input_assets():
@@ -196,7 +202,15 @@ def remove_legacy_input_assets():
         )
 
 
-def create_framework_blueprints(asset_tools, move_action, look_action, jump_action, mapping_context):
+def create_framework_blueprints(
+    asset_tools,
+    move_action,
+    look_action,
+    jump_action,
+    crouch_action,
+    roll_action,
+    mapping_context,
+):
     controller_blueprint = create_blueprint(
         asset_tools,
         "BP_PC_Requiem",
@@ -225,6 +239,8 @@ def create_framework_blueprints(asset_tools, move_action, look_action, jump_acti
     character_cdo.set_editor_property("move_action", move_action)
     character_cdo.set_editor_property("look_action", look_action)
     character_cdo.set_editor_property("jump_action", jump_action)
+    character_cdo.set_editor_property("crouch_action", crouch_action)
+    character_cdo.set_editor_property("roll_action", roll_action)
 
     game_mode_cdo = default_object(game_mode_blueprint)
     game_mode_cdo.modify()
@@ -342,14 +358,29 @@ def main():
             f"Failed to create content folder {folder}",
         )
 
-    move_action, look_action, jump_action, mapping_context = create_input_assets(asset_tools)
+    (
+        move_action,
+        look_action,
+        jump_action,
+        crouch_action,
+        roll_action,
+        mapping_context,
+    ) = create_input_assets(asset_tools)
     blueprints = create_framework_blueprints(
-        asset_tools, move_action, look_action, jump_action, mapping_context
+        asset_tools,
+        move_action,
+        look_action,
+        jump_action,
+        crouch_action,
+        roll_action,
+        mapping_context,
     )
     assets_to_save = [
         move_action,
         look_action,
         jump_action,
+        crouch_action,
+        roll_action,
         mapping_context,
         *blueprints,
     ]
