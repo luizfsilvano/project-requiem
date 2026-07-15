@@ -12,6 +12,7 @@ class UAnimMontage;
 class UAnimSequenceBase;
 class UCharacterMovementComponent;
 class URequiemCombatComponent;
+class URequiemDodgeComponent;
 
 UENUM(BlueprintType)
 enum class ERequiemLocomotionState : uint8
@@ -22,6 +23,7 @@ enum class ERequiemLocomotionState : uint8
 	JumpStart,
 	JumpLoop,
 	JumpLand,
+	Dodge,
 	CrouchEnter,
 	CrouchLoop,
 	CrouchExit
@@ -104,6 +106,9 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Combat")
 	float GetCombatAnimationNormalizedTime() const;
 
+	UFUNCTION(BlueprintPure, Category = "Dodge")
+	bool IsDodgePresentationActive() const { return bDodgePresentationActive; }
+
 protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Locomotion|Idle")
 	TObjectPtr<UAnimSequenceBase> IdleAnimation;
@@ -143,6 +148,13 @@ protected:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Locomotion|Jump")
 	TObjectPtr<UAnimSequenceBase> JumpLandAnimation;
+
+	/** Roll from UAL1_RM. This is the only current locomotion-adjacent root-motion asset. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Dodge")
+	TObjectPtr<UAnimSequenceBase> RollAnimation;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Dodge|Tuning", meta = (ClampMin = "0.1"))
+	float DodgePlayRate = 1.35f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Locomotion|Crouch")
 	TObjectPtr<UAnimSequenceBase> CrouchEnterAnimation;
@@ -273,6 +285,9 @@ protected:
 private:
 	void CacheCharacterReferences();
 	void UpdateObservedMovement();
+	void StartDodgePresentation();
+	void UpdateDodgePresentation();
+	void FinishDodgePresentation();
 	void HandleCombatStateChange();
 	void UpdateCombatPresentation();
 	void UpdateCombatInputWindow();
@@ -326,6 +341,9 @@ private:
 	TObjectPtr<URequiemCombatComponent> CombatComponent;
 
 	UPROPERTY(Transient)
+	TObjectPtr<URequiemDodgeComponent> DodgeComponent;
+
+	UPROPERTY(Transient)
 	TObjectPtr<UAnimMontage> ActiveLocomotionMontage;
 
 	UPROPERTY(Transient)
@@ -343,6 +361,7 @@ private:
 	bool bExitQueued = false;
 	bool bCombatStanceEstablished = false;
 	bool bCombatAssetsInvalid = false;
+	bool bDodgePresentationActive = false;
 
 	static const FName LocomotionSlotName;
 };

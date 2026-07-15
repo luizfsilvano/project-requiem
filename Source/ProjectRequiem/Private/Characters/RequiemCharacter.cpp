@@ -4,8 +4,11 @@
 
 #include "Camera/CameraComponent.h"
 #include "Components/RequiemCombatComponent.h"
+#include "Components/RequiemDodgeComponent.h"
 #include "EnhancedInputComponent.h"
+#include "EnhancedPlayerInput.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GameFramework/PlayerController.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "InputActionValue.h"
 #include "Math/RotationMatrix.h"
@@ -34,6 +37,7 @@ ARequiemCharacter::ARequiemCharacter()
 	GetCharacterMovement()->GetNavAgentPropertiesRef().bCanCrouch = true;
 
 	CombatComponent = CreateDefaultSubobject<URequiemCombatComponent>(TEXT("CombatComponent"));
+	DodgeComponent = CreateDefaultSubobject<URequiemDodgeComponent>(TEXT("DodgeComponent"));
 
 	CameraBoom = CreateDefaultSubobject<USpringArmComponent>(TEXT("CameraBoom"));
 	CameraBoom->SetupAttachment(RootComponent);
@@ -58,6 +62,8 @@ void ARequiemCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 	if (MoveAction)
 	{
 		EnhancedInputComponent->BindAction(MoveAction, ETriggerEvent::Triggered, this, &ARequiemCharacter::Move);
+		EnhancedInputComponent->BindAction(MoveAction, ETriggerEvent::Completed, this, &ARequiemCharacter::StopMove);
+		EnhancedInputComponent->BindAction(MoveAction, ETriggerEvent::Canceled, this, &ARequiemCharacter::StopMove);
 	}
 
 	if (LookAction)
@@ -67,9 +73,9 @@ void ARequiemCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 
 	if (JumpAction)
 	{
-		EnhancedInputComponent->BindAction(JumpAction, ETriggerEvent::Started, this, &ACharacter::Jump);
-		EnhancedInputComponent->BindAction(JumpAction, ETriggerEvent::Completed, this, &ACharacter::StopJumping);
-		EnhancedInputComponent->BindAction(JumpAction, ETriggerEvent::Canceled, this, &ACharacter::StopJumping);
+		EnhancedInputComponent->BindAction(JumpAction, ETriggerEvent::Started, this, &ARequiemCharacter::StartJump);
+		EnhancedInputComponent->BindAction(JumpAction, ETriggerEvent::Completed, this, &ARequiemCharacter::StopJump);
+		EnhancedInputComponent->BindAction(JumpAction, ETriggerEvent::Canceled, this, &ARequiemCharacter::StopJump);
 	}
 
 	if (CrouchAction)
@@ -77,6 +83,15 @@ void ARequiemCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 		EnhancedInputComponent->BindAction(CrouchAction, ETriggerEvent::Started, this, &ARequiemCharacter::StartCrouch);
 		EnhancedInputComponent->BindAction(CrouchAction, ETriggerEvent::Completed, this, &ARequiemCharacter::StopCrouch);
 		EnhancedInputComponent->BindAction(CrouchAction, ETriggerEvent::Canceled, this, &ARequiemCharacter::StopCrouch);
+	}
+
+	if (RollAction)
+	{
+		EnhancedInputComponent->BindAction(
+			RollAction,
+			ETriggerEvent::Started,
+			this,
+			&ARequiemCharacter::StartDodge);
 	}
 
 	if (ToggleCombatAction)
@@ -96,6 +111,25 @@ void ARequiemCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 			this,
 			&ARequiemCharacter::PrimaryAttack);
 	}
+}
+
+float ARequiemCharacter::TakeDamage(
+	const float DamageAmount,
+	const FDamageEvent& DamageEvent,
+	AController* EventInstigator,
+	AActor* DamageCauser)
+{
+	if (DodgeComponent && DodgeComponent->ShouldIgnoreIncomingDamage())
+	{
+		return 0.0f;
+	}
+
+	return Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
+}
+
+bool ARequiemCharacter::IsDodgeInvulnerable() const
+{
+	return DodgeComponent && DodgeComponent->IsDodgeInvulnerable();
 }
 
 void ARequiemCharacter::OnStartCrouch(const float HalfHeightAdjust, const float ScaledHalfHeightAdjust)
@@ -118,8 +152,7 @@ void ARequiemCharacter::OnEndCrouch(const float HalfHeightAdjust, const float Sc
 void ARequiemCharacter::Move(const FInputActionValue& Value)
 {
 	const FVector2D MovementVector = Value.Get<FVector2D>();
-	if (!Controller
-		|| (CombatComponent && CombatComponent->IsUnarmedAttackMovementLocked()))
+	if (!Controller)
 	{
 		return;
 	}
@@ -128,9 +161,23 @@ void ARequiemCharacter::Move(const FInputActionValue& Value)
 	const FRotator YawRotation(0.0, ControlRotation.Yaw, 0.0);
 	const FVector ForwardDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::X);
 	const FVector RightDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::Y);
+	CurrentMovementInputDirection = (
+		ForwardDirection * MovementVector.Y
+		+ RightDirection * MovementVector.X).GetSafeNormal2D();
+
+	if ((CombatComponent && CombatComponent->IsUnarmedAttackMovementLocked())
+		|| (DodgeComponent && DodgeComponent->IsDodgeMovementLocked()))
+	{
+		return;
+	}
 
 	AddMovementInput(ForwardDirection, MovementVector.Y);
 	AddMovementInput(RightDirection, MovementVector.X);
+}
+
+void ARequiemCharacter::StopMove()
+{
+	CurrentMovementInputDirection = FVector::ZeroVector;
 }
 
 void ARequiemCharacter::Look(const FInputActionValue& Value)
@@ -140,9 +187,25 @@ void ARequiemCharacter::Look(const FInputActionValue& Value)
 	AddControllerPitchInput(LookAxisVector.Y);
 }
 
+void ARequiemCharacter::StartJump()
+{
+	if (!DodgeComponent || !DodgeComponent->AreDodgeRestrictedActionsLocked())
+	{
+		Jump();
+	}
+}
+
+void ARequiemCharacter::StopJump()
+{
+	StopJumping();
+}
+
 void ARequiemCharacter::StartCrouch()
 {
-	Crouch();
+	if (!DodgeComponent || !DodgeComponent->AreDodgeRestrictedActionsLocked())
+	{
+		Crouch();
+	}
 }
 
 void ARequiemCharacter::StopCrouch()
@@ -150,9 +213,60 @@ void ARequiemCharacter::StopCrouch()
 	UnCrouch();
 }
 
+void ARequiemCharacter::StartDodge()
+{
+	if (!DodgeComponent)
+	{
+		return;
+	}
+
+	FVector CapturedDirection = GetCurrentDodgeInputDirection();
+	if (CapturedDirection.IsNearlyZero())
+	{
+		CapturedDirection = CurrentMovementInputDirection.GetSafeNormal2D();
+	}
+	if (CapturedDirection.IsNearlyZero())
+	{
+		CapturedDirection = GetCharacterMovement()->GetCurrentAcceleration().GetSafeNormal2D();
+	}
+	if (CapturedDirection.IsNearlyZero())
+	{
+		CapturedDirection = GetActorForwardVector().GetSafeNormal2D();
+	}
+
+	DodgeComponent->RequestDodge(CapturedDirection);
+}
+
+FVector ARequiemCharacter::GetCurrentDodgeInputDirection() const
+{
+	const APlayerController* PlayerController = Cast<APlayerController>(Controller);
+	const UEnhancedPlayerInput* EnhancedPlayerInput = PlayerController
+		? Cast<UEnhancedPlayerInput>(PlayerController->PlayerInput)
+		: nullptr;
+	if (!EnhancedPlayerInput || !MoveAction || !Controller)
+	{
+		return FVector::ZeroVector;
+	}
+
+	const FVector2D MovementVector =
+		EnhancedPlayerInput->GetActionValue(MoveAction).Get<FVector2D>();
+	if (MovementVector.IsNearlyZero())
+	{
+		return FVector::ZeroVector;
+	}
+
+	const FRotator ControlRotation = Controller->GetControlRotation();
+	const FRotator YawRotation(0.0, ControlRotation.Yaw, 0.0);
+	const FVector ForwardDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::X);
+	const FVector RightDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::Y);
+	return (ForwardDirection * MovementVector.Y + RightDirection * MovementVector.X)
+		.GetSafeNormal2D();
+}
+
 void ARequiemCharacter::ToggleCombat()
 {
-	if (CombatComponent)
+	if (CombatComponent
+		&& (!DodgeComponent || !DodgeComponent->AreDodgeRestrictedActionsLocked()))
 	{
 		CombatComponent->ToggleUnarmedCombat();
 	}
@@ -160,7 +274,8 @@ void ARequiemCharacter::ToggleCombat()
 
 void ARequiemCharacter::PrimaryAttack()
 {
-	if (CombatComponent)
+	if (CombatComponent
+		&& (!DodgeComponent || !DodgeComponent->AreDodgeRestrictedActionsLocked()))
 	{
 		CombatComponent->RequestUnarmedAttack();
 	}

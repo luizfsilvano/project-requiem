@@ -189,6 +189,30 @@ O primeiro uso concreto de composição de combate é `URequiemCombatComponent`,
 
 O componente mantém apenas a consulta de elegibilidade para uma futura saída automática após 30 segundos de inatividade e sem inimigos próximos. Não existe polling, inimigo ou saída automática nesta etapa.
 
+### Primeiro passe de esquiva
+
+`URequiemDodgeComponent`, anexado a `ARequiemCharacter`, é a fonte de verdade da
+esquiva e permanece ortogonal a `Normal` e `CombatUnarmed`. Ele aceita apenas uma
+esquiva aterrissada e não agachada, captura uma direção mundial imutável, mantém o
+relógio normalizado da ação e expõe os locks, recovery e i-frames. O componente não
+implementa stamina, hitboxes, inimigos ou um sistema de dano.
+
+`ARequiemCharacter` encaminha `IA_Roll` no `Shift`, usa o input direcional atual
+relativo à câmera ou a própria frente como fallback e bloqueia ataque, pulo,
+entrada em agachamento e novas esquivas até o fim da ação. O deslocamento root motion
+e o movimento ficam comprometidos até `0.80` normalizado; nesse limite a velocidade
+residual é zerada e o root motion deixa de ser aplicado. Nos `20%` finais o
+`CharacterMovement` volta a responder ao input, enquanto a orientação capturada e os
+demais locks permanecem até o fim. `TakeDamage` retorna zero
+durante os i-frames como proteção mínima, e futuros resolvedores de hit devem
+consultar `ShouldIgnoreIncomingDamage` antes de aplicar impacto.
+
+`URequiemPlayerAnimInstance` dá prioridade total ao `Roll` no `DefaultSlot`, usa
+temporariamente `RootMotionFromMontagesOnly` e devolve o slot à locomoção ou à
+postura desarmada quando a ação termina. O asset vem de `UAL1_RM`; nenhum parâmetro
+global de velocidade, aceleração ou frenagem do `CharacterMovement` é alterado.
+O combo desarmado continua com os mesmos clipes, janelas e avanços já validados.
+
 ## Convenções principais
 
 ```text

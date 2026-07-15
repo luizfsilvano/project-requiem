@@ -2,6 +2,7 @@
 
 #include "Components/RequiemCombatComponent.h"
 
+#include "Components/RequiemDodgeComponent.h"
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -38,6 +39,13 @@ FName URequiemCombatComponent::GetCombatStateName() const
 
 void URequiemCombatComponent::ToggleUnarmedCombat()
 {
+	if (const URequiemDodgeComponent* DodgeComponent =
+		GetOwner() ? GetOwner()->FindComponentByClass<URequiemDodgeComponent>() : nullptr;
+		DodgeComponent && DodgeComponent->AreDodgeRestrictedActionsLocked())
+	{
+		return;
+	}
+
 	if (CombatState == ERequiemCombatState::CombatUnarmed)
 	{
 		ExitCombat();
@@ -49,6 +57,13 @@ void URequiemCombatComponent::ToggleUnarmedCombat()
 
 ERequiemUnarmedAttackRequestResult URequiemCombatComponent::RequestUnarmedAttack()
 {
+	if (const URequiemDodgeComponent* DodgeComponent =
+		GetOwner() ? GetOwner()->FindComponentByClass<URequiemDodgeComponent>() : nullptr;
+		DodgeComponent && DodgeComponent->AreDodgeRestrictedActionsLocked())
+	{
+		return ERequiemUnarmedAttackRequestResult::Rejected;
+	}
+
 	const bool bEnteredCombat = CombatState != ERequiemCombatState::CombatUnarmed;
 	if (CombatState != ERequiemCombatState::CombatUnarmed)
 	{

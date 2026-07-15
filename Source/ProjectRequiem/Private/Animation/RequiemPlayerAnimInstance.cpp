@@ -6,6 +6,7 @@
 #include "Animation/AnimSequence.h"
 #include "Animation/AnimSequenceBase.h"
 #include "Characters/RequiemCharacter.h"
+#include "Components/RequiemDodgeComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "ProjectRequiem.h"
 
@@ -38,6 +39,8 @@ FName StateToName(const ERequiemLocomotionState State)
 		return TEXT("Jump_Loop");
 	case ERequiemLocomotionState::JumpLand:
 		return TEXT("Jump_Land");
+	case ERequiemLocomotionState::Dodge:
+		return TEXT("Dodge");
 	case ERequiemLocomotionState::CrouchEnter:
 		return TEXT("Crouch_Enter");
 	case ERequiemLocomotionState::CrouchLoop:
@@ -94,6 +97,7 @@ void URequiemPlayerAnimInstance::NativeInitializeAnimation()
 	bExitQueued = false;
 	bCombatStanceEstablished = false;
 	bCombatAssetsInvalid = false;
+	bDodgePresentationActive = false;
 	if (CombatComponent)
 	{
 		CombatComponent->EndUnarmedAttackSequence();
@@ -105,7 +109,7 @@ void URequiemPlayerAnimInstance::NativeUpdateAnimation(const float DeltaSeconds)
 {
 	Super::NativeUpdateAnimation(DeltaSeconds);
 
-	if (!OwningCharacter || !OwningMovementComponent || !CombatComponent)
+	if (!OwningCharacter || !OwningMovementComponent || !CombatComponent || !DodgeComponent)
 	{
 		CacheCharacterReferences();
 	}
@@ -123,6 +127,26 @@ void URequiemPlayerAnimInstance::NativeUpdateAnimation(const float DeltaSeconds)
 	{
 		bNeedsInitialState = false;
 		TransitionTo(ERequiemLocomotionState::Idle, true);
+	}
+
+	// A committed dodge owns the full-body slot and cannot be replaced by combat,
+	// jump, crouch or locomotion presentation. Gameplay state remains orthogonal.
+	if (DodgeComponent && DodgeComponent->IsDodgeActive())
+	{
+		if (!bDodgePresentationActive)
+		{
+			StartDodgePresentation();
+		}
+		else
+		{
+			UpdateDodgePresentation();
+		}
+		return;
+	}
+
+	if (bDodgePresentationActive)
+	{
+		FinishDodgePresentation();
 	}
 
 	HandleCombatStateChange();
@@ -180,6 +204,7 @@ void URequiemPlayerAnimInstance::CacheCharacterReferences()
 	OwningCharacter = Cast<ARequiemCharacter>(TryGetPawnOwner());
 	OwningMovementComponent = OwningCharacter ? OwningCharacter->GetCharacterMovement() : nullptr;
 	CombatComponent = OwningCharacter ? OwningCharacter->GetCombatComponent() : nullptr;
+	DodgeComponent = OwningCharacter ? OwningCharacter->GetDodgeComponent() : nullptr;
 }
 
 void URequiemPlayerAnimInstance::UpdateObservedMovement()
@@ -198,6 +223,176 @@ void URequiemPlayerAnimInstance::UpdateObservedMovement()
 		? FMath::RadiansToDegrees(FMath::Atan2(LocalDirection.Y, LocalDirection.X))
 		: 0.0f;
 	MovementDirection = QuantizeDirection(ObservedDirectionDegrees, bHasDirection);
+}
+
+void URequiemPlayerAnimInstance::StartDodgePresentation()
+{
+	if (!DodgeComponent || !DodgeComponent->IsDodgeActive())
+	{
+		return;
+	}
+
+	const UAnimSequence* RollSequence = Cast<UAnimSequence>(RollAnimation);
+	if (!RollAnimation || !RollSequence || !RollSequence->bEnableRootMotion)
+	{
+		UE_LOG(
+			LogProjectRequiem,
+			Error,
+			TEXT("Dodge requires a root-motion AnimSequence in RollAnimation"));
+		DodgeComponent->FinishDodge();
+		return;
+	}
+
+	if (CombatAnimationState == ERequiemCombatAnimationState::Enter)
+	{
+		bEnterQueued = ObservedCombatState == ERequiemCombatState::CombatUnarmed;
+	}
+	else if (CombatAnimationState == ERequiemCombatAnimationState::Exit)
+	{
+		bExitQueued = ObservedCombatState == ERequiemCombatState::Normal;
+	}
+	else if (CombatAnimationState == ERequiemCombatAnimationState::Attack
+		|| CombatAnimationState == ERequiemCombatAnimationState::Recovery)
+	{
+		// Input validation prevents this path. Keep the already committed combo if
+		// an external caller ever violates that contract.
+		DodgeComponent->FinishDodge();
+		return;
+	}
+
+	if (CombatComponent)
+	{
+		CombatComponent->SetUnarmedAttackInputWindowOpen(false);
+	}
+	if (ActiveLocomotionMontage)
+	{
+		Montage_Stop(0.0f, ActiveLocomotionMontage);
+	}
+
+	CombatAnimationState = ERequiemCombatAnimationState::Inactive;
+	ActiveComboAnimationIndex = INDEX_NONE;
+	CombatAnimationElapsedSeconds = 0.0f;
+	LocomotionState = ERequiemLocomotionState::Dodge;
+	MovementDirection = ERequiemMovementDirection::None;
+	StateElapsedSeconds = 0.0f;
+	ActiveAnimationPlayRate = FMath::Max(DodgePlayRate, 0.1f);
+	ActiveAnimation = RollAnimation;
+	ActiveLocomotionAnimation = RollAnimation;
+	SetRootMotionMode(ERootMotionMode::RootMotionFromMontagesOnly);
+	ActiveLocomotionMontage = PlaySlotAnimationAsDynamicMontage(
+		RollAnimation,
+		LocomotionSlotName,
+		0.04f,
+		0.08f,
+		ActiveAnimationPlayRate,
+		1,
+		0.0f);
+
+	if (!ActiveLocomotionMontage)
+	{
+		UE_LOG(LogProjectRequiem, Error, TEXT("Failed to start the Roll dynamic montage"));
+		DodgeComponent->FinishDodge();
+		FinishDodgePresentation();
+		return;
+	}
+
+	bDodgePresentationActive = true;
+	DodgeComponent->SynchronizeDodgePresentation(
+		RollAnimation->GetPlayLength() / ActiveAnimationPlayRate,
+		0.0f);
+}
+
+void URequiemPlayerAnimInstance::UpdateDodgePresentation()
+{
+	if (!DodgeComponent || !RollAnimation)
+	{
+		return;
+	}
+
+	const float PlayRate = FMath::Max(DodgePlayRate, 0.1f);
+	const float AnimationLength = RollAnimation->GetPlayLength();
+	const float DurationSeconds = AnimationLength / PlayRate;
+	const bool bMontagePlaying = ActiveLocomotionMontage
+		&& Montage_IsPlaying(ActiveLocomotionMontage);
+	if (bMontagePlaying)
+	{
+		Montage_SetPlayRate(ActiveLocomotionMontage, PlayRate);
+		const float MontageNormalizedTime = AnimationLength > UE_KINDA_SMALL_NUMBER
+			? Montage_GetPosition(ActiveLocomotionMontage) / AnimationLength
+			: 1.0f;
+		DodgeComponent->SynchronizeDodgePresentation(
+			DurationSeconds,
+			MontageNormalizedTime);
+	}
+	else if (DodgeComponent->GetDodgeNormalizedTime() < 0.95f)
+	{
+		// No gameplay montage is allowed to interrupt Roll. If an external
+		// presentation stops it unexpectedly, resume from the committed clock.
+		const float ResumeNormalizedTime = DodgeComponent->GetDodgeNormalizedTime();
+		UE_LOG(
+			LogProjectRequiem,
+			Warning,
+			TEXT("Roll montage stopped early at %.3f; resuming committed dodge"),
+			ResumeNormalizedTime);
+		ActiveLocomotionMontage = PlaySlotAnimationAsDynamicMontage(
+			RollAnimation,
+			LocomotionSlotName,
+			0.0f,
+			0.08f,
+			PlayRate,
+			1,
+			0.0f,
+			FMath::Clamp(ResumeNormalizedTime * AnimationLength, 0.0f, AnimationLength));
+	}
+	else
+	{
+		// The authored one-shot has completed; do not leave gameplay locks alive
+		// for a frame after its presentation is gone.
+		DodgeComponent->FinishDodge();
+	}
+
+	// Root motion owns only the committed 0-80% portion. During the final
+	// recovery CharacterMovement receives held input and controls displacement.
+	SetRootMotionMode(DodgeComponent->IsDodgeMovementLocked()
+		? ERootMotionMode::RootMotionFromMontagesOnly
+		: ERootMotionMode::IgnoreRootMotion);
+}
+
+void URequiemPlayerAnimInstance::FinishDodgePresentation()
+{
+	if (ActiveLocomotionMontage)
+	{
+		Montage_Stop(0.05f, ActiveLocomotionMontage);
+	}
+	SetRootMotionMode(ERootMotionMode::IgnoreRootMotion);
+
+	bDodgePresentationActive = false;
+	CombatAnimationState = ERequiemCombatAnimationState::Inactive;
+	ActiveComboAnimationIndex = INDEX_NONE;
+	CombatAnimationElapsedSeconds = 0.0f;
+	ActiveAnimation = nullptr;
+	ActiveLocomotionAnimation = nullptr;
+	ActiveLocomotionMontage = nullptr;
+	StateElapsedSeconds = 0.0f;
+
+	if (bObservedIsFalling)
+	{
+		LocomotionState = OwningCharacter && OwningCharacter->GetVelocity().Z > 0.0f
+			? ERequiemLocomotionState::JumpStart
+			: ERequiemLocomotionState::JumpLoop;
+	}
+	else if (bObservedIsCrouched)
+	{
+		LocomotionState = ERequiemLocomotionState::CrouchLoop;
+	}
+	else
+	{
+		LocomotionState = HasMovementIntent()
+			|| ObservedGroundSpeed >= DirectionalLoopMinimumSpeed
+			? ERequiemLocomotionState::Jog
+			: ERequiemLocomotionState::Idle;
+	}
+	PlayStateAnimation();
 }
 
 void URequiemPlayerAnimInstance::HandleCombatStateChange()
@@ -719,7 +914,10 @@ bool URequiemPlayerAnimInstance::ShouldUseCombatIdle() const
 
 bool URequiemPlayerAnimInstance::CanPlayCombatAnimation() const
 {
-	if (bObservedIsFalling || bObservedIsCrouched)
+	if (bDodgePresentationActive
+		|| (DodgeComponent && DodgeComponent->IsDodgeActive())
+		|| bObservedIsFalling
+		|| bObservedIsCrouched)
 	{
 		return false;
 	}
@@ -729,6 +927,7 @@ bool URequiemPlayerAnimInstance::CanPlayCombatAnimation() const
 	case ERequiemLocomotionState::JumpStart:
 	case ERequiemLocomotionState::JumpLoop:
 	case ERequiemLocomotionState::JumpLand:
+	case ERequiemLocomotionState::Dodge:
 	case ERequiemLocomotionState::CrouchEnter:
 	case ERequiemLocomotionState::CrouchLoop:
 	case ERequiemLocomotionState::CrouchExit:
@@ -1098,7 +1297,9 @@ void URequiemPlayerAnimInstance::PlayStateAnimation(const float StartTime)
 	}
 
 	const UAnimSequence* AnimationSequence = Cast<UAnimSequence>(NewAnimation);
-	if (AnimationSequence && AnimationSequence->bEnableRootMotion)
+	if (AnimationSequence
+		&& AnimationSequence->bEnableRootMotion
+		&& LocomotionState != ERequiemLocomotionState::Dodge)
 	{
 		UE_LOG(
 			LogProjectRequiem,
@@ -1187,6 +1388,8 @@ UAnimSequenceBase* URequiemPlayerAnimInstance::GetAnimationForCurrentState() con
 		return JumpLoopAnimation;
 	case ERequiemLocomotionState::JumpLand:
 		return JumpLandAnimation;
+	case ERequiemLocomotionState::Dodge:
+		return RollAnimation;
 	case ERequiemLocomotionState::CrouchEnter:
 		return CrouchEnterAnimation;
 	case ERequiemLocomotionState::CrouchLoop:

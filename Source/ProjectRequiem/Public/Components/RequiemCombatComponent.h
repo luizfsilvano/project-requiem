@@ -98,6 +98,12 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Combat|Unarmed")
 	bool IsUnarmedAttackMovementLocked() const { return bUnarmedAttackMovementLocked; }
 
+	UFUNCTION(BlueprintPure, Category = "Combat|Unarmed")
+	bool HasPendingInitialUnarmedAttackRequest() const
+	{
+		return bInitialUnarmedAttackRequested;
+	}
+
 	/** Unarmed combat has no blocking capability in this stage. */
 	UFUNCTION(BlueprintPure, Category = "Combat")
 	bool CanBlock() const { return false; }

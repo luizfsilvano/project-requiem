@@ -55,9 +55,24 @@ Não há, neste momento, uma animação específica de queda. `Jump_Loop` cobre 
 ### Esquiva
 
 - Animação: `Roll`.
-- A versão root motion está disponível no `UAL1_RM.fbx`.
-- Tecla reservada: `Shift`.
-- A esquiva será implementada futuramente.
+- Usar a versão root motion de `UAL1_RM`, isolada no asset
+  `/Game/ProjectRequiem/Characters/Player/Animations/Locomotion/UAL1_RM/Roll`.
+- Tecla: `Shift`, disparada somente no início do input.
+- A direção é capturada uma única vez quando a esquiva é aceita. O input direcional
+  posterior não altera a trajetória; sem direção, usa-se a frente do personagem.
+- O personagem gira para a direção capturada antes do início do root motion e essa
+  orientação permanece comprometida até o fim da animação.
+- A esquiva não pode ser interrompida. Ataque, pulo, entrada em agachamento e uma
+  nova esquiva ficam bloqueados durante todo o clipe.
+- A janela central entre `0.25` e `0.65` normalizado concede i-frames. O contrato
+  `URequiemDodgeComponent::ShouldIgnoreIncomingDamage` deve ser consultado por
+  futuros ataques; o fallback de dano genérico da Unreal também retorna zero nessa janela.
+- O deslocamento root motion permanece comprometido na direção capturada até `0.80`
+  normalizado. Nesse limite a velocidade residual é limpa, o root motion deixa de ser
+  aplicado e o `CharacterMovement` volta a aceitar input durante os `20%` finais de
+  recovery visual; outras ações e a orientação do Roll continuam bloqueadas até o fim.
+- A esquiva funciona sem alterar os estados `Normal` e `CombatUnarmed`; ao terminar,
+  a apresentação retorna ao estado de locomoção/postura compatível com o modo preservado.
 
 ### Agachamento
 
@@ -164,6 +179,9 @@ O sistema futuro deverá escolher a reação com base na região e na direção 
 
 - Usar animações sem root motion para locomoção, corrida, agachamento e pulo comum.
 - Reservar root motion para ações pontuais que precisam deslocar o personagem pela própria animação, como esquiva e knockback.
+- Durante os `80%` comprometidos de `Roll`, o AnimInstance usa
+  `RootMotionFromMontagesOnly`; no recovery final e fora da esquiva retorna a
+  `IgnoreRootMotion`, preservando o controle do `CharacterMovement` e o combo sem root motion.
 - A velocidade real deve continuar sob responsabilidade do `CharacterMovement`.
 - O Animation Blueprint deve reagir ao estado do personagem; não deve definir sozinho a velocidade de movimento.
 - Implementar primeiro locomoção e estados gerais.

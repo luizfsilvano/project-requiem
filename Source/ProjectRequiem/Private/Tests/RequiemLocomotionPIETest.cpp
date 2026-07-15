@@ -45,7 +45,6 @@ const FName JumpLandState(TEXT("Jump_Land"));
 const FName CrouchEnterState(TEXT("Crouch_Enter"));
 const FName CrouchLoopState(TEXT("Crouch_Loop"));
 const FName CrouchExitState(TEXT("Crouch_Exit"));
-const FName ReservedRollState(TEXT("Roll"));
 const FName IdleAnimationName(TEXT("Idle_Loop"));
 const FName IdleLookAroundAnimationName(TEXT("Idle_LookAround_Loop"));
 const FName CrouchIdleAnimationName(TEXT("Crouch_Idle_Loop"));
@@ -1394,76 +1393,6 @@ private:
 	bool bSawIdlePlayback = false;
 };
 
-class FValidateReservedRollCommand final : public FTimedCommand
-{
-public:
-	FValidateReservedRollCommand(FAutomationTestBase* InTest, TSharedRef<FRunState> InRunState)
-		: FTimedCommand(InTest, MoveTemp(InRunState), 2.0)
-	{
-	}
-
-	virtual bool Update() override
-	{
-		if (ShouldSkip())
-		{
-			return true;
-		}
-
-		const double ElapsedSeconds = GetElapsedSeconds();
-		FCharacterSnapshot Snapshot;
-		if (!ReadCharacterSnapshot(Snapshot))
-		{
-			return AbortIfTimedOut(ElapsedSeconds, TEXT("reading the reserved-roll snapshot"));
-		}
-
-		if (ElapsedSeconds < 0.55)
-		{
-			if (!bPressedShift)
-			{
-				StartLocation = Snapshot.Location;
-				bPressedShift = true;
-			}
-			if (!SetContinuousAction(RollActionPath, FInputActionValue(true)))
-			{
-				return AbortIfTimedOut(ElapsedSeconds, TEXT("injecting reserved IA_Roll"));
-			}
-		}
-		else
-		{
-			StopContinuousAction(RollActionPath);
-			bReleasedShift = true;
-		}
-
-		if (Snapshot.LocomotionState == ReservedRollState)
-		{
-			StopContinuousAction(RollActionPath);
-			return AbortWithError(TEXT("Left Shift entered Roll even though roll is reserved for a future pass."));
-		}
-
-		if (bReleasedShift && ElapsedSeconds >= 0.7)
-		{
-			const float Displacement = (Snapshot.Location - StartLocation).Size2D();
-			if (Displacement > 5.0f || Snapshot.GroundSpeed > 5.0f)
-			{
-				return AbortWithError(FString::Printf(
-					TEXT("Left Shift alone moved the character (distance=%.2f, speed=%.2f)."),
-					Displacement,
-					Snapshot.GroundSpeed));
-			}
-
-			Test->AddInfo(TEXT("Left Shift remained reserved: no displacement and no Roll state."));
-			return true;
-		}
-
-		return AbortIfTimedOut(ElapsedSeconds, TEXT("validating reserved Left Shift roll input"));
-	}
-
-private:
-	FVector StartLocation = FVector::ZeroVector;
-	bool bPressedShift = false;
-	bool bReleasedShift = false;
-};
-
 class FReleaseAllInputCommand final : public IAutomationLatentCommand
 {
 public:
@@ -1613,8 +1542,6 @@ bool FRequiemLocomotionPIETest::RunTest(const FString& Parameters)
 		this, RunState, FVector2D(1.0, 1.0), ERequiemMovementDirection::ForwardRight,
 		FName(TEXT("Crouch_Fwd_R_Loop")), TEXT("ForwardRight"), true));
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitForCrouchExitCommand(this, RunState));
-
-	ADD_LATENT_AUTOMATION_COMMAND(FValidateReservedRollCommand(this, RunState));
 
 	// Teardown is deliberately unconditional: every failed phase only marks the
 	// shared value state, so these commands still release keys and end PIE.
