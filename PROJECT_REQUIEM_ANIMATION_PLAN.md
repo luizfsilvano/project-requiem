@@ -64,6 +64,7 @@ Não há, neste momento, uma animação específica de queda. `Jump_Loop` cobre 
 - Entrada: `Crouch_Enter`.
 - Saída: `Crouch_Exit`.
 - Tecla: `Ctrl` em hold; pressionar entra, manter permanece agachado e soltar sai.
+- Parado, `Crouch_Enter` e `Crouch_Exit` podem concluir normalmente. Se surgir intenção de movimento, a apresentação entrega em até dois updates para o loop agachado direcional ou para `Jog`, evitando deslizamento durante os one-shots.
 - Usar as variações direcionais disponíveis:
   - `Crouch_Fwd_L_Loop`;
   - `Crouch_Fwd_Loop`;
@@ -93,6 +94,8 @@ Normal → PunchKick_Enter → Combat Idle
 
 Como UAL1 e UAL2 não possuem um idle desarmado dedicado, `CombatUnarmed_Idle_Loop` reutiliza de forma estática a pose final de `PunchKick_Enter`. Essa pose também coincide com os limites dos golpes e de `PunchKick_Exit`.
 
+`PunchKick_Enter` e `PunchKick_Exit` são transições de postura exclusivamente paradas: exigem ausência de intenção de movimento e velocidade planar efetivamente zerada. Enquanto o personagem anda ou ainda freia, a locomoção direcional continua visível e a transição fica pendente. Se o jogador voltar a mover durante um desses clipes, ele é interrompido imediatamente, a locomoção reassume a apresentação e a transição é retomada somente na próxima parada completa.
+
 Combo planejado:
 
 ```text
@@ -117,7 +120,7 @@ Combat → PunchKick_Exit → Normal
 
 Sem armas, o jogador não pode bloquear. O contrato expõe a elegibilidade futura para encerrar o combate após 30 segundos sem atacar e longe de inimigos, mas nenhuma saída automática é executada nesta etapa porque ainda não existem inimigos.
 
-Todas as animações deste passe usam as fontes UAL1/UAL2 sem root motion. O modo de combate e o combo não alteram os parâmetros globais de velocidade, aceleração ou desaceleração; o deslocamento continua pertencendo ao `CharacterMovement`. Em `CombatUnarmed`, o idle de combate aparece parado e a locomoção direcional existente permanece ativa enquanto nenhum golpe está comprometido. Durante `Attack` e `Recovery`, `IA_Move` é ignorado. Cada golpe real substitui brevemente a velocidade planar por um avanço frontal de referência de `350 uu/s`, resolvido pelo próprio `CharacterMovement` com colisão e frenagem; recuperações não criam um novo avanço.
+Todas as animações deste passe usam as fontes UAL1/UAL2 sem root motion. O modo de combate e o combo não alteram os parâmetros globais de velocidade, aceleração ou desaceleração; o deslocamento continua pertencendo ao `CharacterMovement`. Em `CombatUnarmed`, o idle de combate aparece parado e a locomoção direcional existente permanece ativa enquanto nenhum golpe está comprometido. Um LMB aceito durante movimento bloqueia novos `IA_Move`, mantém o Jog durante a frenagem do `CharacterMovement` e só então executa `PunchKick_Enter` antes do primeiro golpe; durante `Attack` e `Recovery`, o bloqueio continua. Cada golpe real substitui brevemente a velocidade planar por um avanço frontal de referência de `350 uu/s`, resolvido pelo próprio `CharacterMovement` com colisão e frenagem; recuperações não criam um novo avanço.
 
 ## Reações de dano e morte — futuro
 

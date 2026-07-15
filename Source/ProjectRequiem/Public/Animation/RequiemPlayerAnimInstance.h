@@ -290,6 +290,7 @@ private:
 		bool bLooping,
 		int32 ComboIndex = INDEX_NONE);
 	bool ShouldUseCombatIdle() const;
+	bool CanPlayCombatAnimation() const;
 	bool CanPlayCombatStanceTransition() const;
 	bool CanStartUnarmedAttack() const;
 	bool ShouldAdvanceCombatOneShot() const;
@@ -340,6 +341,7 @@ private:
 	bool bNeedsInitialState = true;
 	bool bEnterQueued = false;
 	bool bExitQueued = false;
+	bool bCombatStanceEstablished = false;
 	bool bCombatAssetsInvalid = false;
 
 	static const FName LocomotionSlotName;

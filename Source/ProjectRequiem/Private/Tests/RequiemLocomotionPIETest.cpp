@@ -61,6 +61,7 @@ struct FRunState
 struct FCharacterSnapshot
 {
 	FVector Location = FVector::ZeroVector;
+	FVector Acceleration = FVector::ZeroVector;
 	float GroundSpeed = 0.0f;
 	float MaximumSpeed = 0.0f;
 	float MaximumAcceleration = 0.0f;
@@ -121,6 +122,7 @@ bool ReadCharacterSnapshot(FCharacterSnapshot& OutSnapshot)
 	}
 
 	OutSnapshot.Location = Character->GetActorLocation();
+	OutSnapshot.Acceleration = MovementComponent->GetCurrentAcceleration();
 	OutSnapshot.GroundSpeed = Character->GetVelocity().Size2D();
 	OutSnapshot.MaximumSpeed = MovementComponent->GetMaxSpeed();
 	OutSnapshot.MaximumAcceleration = MovementComponent->GetMaxAcceleration();
@@ -1143,6 +1145,134 @@ private:
 	bool bSawCrouched = false;
 };
 
+class FValidateResponsiveCrouchTransitionsCommand final : public FTimedCommand
+{
+public:
+	FValidateResponsiveCrouchTransitionsCommand(
+		FAutomationTestBase* InTest,
+		TSharedRef<FRunState> InRunState)
+		: FTimedCommand(InTest, MoveTemp(InRunState), 5.0)
+	{
+	}
+
+	virtual bool Update() override
+	{
+		if (ShouldSkip())
+		{
+			StopContinuousAction(MoveActionPath);
+			StopContinuousAction(CrouchActionPath);
+			return true;
+		}
+
+		const double ElapsedSeconds = GetElapsedSeconds();
+		if (!SetContinuousAction(MoveActionPath, FInputActionValue(FVector2D(0.0, 1.0))))
+		{
+			return AbortIfTimedOut(ElapsedSeconds, TEXT("injecting movement for responsive crouch transitions"));
+		}
+		if (!bCrouchReleased
+			&& !SetContinuousAction(CrouchActionPath, FInputActionValue(true)))
+		{
+			return AbortIfTimedOut(ElapsedSeconds, TEXT("holding Ctrl for responsive Crouch_Enter"));
+		}
+		if (bCrouchReleased)
+		{
+			StopContinuousAction(CrouchActionPath);
+		}
+
+		FCharacterSnapshot Snapshot;
+		if (!ReadCharacterSnapshot(Snapshot))
+		{
+			return AbortIfTimedOut(ElapsedSeconds, TEXT("reading responsive crouch transitions"));
+		}
+
+		const bool bHasMovement = !Snapshot.Acceleration.IsNearlyZero(1.0f)
+			|| Snapshot.GroundSpeed >= 20.0f;
+		if (!bCrouchReleased)
+		{
+			if (Snapshot.LocomotionState == CrouchEnterState)
+			{
+				bSawCrouchEnter = true;
+				if (bHasMovement)
+				{
+					++CrouchEnterSamplesWithMovement;
+				}
+				if (!HasExpectedLocomotionPlayback(Snapshot, CrouchEnterState))
+				{
+					return AbortWithError(TEXT("Responsive Crouch_Enter did not play on DefaultSlot."));
+				}
+				if (CrouchEnterSamplesWithMovement > 2)
+				{
+					return AbortWithError(TEXT("Crouch_Enter kept sliding for more than two updates after movement input."));
+				}
+			}
+
+			if (bSawCrouchEnter
+				&& bHasMovement
+				&& Snapshot.bIsCrouched
+				&& Snapshot.LocomotionState == CrouchLoopState
+				&& Snapshot.MovementDirection == ERequiemMovementDirection::Forward
+				&& HasExpectedLocomotionPlayback(Snapshot, FName(TEXT("Crouch_Fwd_Loop"))))
+			{
+				bCrouchReleased = true;
+				StopContinuousAction(CrouchActionPath);
+			}
+			return AbortIfTimedOut(
+				ElapsedSeconds,
+				FString::Printf(
+					TEXT("responsive Crouch_Enter (state=%s, crouched=%d, speed=%.1f, samples=%d)"),
+					*Snapshot.LocomotionState.ToString(),
+					Snapshot.bIsCrouched,
+					Snapshot.GroundSpeed,
+					CrouchEnterSamplesWithMovement));
+		}
+
+		if (Snapshot.LocomotionState == CrouchExitState)
+		{
+			bSawCrouchExit = true;
+			if (bHasMovement)
+			{
+				++CrouchExitSamplesWithMovement;
+			}
+			if (!HasExpectedLocomotionPlayback(Snapshot, CrouchExitState))
+			{
+				return AbortWithError(TEXT("Responsive Crouch_Exit did not play on DefaultSlot."));
+			}
+			if (CrouchExitSamplesWithMovement > 2)
+			{
+				return AbortWithError(TEXT("Crouch_Exit kept sliding for more than two updates after movement input."));
+			}
+		}
+
+		if (bSawCrouchExit
+			&& bHasMovement
+			&& !Snapshot.bIsCrouched
+			&& Snapshot.LocomotionState == JogState
+			&& Snapshot.MovementDirection == ERequiemMovementDirection::Forward
+			&& HasExpectedLocomotionPlayback(Snapshot, FName(TEXT("Jog_Fwd_Loop"))))
+		{
+			StopContinuousAction(MoveActionPath);
+			Test->AddInfo(TEXT("Moving Crouch_Enter handed off to directional crouch and moving Crouch_Exit handed off to Jog within two updates."));
+			return true;
+		}
+
+		return AbortIfTimedOut(
+			ElapsedSeconds,
+			FString::Printf(
+				TEXT("responsive Crouch_Exit (state=%s, crouched=%d, speed=%.1f, samples=%d)"),
+				*Snapshot.LocomotionState.ToString(),
+				Snapshot.bIsCrouched,
+				Snapshot.GroundSpeed,
+				CrouchExitSamplesWithMovement));
+	}
+
+private:
+	int32 CrouchEnterSamplesWithMovement = 0;
+	int32 CrouchExitSamplesWithMovement = 0;
+	bool bSawCrouchEnter = false;
+	bool bSawCrouchExit = false;
+	bool bCrouchReleased = false;
+};
+
 class FWaitForCrouchDiagonalCommand final : public FTimedCommand
 {
 public:
@@ -1453,6 +1583,8 @@ bool FRequiemLocomotionPIETest::RunTest(const FString& Parameters)
 	ADD_LATENT_AUTOMATION_COMMAND(FInterruptJumpLandWithMovementCommand(this, RunState));
 	ADD_LATENT_AUTOMATION_COMMAND(FObserveMovingJumpCommand(this, RunState));
 
+	ADD_LATENT_AUTOMATION_COMMAND(FResetCharacterToStartCommand(this, RunState));
+	ADD_LATENT_AUTOMATION_COMMAND(FValidateResponsiveCrouchTransitionsCommand(this, RunState));
 	ADD_LATENT_AUTOMATION_COMMAND(FResetCharacterToStartCommand(this, RunState));
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitForCrouchHoldCommand(this, RunState));
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitForCrouchDiagonalCommand(this, RunState));

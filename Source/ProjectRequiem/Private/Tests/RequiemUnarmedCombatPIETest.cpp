@@ -56,6 +56,7 @@ const FName RecoveryAnimationStateName(TEXT("Recovery"));
 const FName ExitAnimationStateName(TEXT("Exit"));
 
 const FName JogForwardAnimationName(TEXT("Jog_Fwd_Loop"));
+const FName JogBackwardAnimationName(TEXT("Jog_Bwd_Loop"));
 const FName CombatEnterAnimationName(TEXT("PunchKick_Enter"));
 const FName CombatIdleAnimationName(TEXT("CombatUnarmed_Idle_Loop"));
 const FName CombatExitAnimationName(TEXT("PunchKick_Exit"));
@@ -357,6 +358,14 @@ bool HasValidCombatOneShotPlayback(const FCharacterSnapshot& Snapshot)
 {
 	return HasValidPresentationPlayback(Snapshot)
 		&& FMath::IsNearlyZero(Snapshot.PresentationMontageBlendOutTriggerTime);
+}
+
+bool IsCombatStanceTransitionPlaying(const FCharacterSnapshot& Snapshot)
+{
+	return Snapshot.CombatAnimationStateName == EnterAnimationStateName
+		|| Snapshot.CombatAnimationStateName == ExitAnimationStateName
+		|| Snapshot.ActivePresentationAnimationName == CombatEnterAnimationName
+		|| Snapshot.ActivePresentationAnimationName == CombatExitAnimationName;
 }
 
 float GetExpectedCombatPlayRate(const int32 ComboIndex)
@@ -767,6 +776,12 @@ public:
 		{
 			return AbortWithError(TEXT("Manual combat entry enabled root motion."));
 		}
+		if (IsCombatStanceTransitionPlaying(Snapshot)
+			&& (!Snapshot.Acceleration.IsNearlyZero(1.0f)
+				|| Snapshot.GroundSpeed > 1.0f))
+		{
+			return AbortWithError(TEXT("PunchKick_Enter started before movement fully stopped."));
+		}
 
 		bSawEnter |= Snapshot.CombatAnimationStateName == EnterAnimationStateName
 			&& Snapshot.ActivePresentationAnimationName == CombatEnterAnimationName
@@ -799,6 +814,100 @@ public:
 
 private:
 	bool bSawEnter = false;
+};
+
+class FEnterCombatWhileMovingCommand final : public FTimedCommand
+{
+public:
+	FEnterCombatWhileMovingCommand(
+		FAutomationTestBase* InTest,
+		TSharedRef<FRunState> InRunState)
+		: FTimedCommand(InTest, MoveTemp(InRunState), 6.0)
+	{
+	}
+
+	virtual bool Update() override
+	{
+		if (ShouldSkip())
+		{
+			StopContinuousAction(MoveActionPath);
+			return true;
+		}
+
+		const double ElapsedSeconds = GetElapsedSeconds();
+		if (!SetContinuousAction(MoveActionPath, FInputActionValue(FVector2D(0.0, 1.0))))
+		{
+			return AbortIfTimedOut(ElapsedSeconds, TEXT("injecting movement before combat entry"));
+		}
+
+		FCharacterSnapshot Snapshot;
+		if (!ReadCharacterSnapshot(Snapshot))
+		{
+			return AbortIfTimedOut(ElapsedSeconds, TEXT("reading moving combat entry"));
+		}
+
+		if (!bEntryRequested)
+		{
+			if (Snapshot.GroundSpeed < ExpectedMaximumSpeed * 0.9f
+				|| Snapshot.LocomotionStateName != FName(TEXT("Jog"))
+				|| Snapshot.ActivePresentationAnimationName != JogForwardAnimationName)
+			{
+				return AbortIfTimedOut(
+					ElapsedSeconds,
+					FString::Printf(
+						TEXT("reaching Jog before combat entry (speed=%.1f, locomotion=%s, animation=%s)"),
+						Snapshot.GroundSpeed,
+						*Snapshot.LocomotionStateName.ToString(),
+						*Snapshot.ActivePresentationAnimationName.ToString()));
+			}
+
+			if (!InvokeCombatContract(ETestCombatCommand::EnterManual))
+			{
+				return AbortIfTimedOut(ElapsedSeconds, TEXT("entering combat while moving"));
+			}
+			bEntryRequested = true;
+			EntryRequestSeconds = ElapsedSeconds;
+			return false;
+		}
+
+		const bool bMoving = !Snapshot.Acceleration.IsNearlyZero(1.0f)
+			|| Snapshot.GroundSpeed > 1.0f;
+		if (bMoving && IsCombatStanceTransitionPlaying(Snapshot))
+		{
+			return AbortWithError(TEXT("Combat stance Enter/Exit played while movement remained active."));
+		}
+		if (Snapshot.CombatState == ERequiemCombatState::CombatUnarmed
+			&& Snapshot.ObservedCombatState == ERequiemCombatState::CombatUnarmed
+			&& Snapshot.CombatAnimationStateName == InactiveAnimationStateName
+			&& Snapshot.LocomotionStateName == FName(TEXT("Jog"))
+			&& Snapshot.ActivePresentationAnimationName == JogForwardAnimationName
+			&& bMoving)
+		{
+			++MovingLocomotionSamples;
+		}
+
+		if (MovingLocomotionSamples >= 3
+			&& ElapsedSeconds - EntryRequestSeconds >= 0.2)
+		{
+			StopContinuousAction(MoveActionPath);
+			Test->AddInfo(TEXT("CombatUnarmed entry stayed on Jog while moving and deferred PunchKick_Enter."));
+			return true;
+		}
+
+		return AbortIfTimedOut(
+			ElapsedSeconds,
+			FString::Printf(
+				TEXT("deferring combat entry while moving (combat=%s, presentation=%s, speed=%.1f, samples=%d)"),
+				*Snapshot.CombatStateName.ToString(),
+				*Snapshot.CombatAnimationStateName.ToString(),
+				Snapshot.GroundSpeed,
+				MovingLocomotionSamples));
+	}
+
+private:
+	double EntryRequestSeconds = -1.0;
+	int32 MovingLocomotionSamples = 0;
+	bool bEntryRequested = false;
 };
 
 class FMoveInCombatCommand final : public FTimedCommand
@@ -851,8 +960,7 @@ public:
 			&& Snapshot.GroundSpeed >= ExpectedMaximumSpeed * 0.95f
 			&& Displacement >= 100.0f)
 		{
-			StopContinuousAction(MoveActionPath);
-			Test->AddInfo(TEXT("W+D movement remained owned by CharacterMovement in CombatUnarmed."));
+			Test->AddInfo(TEXT("W+D movement remained owned by CharacterMovement in CombatUnarmed; input stays held for exit validation."));
 			return true;
 		}
 
@@ -876,9 +984,11 @@ public:
 	FWaitForExitToNormalCommand(
 		FAutomationTestBase* InTest,
 		TSharedRef<FRunState> InRunState,
-		const TCHAR* InStageDescription)
+		const TCHAR* InStageDescription,
+		const bool bInValidateMovingDeferral = false)
 		: FTimedCommand(InTest, MoveTemp(InRunState), 5.0)
 		, StageDescription(InStageDescription)
+		, bValidateMovingDeferral(bInValidateMovingDeferral)
 	{
 	}
 
@@ -903,6 +1013,36 @@ public:
 			return AbortWithError(FString::Printf(TEXT("%s used root motion."), StageDescription));
 		}
 
+		const bool bMoving = !Snapshot.Acceleration.IsNearlyZero(1.0f)
+			|| Snapshot.GroundSpeed > 1.0f;
+		if (bValidateMovingDeferral)
+		{
+			if (bMoving && IsCombatStanceTransitionPlaying(Snapshot))
+			{
+				return AbortWithError(TEXT("PunchKick_Exit started while movement was still active."));
+			}
+			if (!bMovementReleased)
+			{
+				if (Snapshot.CombatState == ERequiemCombatState::Normal
+					&& Snapshot.ObservedCombatState == ERequiemCombatState::Normal
+					&& Snapshot.CombatAnimationStateName == InactiveAnimationStateName
+					&& Snapshot.LocomotionStateName == FName(TEXT("Jog"))
+					&& bMoving)
+				{
+					++MovingLocomotionSamples;
+				}
+				if (MovingLocomotionSamples >= 3 && ElapsedSeconds >= 0.2)
+				{
+					StopContinuousAction(MoveActionPath);
+					bMovementReleased = true;
+				}
+			}
+			else if (bMoving)
+			{
+				bSawBrakingWithoutExit = true;
+			}
+		}
+
 		bSawExit |= Snapshot.CombatAnimationStateName == ExitAnimationStateName
 			&& Snapshot.ActivePresentationAnimationName == CombatExitAnimationName
 			&& HasValidCombatOneShotPlayback(Snapshot);
@@ -914,7 +1054,11 @@ public:
 			&& Snapshot.CombatAnimationStateName == InactiveAnimationStateName
 			&& Snapshot.ActiveComboAnimationIndex == INDEX_NONE
 			&& !Snapshot.bCanBlock;
-		if (bSawExit && bReachedNormal)
+		const bool bMovingDeferralValidated = !bValidateMovingDeferral
+			|| (bMovementReleased
+				&& MovingLocomotionSamples >= 3
+				&& bSawBrakingWithoutExit);
+		if (bMovingDeferralValidated && bSawExit && bReachedNormal)
 		{
 			Test->AddInfo(FString::Printf(TEXT("%s played PunchKick_Exit and returned to Normal."), StageDescription));
 			return true;
@@ -933,7 +1077,77 @@ public:
 
 private:
 	const TCHAR* StageDescription;
+	bool bValidateMovingDeferral = false;
+	bool bMovementReleased = false;
+	bool bSawBrakingWithoutExit = false;
+	int32 MovingLocomotionSamples = 0;
 	bool bSawExit = false;
+};
+
+class FPrepareMovingAutoAttackCommand final : public FTimedCommand
+{
+public:
+	FPrepareMovingAutoAttackCommand(
+		FAutomationTestBase* InTest,
+		TSharedRef<FRunState> InRunState)
+		: FTimedCommand(InTest, MoveTemp(InRunState), 5.0)
+	{
+	}
+
+	virtual bool Update() override
+	{
+		if (ShouldSkip())
+		{
+			StopContinuousAction(MoveActionPath);
+			return true;
+		}
+
+		const double ElapsedSeconds = GetElapsedSeconds();
+		if (!SetContinuousAction(MoveActionPath, FInputActionValue(FVector2D(0.0, -1.0))))
+		{
+			return AbortIfTimedOut(ElapsedSeconds, TEXT("injecting movement before LMB auto-entry"));
+		}
+
+		FCharacterSnapshot Snapshot;
+		if (!ReadCharacterSnapshot(Snapshot))
+		{
+			return AbortIfTimedOut(ElapsedSeconds, TEXT("reading movement before LMB auto-entry"));
+		}
+		if (Snapshot.CombatState != ERequiemCombatState::Normal
+			|| Snapshot.ObservedCombatState != ERequiemCombatState::Normal)
+		{
+			return AbortWithError(TEXT("Moving LMB preparation did not remain in Normal."));
+		}
+		if (!bHasStartLocation)
+		{
+			StartLocation = Snapshot.Location;
+			bHasStartLocation = true;
+		}
+
+		const float Displacement = (Snapshot.Location - StartLocation).Size2D();
+		if (Snapshot.GroundSpeed >= ExpectedMaximumSpeed * 0.9f
+			&& Displacement >= 50.0f
+			&& Snapshot.LocomotionStateName == FName(TEXT("Jog"))
+			&& Snapshot.ActivePresentationAnimationName == JogBackwardAnimationName
+			&& HasValidPresentationPlayback(Snapshot))
+		{
+			Test->AddInfo(TEXT("Normal reached backward Jog before the moving LMB auto-entry."));
+			return true;
+		}
+
+		return AbortIfTimedOut(
+			ElapsedSeconds,
+			FString::Printf(
+				TEXT("preparing moving LMB auto-entry (speed=%.1f, distance=%.1f, locomotion=%s, animation=%s)"),
+				Snapshot.GroundSpeed,
+				Displacement,
+				*Snapshot.LocomotionStateName.ToString(),
+				*Snapshot.ActivePresentationAnimationName.ToString()));
+	}
+
+private:
+	FVector StartLocation = FVector::ZeroVector;
+	bool bHasStartLocation = false;
 };
 
 int32 FindExpectedComboIndex(const FName AnimationName)
@@ -1002,6 +1216,31 @@ public:
 		{
 			return AbortWithError(TEXT("Blocking became available during unarmed combat."));
 		}
+		if (IsCombatStanceTransitionPlaying(Snapshot)
+			&& (!Snapshot.Acceleration.IsNearlyZero(1.0f)
+				|| Snapshot.GroundSpeed > 1.0f))
+		{
+			return AbortWithError(TEXT("Moving LMB auto-entry played a stance transition before fully stopping."));
+		}
+
+		if (!bSawAutomaticEnter
+			&& Snapshot.CombatState == ERequiemCombatState::CombatUnarmed
+			&& Snapshot.CombatAnimationStateName == InactiveAnimationStateName
+			&& Snapshot.LocomotionStateName == FName(TEXT("Jog"))
+			&& HasValidPresentationPlayback(Snapshot)
+			&& Snapshot.bUnarmedAttackMovementLocked
+			&& !Snapshot.bUnarmedAttackActive
+			&& Snapshot.PendingMovementInput.IsNearlyZero(0.01f)
+			&& Snapshot.GroundSpeed > 1.0f)
+		{
+			MaximumAutoEntryBrakingSpeed = FMath::Max(
+				MaximumAutoEntryBrakingSpeed,
+				Snapshot.GroundSpeed);
+			MinimumAutoEntryBrakingSpeed = FMath::Min(
+				MinimumAutoEntryBrakingSpeed,
+				Snapshot.GroundSpeed);
+			bSawNaturalAutoEntryBraking = true;
+		}
 
 		if (Snapshot.ActivePresentationAnimationName == CombatEnterAnimationName)
 		{
@@ -1009,6 +1248,9 @@ public:
 				&& Snapshot.CombatState == ERequiemCombatState::CombatUnarmed
 				&& HasValidCombatOneShotPlayback(Snapshot)
 				&& HasConsistentCombatTiming(Snapshot, 1.0f);
+			bSawPendingEntryMovementLock |= Snapshot.bUnarmedAttackMovementLocked
+				&& !Snapshot.bUnarmedAttackActive
+				&& Snapshot.PendingMovementInput.IsNearlyZero(0.01f);
 		}
 
 		const int32 ComboIndex = FindExpectedComboIndex(Snapshot.ActivePresentationAnimationName);
@@ -1137,7 +1379,10 @@ public:
 			&& RejectedBurstRequests == InputSpamCount - 1
 			&& bSawForwardLunge
 			&& HasConfiguredMovement(Snapshot);
-		if (bSawAutomaticEnter && bReachedFinalIdle)
+		if (bSawNaturalAutoEntryBraking
+			&& bSawAutomaticEnter
+			&& bSawPendingEntryMovementLock
+			&& bReachedFinalIdle)
 		{
 			Test->AddInfo(TEXT("Six clicks in one window produced only Cross -> Jab, then stopped without backlog."));
 			return true;
@@ -1146,7 +1391,7 @@ public:
 		return AbortIfTimedOut(
 			ElapsedSeconds,
 			FString::Printf(
-				TEXT("single-slot spam (combat=%s, presentation=%s, animation=%s, clips=%d/2, accepted=%d, rejected=%d, lunged=%d, maxForwardSpeed=%.1f, maxForwardDistance=%.1f)"),
+				TEXT("single-slot spam (combat=%s, presentation=%s, animation=%s, clips=%d/2, accepted=%d, rejected=%d, lunged=%d, maxForwardSpeed=%.1f, maxForwardDistance=%.1f, brake=%.1f..%.1f, enter=%d, pendingLock=%d)"),
 				*Snapshot.CombatStateName.ToString(),
 				*Snapshot.CombatAnimationStateName.ToString(),
 				*Snapshot.ActivePresentationAnimationName.ToString(),
@@ -1155,7 +1400,11 @@ public:
 				RejectedBurstRequests,
 				bSawForwardLunge,
 				MaximumForwardSpeed,
-				MaximumForwardDisplacement));
+				MaximumForwardDisplacement,
+				MinimumAutoEntryBrakingSpeed,
+				MaximumAutoEntryBrakingSpeed,
+				bSawAutomaticEnter,
+				bSawPendingEntryMovementLock));
 	}
 
 private:
@@ -1167,8 +1416,12 @@ private:
 	int32 RejectedBurstRequests = 0;
 	float MaximumForwardSpeed = 0.0f;
 	float MaximumForwardDisplacement = 0.0f;
+	float MaximumAutoEntryBrakingSpeed = 0.0f;
+	float MinimumAutoEntryBrakingSpeed = TNumericLimits<float>::Max();
 	bool bHasAttackStart = false;
 	bool bSawAutomaticEnter = false;
+	bool bSawPendingEntryMovementLock = false;
+	bool bSawNaturalAutoEntryBraking = false;
 	bool bBurstSubmitted = false;
 	bool bInputInjectionStopped = false;
 	bool bSawForwardLunge = false;
@@ -1372,7 +1625,9 @@ public:
 		}
 
 		const double ElapsedSeconds = GetElapsedSeconds();
-		if (!SetContinuousAction(MoveActionPath, FInputActionValue(FVector2D(0.0, 1.0))))
+		// Earlier combat and lunge stages advance toward the front edge of the
+		// compact dev floor, so validate post-exit movement back toward its center.
+		if (!SetContinuousAction(MoveActionPath, FInputActionValue(FVector2D(0.0, -1.0))))
 		{
 			return AbortIfTimedOut(ElapsedSeconds, TEXT("injecting movement after combat"));
 		}
@@ -1399,7 +1654,7 @@ public:
 		if (Snapshot.GroundSpeed >= ExpectedMaximumSpeed * 0.9f
 			&& Displacement >= 100.0f
 			&& Snapshot.LocomotionStateName == FName(TEXT("Jog"))
-			&& Snapshot.ActivePresentationAnimationName == JogForwardAnimationName
+			&& Snapshot.ActivePresentationAnimationName == JogBackwardAnimationName
 			&& HasValidPresentationPlayback(Snapshot)
 			&& HasConfiguredMovement(Snapshot))
 		{
@@ -1674,11 +1929,7 @@ bool FRequiemUnarmedCombatPIETest::RunTest(const FString& Parameters)
 	ADD_LATENT_AUTOMATION_COMMAND(FStartPIECommand(false));
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitForPIEReadyCommand(this, RunState));
 
-	ADD_LATENT_AUTOMATION_COMMAND(FInvokeCombatContractCommand(
-		this,
-		RunState,
-		ETestCombatCommand::EnterManual,
-		TEXT("manual combat entry contract (Z mapping verified)")));
+	ADD_LATENT_AUTOMATION_COMMAND(FEnterCombatWhileMovingCommand(this, RunState));
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitForManualCombatIdleCommand(this, RunState));
 	ADD_LATENT_AUTOMATION_COMMAND(FMoveInCombatCommand(this, RunState));
 	ADD_LATENT_AUTOMATION_COMMAND(FInvokeCombatContractCommand(
@@ -1687,8 +1938,9 @@ bool FRequiemUnarmedCombatPIETest::RunTest(const FString& Parameters)
 		ETestCombatCommand::Exit,
 		TEXT("manual combat exit contract (Z mapping verified)")));
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitForExitToNormalCommand(
-		this, RunState, TEXT("manual Z exit")));
+		this, RunState, TEXT("manual Z exit"), true));
 
+	ADD_LATENT_AUTOMATION_COMMAND(FPrepareMovingAutoAttackCommand(this, RunState));
 	ADD_LATENT_AUTOMATION_COMMAND(FInvokeCombatContractCommand(
 		this,
 		RunState,

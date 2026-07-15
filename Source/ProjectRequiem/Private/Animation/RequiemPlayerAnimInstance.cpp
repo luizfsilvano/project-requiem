@@ -20,6 +20,7 @@ constexpr float OneShotLeadTime = 0.04f;
 constexpr float CombatOneShotLeadTime = 0.015f;
 constexpr float MinimumLoopPlayRate = 0.35f;
 constexpr float MaximumLoopPlayRate = 1.2f;
+constexpr float CombatStanceMaximumSpeed = 1.0f;
 
 FName StateToName(const ERequiemLocomotionState State)
 {
@@ -91,6 +92,7 @@ void URequiemPlayerAnimInstance::NativeInitializeAnimation()
 	bNeedsInitialState = true;
 	bEnterQueued = false;
 	bExitQueued = false;
+	bCombatStanceEstablished = false;
 	bCombatAssetsInvalid = false;
 	if (CombatComponent)
 	{
@@ -227,6 +229,22 @@ void URequiemPlayerAnimInstance::HandleCombatStateChange()
 	if (ObservedCombatState == ERequiemCombatState::CombatUnarmed)
 	{
 		bExitQueued = false;
+		if (bCombatStanceEstablished)
+		{
+			bEnterQueued = false;
+			if (CombatAnimationState == ERequiemCombatAnimationState::Exit)
+			{
+				if (CanPlayCombatStanceTransition())
+				{
+					StartCombatIdle();
+				}
+				else
+				{
+					ResumeLocomotionPresentation();
+				}
+			}
+			return;
+		}
 		if (CombatAnimationState == ERequiemCombatAnimationState::Attack
 			|| CombatAnimationState == ERequiemCombatAnimationState::Recovery)
 		{
@@ -254,6 +272,17 @@ void URequiemPlayerAnimInstance::HandleCombatStateChange()
 	// progress still finishes before PunchKick_Exit so the pose remains continuous.
 	CombatComponent->SetUnarmedAttackInputWindowOpen(false);
 	bEnterQueued = false;
+	if (!bCombatStanceEstablished
+		&& CombatAnimationState != ERequiemCombatAnimationState::Attack
+		&& CombatAnimationState != ERequiemCombatAnimationState::Recovery)
+	{
+		bExitQueued = false;
+		if (CombatAnimationState != ERequiemCombatAnimationState::Inactive)
+		{
+			ResumeLocomotionPresentation();
+		}
+		return;
+	}
 	if (CombatAnimationState == ERequiemCombatAnimationState::Attack
 		|| CombatAnimationState == ERequiemCombatAnimationState::Recovery
 		|| !CanPlayCombatStanceTransition())
@@ -307,6 +336,26 @@ void URequiemPlayerAnimInstance::UpdateCombatPresentation()
 		return;
 	}
 
+	// PunchKick_Enter/Exit are full-body posture changes, not locomotion clips.
+	// If movement starts while either one is playing, hand presentation back to
+	// locomotion immediately and retry the posture change only after a full stop.
+	if ((CombatAnimationState == ERequiemCombatAnimationState::Enter
+			|| CombatAnimationState == ERequiemCombatAnimationState::Exit)
+		&& !CanPlayCombatStanceTransition())
+	{
+		if (CombatAnimationState == ERequiemCombatAnimationState::Enter)
+		{
+			bEnterQueued = ObservedCombatState == ERequiemCombatState::CombatUnarmed;
+		}
+		else
+		{
+			bExitQueued = ObservedCombatState == ERequiemCombatState::Normal;
+		}
+
+		ResumeLocomotionPresentation();
+		return;
+	}
+
 	UpdateCombatInputWindow();
 
 	switch (CombatAnimationState)
@@ -336,7 +385,15 @@ void URequiemPlayerAnimInstance::UpdateCombatPresentation()
 	case ERequiemCombatAnimationState::Idle:
 		if (ObservedCombatState == ERequiemCombatState::Normal)
 		{
-			StartCombatExit();
+			if (CanPlayCombatStanceTransition())
+			{
+				StartCombatExit();
+			}
+			else
+			{
+				bExitQueued = true;
+				ResumeLocomotionPresentation();
+			}
 			return;
 		}
 		if (TryStartInitialUnarmedAttack())
@@ -404,6 +461,25 @@ void URequiemPlayerAnimInstance::StartCombatIdle()
 
 void URequiemPlayerAnimInstance::StartCombatExit()
 {
+	if (!bCombatStanceEstablished)
+	{
+		bExitQueued = false;
+		if (CombatAnimationState != ERequiemCombatAnimationState::Inactive)
+		{
+			ResumeLocomotionPresentation();
+		}
+		return;
+	}
+	if (!CanPlayCombatStanceTransition())
+	{
+		bExitQueued = true;
+		if (CombatAnimationState != ERequiemCombatAnimationState::Inactive)
+		{
+			ResumeLocomotionPresentation();
+		}
+		return;
+	}
+
 	bExitQueued = false;
 	if (CombatComponent)
 	{
@@ -417,6 +493,9 @@ void URequiemPlayerAnimInstance::StartCombatExit()
 
 void URequiemPlayerAnimInstance::StartCombatComboClip(const int32 ComboIndex)
 {
+	// A direct attack from locomotion is itself a complete combat presentation,
+	// so a later return to Normal may still use the authored stance exit.
+	bCombatStanceEstablished = true;
 	const bool bRecovery = ComboIndex == 3 || ComboIndex == 5;
 	if (!bRecovery && CombatComponent)
 	{
@@ -478,6 +557,7 @@ void URequiemPlayerAnimInstance::HandleFinishedCombatOneShot()
 	switch (CombatAnimationState)
 	{
 	case ERequiemCombatAnimationState::Enter:
+		bCombatStanceEstablished = true;
 		if (ObservedCombatState == ERequiemCombatState::Normal)
 		{
 			StartCombatExit();
@@ -536,6 +616,7 @@ void URequiemPlayerAnimInstance::HandleFinishedCombatOneShot()
 		return;
 
 	case ERequiemCombatAnimationState::Exit:
+		bCombatStanceEstablished = false;
 		ResumeLocomotionPresentation();
 		return;
 
@@ -633,12 +714,10 @@ void URequiemPlayerAnimInstance::PlayCombatAnimation(
 bool URequiemPlayerAnimInstance::ShouldUseCombatIdle() const
 {
 	return ObservedCombatState == ERequiemCombatState::CombatUnarmed
-		&& CanPlayCombatStanceTransition()
-		&& !HasMovementIntent()
-		&& ObservedGroundSpeed < DirectionalLoopMinimumSpeed;
+		&& CanPlayCombatStanceTransition();
 }
 
-bool URequiemPlayerAnimInstance::CanPlayCombatStanceTransition() const
+bool URequiemPlayerAnimInstance::CanPlayCombatAnimation() const
 {
 	if (bObservedIsFalling || bObservedIsCrouched)
 	{
@@ -659,10 +738,17 @@ bool URequiemPlayerAnimInstance::CanPlayCombatStanceTransition() const
 	}
 }
 
+bool URequiemPlayerAnimInstance::CanPlayCombatStanceTransition() const
+{
+	return CanPlayCombatAnimation()
+		&& !HasMovementIntent()
+		&& ObservedGroundSpeed <= CombatStanceMaximumSpeed;
+}
+
 bool URequiemPlayerAnimInstance::CanStartUnarmedAttack() const
 {
 	return ObservedCombatState == ERequiemCombatState::CombatUnarmed
-		&& CanPlayCombatStanceTransition();
+		&& CanPlayCombatAnimation();
 }
 
 bool URequiemPlayerAnimInstance::ShouldAdvanceCombatOneShot() const
@@ -877,6 +963,11 @@ void URequiemPlayerAnimInstance::UpdateGroundedState(const float DeltaSeconds)
 		return;
 
 	case ERequiemLocomotionState::CrouchExit:
+		if (bShouldJog)
+		{
+			TransitionTo(ERequiemLocomotionState::Jog);
+			return;
+		}
 		if (HasOneShotFinished())
 		{
 			HandleFinishedOneShot();
@@ -920,7 +1011,9 @@ void URequiemPlayerAnimInstance::UpdateCrouchedState()
 
 	if (LocomotionState == ERequiemLocomotionState::CrouchEnter)
 	{
-		if (HasOneShotFinished())
+		const bool bShouldUseDirectionalCrouch = HasMovementIntent()
+			|| ObservedGroundSpeed >= DirectionalLoopMinimumSpeed;
+		if (bShouldUseDirectionalCrouch || HasOneShotFinished())
 		{
 			TransitionTo(ERequiemLocomotionState::CrouchLoop);
 		}

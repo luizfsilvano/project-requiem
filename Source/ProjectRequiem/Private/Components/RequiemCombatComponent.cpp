@@ -69,6 +69,21 @@ ERequiemUnarmedAttackRequestResult URequiemCombatComponent::RequestUnarmedAttack
 		// Enter/idle accepts one initial attack only. Repeated clicks before the
 		// first authored strike starts deliberately do not become follow-ups.
 		bInitialUnarmedAttackRequested = true;
+		ACharacter* Character = Cast<ACharacter>(GetOwner());
+		UCharacterMovementComponent* MovementComponent = Character
+			? Character->GetCharacterMovement()
+			: nullptr;
+		if (bEnteredCombat
+			&& Character
+			&& MovementComponent
+			&& !Character->IsCrouched()
+			&& !MovementComponent->IsFalling())
+		{
+			bUnarmedAttackMovementLocked = true;
+			// A moving auto-entry keeps its current CharacterMovement velocity and
+			// brakes naturally, but no new Move input can postpone the stationary Enter.
+			Character->ConsumeMovementInputVector();
+		}
 		if (!bEnteredCombat)
 		{
 			MarkCombatActivity();
@@ -105,10 +120,18 @@ void URequiemCombatComponent::EnterUnarmedCombat(const ERequiemCombatEntryReason
 
 void URequiemCombatComponent::ExitCombat()
 {
+	const bool bCancelPendingInitialAttack =
+		bInitialUnarmedAttackRequested && !bUnarmedAttackActive;
 	CombatState = ERequiemCombatState::Normal;
 	bInitialUnarmedAttackRequested = false;
 	bUnarmedAttackInputWindowOpen = false;
 	bQueuedUnarmedFollowUp = false;
+	if (bCancelPendingInitialAttack)
+	{
+		// No authored strike committed yet, so release only the input lock and let
+		// CharacterMovement preserve its current braking velocity.
+		bUnarmedAttackMovementLocked = false;
+	}
 }
 
 bool URequiemCombatComponent::ConsumeInitialUnarmedAttackRequest()
