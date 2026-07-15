@@ -146,12 +146,58 @@ def make_mouse_look_mapping(action, outer):
     return mapping
 
 
+def mapping_matches(mapping, action, key_name: str) -> bool:
+    mapped_action = mapping.get_editor_property("action")
+    mapped_key = mapping.get_editor_property("key")
+    if not mapped_action or not mapped_key:
+        return False
+
+    return (
+        mapped_action.get_path_name() == action.get_path_name()
+        and str(mapped_key.get_editor_property("key_name")) == key_name
+    )
+
+
+def ensure_unique_mapping(mappings, action, key_name: str, create_mapping):
+    """Add one required mapping while preserving every unrelated mapping."""
+    result = []
+    found = False
+    for mapping in mappings:
+        if not mapping_matches(mapping, action, key_name):
+            result.append(mapping)
+            continue
+
+        if not found:
+            result.append(mapping)
+            found = True
+
+    if not found:
+        result.append(create_mapping())
+    return result
+
+
+def set_required_property(instance, property_name: str, value, description: str):
+    try:
+        instance.set_editor_property(property_name, value)
+    except Exception as exc:
+        raise RuntimeError(
+            f"{LOG_PREFIX} Failed to set {description}.{property_name}; "
+            "rebuild the native ProjectRequiem module before running this script"
+        ) from exc
+
+
 def create_input_assets(asset_tools):
     move_action = create_data_asset(asset_tools, "IA_Move", ACTION_PATH, unreal.InputAction)
     look_action = create_data_asset(asset_tools, "IA_Look", ACTION_PATH, unreal.InputAction)
     jump_action = create_data_asset(asset_tools, "IA_Jump", ACTION_PATH, unreal.InputAction)
     crouch_action = create_data_asset(asset_tools, "IA_Crouch", ACTION_PATH, unreal.InputAction)
     roll_action = create_data_asset(asset_tools, "IA_Roll", ACTION_PATH, unreal.InputAction)
+    toggle_combat_action = create_data_asset(
+        asset_tools, "IA_ToggleCombat", ACTION_PATH, unreal.InputAction
+    )
+    primary_attack_action = create_data_asset(
+        asset_tools, "IA_PrimaryAttack", ACTION_PATH, unreal.InputAction
+    )
     mapping_context = create_data_asset(
         asset_tools, "IMC_Exploration", INPUT_PATH, unreal.InputMappingContext
     )
@@ -161,30 +207,118 @@ def create_input_assets(asset_tools):
     jump_action.set_editor_property("value_type", unreal.InputActionValueType.BOOLEAN)
     crouch_action.set_editor_property("value_type", unreal.InputActionValueType.BOOLEAN)
     roll_action.set_editor_property("value_type", unreal.InputActionValueType.BOOLEAN)
+    toggle_combat_action.set_editor_property(
+        "value_type", unreal.InputActionValueType.BOOLEAN
+    )
+    primary_attack_action.set_editor_property(
+        "value_type", unreal.InputActionValueType.BOOLEAN
+    )
 
-    mappings = [
-        make_mapping(move_action, "W", mapping_context, (unreal.InputModifierSwizzleAxis,)),
-        make_mapping(
+    mapping_data = mapping_context.get_editor_property("default_key_mappings")
+    if not mapping_data:
+        mapping_data = unreal.InputMappingContextMappingData()
+    mappings = list(mapping_data.get_editor_property("mappings") or [])
+
+    required_mappings = (
+        (
+            move_action,
+            "W",
+            lambda: make_mapping(
+                move_action,
+                "W",
+                mapping_context,
+                (unreal.InputModifierSwizzleAxis,),
+            ),
+        ),
+        (
             move_action,
             "S",
-            mapping_context,
-            (unreal.InputModifierNegate, unreal.InputModifierSwizzleAxis),
+            lambda: make_mapping(
+                move_action,
+                "S",
+                mapping_context,
+                (unreal.InputModifierNegate, unreal.InputModifierSwizzleAxis),
+            ),
         ),
-        make_mapping(move_action, "A", mapping_context, (unreal.InputModifierNegate,)),
-        make_mapping(move_action, "D", mapping_context),
-        make_mapping(move_action, "Gamepad_Left2D", mapping_context),
-        make_mouse_look_mapping(look_action, mapping_context),
-        make_mapping(look_action, "Gamepad_Right2D", mapping_context),
-        make_mapping(jump_action, "SpaceBar", mapping_context),
-        make_mapping(jump_action, "Gamepad_FaceButton_Bottom", mapping_context),
-        make_mapping(crouch_action, "LeftControl", mapping_context),
-        make_mapping(roll_action, "LeftShift", mapping_context),
-    ]
-    mapping_data = unreal.InputMappingContextMappingData()
+        (
+            move_action,
+            "A",
+            lambda: make_mapping(
+                move_action,
+                "A",
+                mapping_context,
+                (unreal.InputModifierNegate,),
+            ),
+        ),
+        (move_action, "D", lambda: make_mapping(move_action, "D", mapping_context)),
+        (
+            move_action,
+            "Gamepad_Left2D",
+            lambda: make_mapping(move_action, "Gamepad_Left2D", mapping_context),
+        ),
+        (
+            look_action,
+            "Mouse2D",
+            lambda: make_mouse_look_mapping(look_action, mapping_context),
+        ),
+        (
+            look_action,
+            "Gamepad_Right2D",
+            lambda: make_mapping(look_action, "Gamepad_Right2D", mapping_context),
+        ),
+        (
+            jump_action,
+            "SpaceBar",
+            lambda: make_mapping(jump_action, "SpaceBar", mapping_context),
+        ),
+        (
+            jump_action,
+            "Gamepad_FaceButton_Bottom",
+            lambda: make_mapping(
+                jump_action, "Gamepad_FaceButton_Bottom", mapping_context
+            ),
+        ),
+        (
+            crouch_action,
+            "LeftControl",
+            lambda: make_mapping(crouch_action, "LeftControl", mapping_context),
+        ),
+        (
+            roll_action,
+            "LeftShift",
+            lambda: make_mapping(roll_action, "LeftShift", mapping_context),
+        ),
+        (
+            toggle_combat_action,
+            "Z",
+            lambda: make_mapping(toggle_combat_action, "Z", mapping_context),
+        ),
+        (
+            primary_attack_action,
+            "LeftMouseButton",
+            lambda: make_mapping(
+                primary_attack_action, "LeftMouseButton", mapping_context
+            ),
+        ),
+    )
+    for action, key_name, create_mapping in required_mappings:
+        mappings = ensure_unique_mapping(
+            mappings, action, key_name, create_mapping
+        )
+
     mapping_data.set_editor_property("mappings", mappings)
     mapping_context.set_editor_property("default_key_mappings", mapping_data)
 
-    return move_action, look_action, jump_action, crouch_action, roll_action, mapping_context
+    return (
+        move_action,
+        look_action,
+        jump_action,
+        crouch_action,
+        roll_action,
+        toggle_combat_action,
+        primary_attack_action,
+        mapping_context,
+    )
 
 
 def remove_legacy_input_assets():
@@ -209,6 +343,8 @@ def create_framework_blueprints(
     jump_action,
     crouch_action,
     roll_action,
+    toggle_combat_action,
+    primary_attack_action,
     mapping_context,
 ):
     controller_blueprint = create_blueprint(
@@ -241,6 +377,18 @@ def create_framework_blueprints(
     character_cdo.set_editor_property("jump_action", jump_action)
     character_cdo.set_editor_property("crouch_action", crouch_action)
     character_cdo.set_editor_property("roll_action", roll_action)
+    set_required_property(
+        character_cdo,
+        "toggle_combat_action",
+        toggle_combat_action,
+        "BP_CH_Player CDO",
+    )
+    set_required_property(
+        character_cdo,
+        "primary_attack_action",
+        primary_attack_action,
+        "BP_CH_Player CDO",
+    )
 
     game_mode_cdo = default_object(game_mode_blueprint)
     game_mode_cdo.modify()
@@ -364,6 +512,8 @@ def main():
         jump_action,
         crouch_action,
         roll_action,
+        toggle_combat_action,
+        primary_attack_action,
         mapping_context,
     ) = create_input_assets(asset_tools)
     blueprints = create_framework_blueprints(
@@ -373,6 +523,8 @@ def main():
         jump_action,
         crouch_action,
         roll_action,
+        toggle_combat_action,
+        primary_attack_action,
         mapping_context,
     )
     assets_to_save = [
@@ -381,6 +533,8 @@ def main():
         jump_action,
         crouch_action,
         roll_action,
+        toggle_combat_action,
+        primary_attack_action,
         mapping_context,
         *blueprints,
     ]

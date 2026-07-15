@@ -74,20 +74,24 @@ Não há, neste momento, uma animação específica de queda. `Jump_Loop` cobre 
   - `Crouch_Left_Loop`;
   - `Crouch_Right_Loop`.
 
-## Combate sem armas — futuro
+## Combate sem armas — primeira etapa
 
 O jogador começa em postura normal. O modo de batalha pode ser ativado por:
 
 - ataque com o botão esquerdo;
-- lock-on com o botão do meio do mouse;
+- lock-on futuro;
 - tecla `Z`;
-- recebimento de dano.
+- recebimento de dano futuro.
+
+Os estados de gameplay são `Normal` e `CombatUnarmed`. `Z` alterna entre eles e o botão esquerdo entra automaticamente em `CombatUnarmed` antes do primeiro golpe. Lock-on e recebimento de dano usam futuramente o mesmo ponto de entrada, mas não estão funcionais nesta etapa.
 
 Fluxo de entrada:
 
 ```text
 Normal → PunchKick_Enter → Combat Idle
 ```
+
+Como UAL1 e UAL2 não possuem um idle desarmado dedicado, `CombatUnarmed_Idle_Loop` reutiliza de forma estática a pose final de `PunchKick_Enter`. Essa pose também coincide com os limites dos golpes e de `PunchKick_Exit`.
 
 Combo planejado:
 
@@ -101,13 +105,17 @@ Punch_Cross
 → Melee_Uppercut
 ```
 
+O combo recebe cinco comandos de ataque. `Melee_Knee_Rec` e `Melee_Hook_Rec` são recuperações automáticas dos golpes anteriores, portanto a reprodução mantém a ordem completa dos sete clipes sem exigir cliques exclusivos para recuperação.
+
 Saída manual:
 
 ```text
 Combat → PunchKick_Exit → Normal
 ```
 
-Sem armas, o jogador não poderá bloquear inicialmente. Se ficar 30 segundos sem atacar e longe de inimigos, o estado de batalha poderá ser encerrado automaticamente.
+Sem armas, o jogador não pode bloquear. O contrato expõe a elegibilidade futura para encerrar o combate após 30 segundos sem atacar e longe de inimigos, mas nenhuma saída automática é executada nesta etapa porque ainda não existem inimigos.
+
+Todas as animações deste passe usam as fontes UAL1/UAL2 sem root motion. O modo de combate e o combo não alteram velocidade, aceleração ou desaceleração; o deslocamento continua pertencendo ao `CharacterMovement`. Em `CombatUnarmed`, o idle de combate aparece parado e a locomoção direcional existente permanece ativa durante movimento.
 
 ## Reações de dano e morte — futuro
 

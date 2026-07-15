@@ -3,6 +3,7 @@
 #include "Characters/RequiemCharacter.h"
 
 #include "Camera/CameraComponent.h"
+#include "Components/RequiemCombatComponent.h"
 #include "EnhancedInputComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/SpringArmComponent.h"
@@ -31,6 +32,8 @@ ARequiemCharacter::ARequiemCharacter()
 	GetCharacterMovement()->bUseSeparateBrakingFriction = false;
 	GetCharacterMovement()->BrakingDecelerationFalling = 1500.0f;
 	GetCharacterMovement()->GetNavAgentPropertiesRef().bCanCrouch = true;
+
+	CombatComponent = CreateDefaultSubobject<URequiemCombatComponent>(TEXT("CombatComponent"));
 
 	CameraBoom = CreateDefaultSubobject<USpringArmComponent>(TEXT("CameraBoom"));
 	CameraBoom->SetupAttachment(RootComponent);
@@ -74,6 +77,24 @@ void ARequiemCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 		EnhancedInputComponent->BindAction(CrouchAction, ETriggerEvent::Started, this, &ARequiemCharacter::StartCrouch);
 		EnhancedInputComponent->BindAction(CrouchAction, ETriggerEvent::Completed, this, &ARequiemCharacter::StopCrouch);
 		EnhancedInputComponent->BindAction(CrouchAction, ETriggerEvent::Canceled, this, &ARequiemCharacter::StopCrouch);
+	}
+
+	if (ToggleCombatAction)
+	{
+		EnhancedInputComponent->BindAction(
+			ToggleCombatAction,
+			ETriggerEvent::Started,
+			this,
+			&ARequiemCharacter::ToggleCombat);
+	}
+
+	if (PrimaryAttackAction)
+	{
+		EnhancedInputComponent->BindAction(
+			PrimaryAttackAction,
+			ETriggerEvent::Started,
+			this,
+			&ARequiemCharacter::PrimaryAttack);
 	}
 }
 
@@ -126,4 +147,20 @@ void ARequiemCharacter::StartCrouch()
 void ARequiemCharacter::StopCrouch()
 {
 	UnCrouch();
+}
+
+void ARequiemCharacter::ToggleCombat()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->ToggleUnarmedCombat();
+	}
+}
+
+void ARequiemCharacter::PrimaryAttack()
+{
+	if (CombatComponent)
+	{
+		CombatComponent->RequestUnarmedAttack();
+	}
 }

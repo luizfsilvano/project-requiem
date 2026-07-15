@@ -179,6 +179,16 @@ Nascimento e passagem de tempo serão representados futuramente por Level Sequen
 
 Componentes como interação e combate serão criados somente nas etapas em que forem necessários. A fundação deve preparar os pontos de extensão, não antecipar o gameplay.
 
+### Primeiro passe de combate desarmado
+
+O primeiro uso concreto de composição de combate é `URequiemCombatComponent`, anexado a `ARequiemCharacter`. O componente é a fonte de verdade dos estados `Normal` e `CombatUnarmed`, recebe pedidos de entrada e ataque e expõe pontos futuros de entrada por lock-on e dano. Ele não implementa armas, dano, hitboxes, inimigos ou bloqueio.
+
+`ARequiemCharacter` apenas encaminha `IA_ToggleCombat` e `IA_PrimaryAttack` ao componente. Movimento, velocidade, aceleração e frenagem continuam pertencendo ao `CharacterMovement`.
+
+`URequiemPlayerAnimInstance` observa o componente e cuida somente da apresentação: entrada, postura parada, combo, recuperações e saída. Durante movimento sem um golpe ativo, a mesma máquina direcional de locomoção permanece responsável pela animação. Os clipes de combate usam `DefaultSlot` sem root motion.
+
+O componente mantém apenas a consulta de elegibilidade para uma futura saída automática após 30 segundos de inatividade e sem inimigos próximos. Não existe polling, inimigo ou saída automática nesta etapa.
+
 ## Convenções principais
 
 ```text
@@ -230,4 +240,3 @@ O primeiro passe deve limitar-se à fundação técnica:
 - validar compilação, PIE e packaging.
 
 Não implementar ainda nascimento, criação de personagem, diálogos, interação, guilda, combate, inventário, quests ou escolha de classe.
-

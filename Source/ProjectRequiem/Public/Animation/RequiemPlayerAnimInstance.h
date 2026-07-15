@@ -3,6 +3,7 @@
 #pragma once
 
 #include "Animation/AnimInstance.h"
+#include "Components/RequiemCombatComponent.h"
 #include "CoreMinimal.h"
 #include "RequiemPlayerAnimInstance.generated.h"
 
@@ -10,6 +11,7 @@ class ARequiemCharacter;
 class UAnimMontage;
 class UAnimSequenceBase;
 class UCharacterMovementComponent;
+class URequiemCombatComponent;
 
 UENUM(BlueprintType)
 enum class ERequiemLocomotionState : uint8
@@ -39,9 +41,21 @@ enum class ERequiemMovementDirection : uint8
 	ForwardLeft
 };
 
+/** Presentation phase for unarmed combat. Gameplay mode remains owned by the combat component. */
+UENUM(BlueprintType)
+enum class ERequiemCombatAnimationState : uint8
+{
+	Inactive,
+	Enter,
+	Idle,
+	Attack,
+	Recovery,
+	Exit
+};
+
 /**
- * Presentation-only locomotion state machine for the player character.
- * It observes CharacterMovement and never owns gameplay velocity, acceleration or braking.
+ * Presentation-only locomotion and unarmed-combat state machine for the player character.
+ * It observes gameplay state and never owns velocity, acceleration or braking.
  */
 UCLASS(Blueprintable, BlueprintType)
 class PROJECTREQUIEM_API URequiemPlayerAnimInstance : public UAnimInstance
@@ -62,7 +76,27 @@ public:
 	ERequiemMovementDirection GetMovementDirection() const { return MovementDirection; }
 
 	UFUNCTION(BlueprintPure, Category = "Locomotion")
-	UAnimSequenceBase* GetActiveLocomotionAnimation() const { return ActiveAnimation; }
+	UAnimSequenceBase* GetActiveLocomotionAnimation() const { return ActiveLocomotionAnimation; }
+
+	UFUNCTION(BlueprintPure, Category = "Combat")
+	ERequiemCombatState GetObservedCombatState() const { return ObservedCombatState; }
+
+	UFUNCTION(BlueprintPure, Category = "Combat")
+	FName GetObservedCombatStateName() const;
+
+	UFUNCTION(BlueprintPure, Category = "Combat")
+	ERequiemCombatAnimationState GetCombatAnimationState() const { return CombatAnimationState; }
+
+	UFUNCTION(BlueprintPure, Category = "Combat")
+	FName GetCombatAnimationStateName() const;
+
+	/** Current animation on the shared presentation slot, whether locomotion or combat owns it. */
+	UFUNCTION(BlueprintPure, Category = "Animation")
+	UAnimSequenceBase* GetActivePresentationAnimation() const { return ActiveAnimation; }
+
+	/** Zero-based index in the requested seven-clip sequence, or INDEX_NONE outside the combo. */
+	UFUNCTION(BlueprintPure, Category = "Combat")
+	int32 GetActiveComboAnimationIndex() const { return ActiveComboAnimationIndex; }
 
 protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Locomotion|Idle")
@@ -137,6 +171,36 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Locomotion|Crouch")
 	TObjectPtr<UAnimSequenceBase> CrouchExitAnimation;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed")
+	TObjectPtr<UAnimSequenceBase> CombatEnterAnimation;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed")
+	TObjectPtr<UAnimSequenceBase> CombatIdleAnimation;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed")
+	TObjectPtr<UAnimSequenceBase> CombatExitAnimation;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed|Combo")
+	TObjectPtr<UAnimSequenceBase> PunchCrossAnimation;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed|Combo")
+	TObjectPtr<UAnimSequenceBase> PunchJabAnimation;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed|Combo")
+	TObjectPtr<UAnimSequenceBase> MeleeKneeAnimation;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed|Combo")
+	TObjectPtr<UAnimSequenceBase> MeleeKneeRecoveryAnimation;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed|Combo")
+	TObjectPtr<UAnimSequenceBase> MeleeHookAnimation;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed|Combo")
+	TObjectPtr<UAnimSequenceBase> MeleeHookRecoveryAnimation;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed|Combo")
+	TObjectPtr<UAnimSequenceBase> MeleeUppercutAnimation;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Locomotion|Tuning", meta = (ClampMin = "0.0"))
 	float JogAuthoredSpeed = 500.0f;
 
@@ -170,9 +234,38 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Locomotion|Runtime")
 	bool bObservedIsCrouched = false;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Combat|Runtime")
+	ERequiemCombatState ObservedCombatState = ERequiemCombatState::Normal;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Combat|Runtime")
+	ERequiemCombatAnimationState CombatAnimationState = ERequiemCombatAnimationState::Inactive;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Combat|Runtime")
+	int32 ActiveComboAnimationIndex = INDEX_NONE;
+
 private:
 	void CacheCharacterReferences();
 	void UpdateObservedMovement();
+	void ObserveCombatRequests();
+	void HandleCombatStateChange();
+	void UpdateCombatPresentation();
+	void StartCombatEnter();
+	void StartCombatIdle();
+	void StartCombatExit();
+	void StartCombatComboClip(int32 ComboIndex);
+	bool TryConsumeAttackRequest(int32 ComboIndex);
+	void HandleFinishedCombatOneShot();
+	void ResumeLocomotionPresentation();
+	void PlayCombatAnimation(
+		ERequiemCombatAnimationState NewState,
+		UAnimSequenceBase* NewAnimation,
+		bool bLooping,
+		int32 ComboIndex = INDEX_NONE);
+	bool ShouldUseCombatIdle() const;
+	bool CanPlayCombatStanceTransition() const;
+	bool CanStartUnarmedAttack() const;
+	bool HasCombatOneShotFinished() const;
+	UAnimSequenceBase* GetComboAnimation(int32 ComboIndex) const;
 	void UpdateLocomotionState(float DeltaSeconds);
 	void UpdateGroundedState(float DeltaSeconds);
 	void UpdateAirborneState();
@@ -198,15 +291,27 @@ private:
 	TObjectPtr<UCharacterMovementComponent> OwningMovementComponent;
 
 	UPROPERTY(Transient)
+	TObjectPtr<URequiemCombatComponent> CombatComponent;
+
+	UPROPERTY(Transient)
 	TObjectPtr<UAnimMontage> ActiveLocomotionMontage;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimSequenceBase> ActiveAnimation;
 
+	UPROPERTY(Transient)
+	TObjectPtr<UAnimSequenceBase> ActiveLocomotionAnimation;
+
 	float StateElapsedSeconds = 0.0f;
+	float CombatAnimationElapsedSeconds = 0.0f;
 	float ActiveAnimationPlayRate = 1.0f;
 	float LookAroundCountdown = 0.0f;
+	int32 LastConsumedAttackRequestSerial = 0;
+	int32 PendingAttackRequestCount = 0;
 	bool bNeedsInitialState = true;
+	bool bEnterQueued = false;
+	bool bExitQueued = false;
+	bool bCombatAssetsInvalid = false;
 
 	static const FName LocomotionSlotName;
 };

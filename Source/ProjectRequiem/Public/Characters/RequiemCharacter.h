@@ -8,12 +8,13 @@
 
 class UCameraComponent;
 class UInputAction;
+class URequiemCombatComponent;
 class USpringArmComponent;
 struct FInputActionValue;
 
 /**
- * Minimal third-person avatar used to validate possession, camera and input.
- * No narrative, interaction or combat responsibilities belong here.
+ * Third-person avatar that owns movement and dispatches combat input to its component.
+ * Narrative, interaction and combat rules remain outside the Character.
  */
 UCLASS(Blueprintable)
 class PROJECTREQUIEM_API ARequiemCharacter : public ACharacter
@@ -22,6 +23,9 @@ class PROJECTREQUIEM_API ARequiemCharacter : public ACharacter
 
 public:
 	ARequiemCharacter();
+
+	UFUNCTION(BlueprintPure, Category = "Combat")
+	URequiemCombatComponent* GetCombatComponent() const { return CombatComponent; }
 
 protected:
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
@@ -33,6 +37,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Camera")
 	TObjectPtr<UCameraComponent> FollowCamera;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat")
+	TObjectPtr<URequiemCombatComponent> CombatComponent;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
 	TObjectPtr<UInputAction> MoveAction;
@@ -51,9 +58,17 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
 	TObjectPtr<UInputAction> RollAction;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
+	TObjectPtr<UInputAction> ToggleCombatAction;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
+	TObjectPtr<UInputAction> PrimaryAttackAction;
+
 private:
 	void Move(const FInputActionValue& Value);
 	void Look(const FInputActionValue& Value);
 	void StartCrouch();
 	void StopCrouch();
+	void ToggleCombat();
+	void PrimaryAttack();
 };
