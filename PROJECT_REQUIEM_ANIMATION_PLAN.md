@@ -70,8 +70,12 @@ Não há, neste momento, uma animação específica de queda. `Jump_Loop` cobre 
 - O asset conclui o deslocamento root motion em aproximadamente `0.59` normalizado.
   O root motion permanece comprometido até `0.62`, com uma margem após a última key;
   então o `CharacterMovement` volta a aceitar input preservando a velocidade corrente
-  e usando sua própria aceleração/frenagem. Outras ações e a orientação do Roll
-  continuam bloqueadas até o fim do clipe.
+  e usando sua própria aceleração/frenagem. Havendo input de movimento nesse recovery,
+  a apresentação cruza em `0.05s` diretamente do `Roll` para o `Jog` direcional e o
+  mantém através do fim da ação, evitando deslizamento e reinício do loop. Sem input,
+  o `Roll` conclui normalmente. Ataque, pulo, agachamento, outra esquiva e a orientação
+  capturada continuam bloqueados até o fim do relógio da ação, independentemente do
+  clipe que estiver ocupando o slot visual.
 - A esquiva funciona sem alterar os estados `Normal` e `CombatUnarmed`; ao terminar,
   a apresentação retorna ao estado de locomoção/postura compatível com o modo preservado.
 
@@ -181,8 +185,10 @@ O sistema futuro deverá escolher a reação com base na região e na direção 
 - Usar animações sem root motion para locomoção, corrida, agachamento e pulo comum.
 - Reservar root motion para ações pontuais que precisam deslocar o personagem pela própria animação, como esquiva e knockback.
 - Durante o trecho de deslocamento comprometido de `Roll`, até `0.62`, o AnimInstance
-  usa `RootMotionFromMontagesOnly`; na cauda visual e fora da esquiva retorna a
-  `IgnoreRootMotion`, preservando o controle do `CharacterMovement` e o combo sem root motion.
+  usa `RootMotionFromMontagesOnly`; depois retorna a `IgnoreRootMotion`. Se houver input,
+  o slot já apresenta o `Jog` direcional sem root motion enquanto o relógio e os locks
+  restantes da esquiva continuam independentes até `1.0`. Fora da esquiva, permanece
+  preservado o controle do `CharacterMovement` e o combo sem root motion.
 - A velocidade real deve continuar sob responsabilidade do `CharacterMovement`.
 - O Animation Blueprint deve reagir ao estado do personagem; não deve definir sozinho a velocidade de movimento.
 - Implementar primeiro locomoção e estados gerais.

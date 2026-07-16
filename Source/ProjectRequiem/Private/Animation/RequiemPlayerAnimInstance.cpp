@@ -98,6 +98,7 @@ void URequiemPlayerAnimInstance::NativeInitializeAnimation()
 	bCombatStanceEstablished = false;
 	bCombatAssetsInvalid = false;
 	bDodgePresentationActive = false;
+	bDodgeLocomotionRecoveryPresentationActive = false;
 	if (CombatComponent)
 	{
 		CombatComponent->EndUnarmedAttackSequence();
@@ -129,13 +130,18 @@ void URequiemPlayerAnimInstance::NativeUpdateAnimation(const float DeltaSeconds)
 		TransitionTo(ERequiemLocomotionState::Idle, true);
 	}
 
-	// A committed dodge owns the full-body slot and cannot be replaced by combat,
-	// jump, crouch or locomotion presentation. Gameplay state remains orthogonal.
+	// A committed dodge keeps gameplay priority until its clock ends. Once authored
+	// root displacement is complete, held movement may hand the visual slot to Jog;
+	// combat, jump, crouch and another dodge remain blocked by gameplay state.
 	if (DodgeComponent && DodgeComponent->IsDodgeActive())
 	{
 		if (!bDodgePresentationActive)
 		{
 			StartDodgePresentation();
+		}
+		else if (bDodgeLocomotionRecoveryPresentationActive)
+		{
+			UpdateDodgeLocomotionRecoveryPresentation();
 		}
 		else
 		{
@@ -161,10 +167,7 @@ void URequiemPlayerAnimInstance::NativeUpdateAnimation(const float DeltaSeconds)
 		&& LocomotionState == ERequiemLocomotionState::Jog
 		&& ActiveLocomotionMontage)
 	{
-		ActiveAnimationPlayRate = JogAuthoredSpeed > UE_KINDA_SMALL_NUMBER
-			? FMath::Clamp(ObservedGroundSpeed / JogAuthoredSpeed, MinimumLoopPlayRate, MaximumLoopPlayRate)
-			: 1.0f;
-		Montage_SetPlayRate(ActiveLocomotionMontage, ActiveAnimationPlayRate);
+		UpdateJogPlayRate();
 	}
 	else if (CombatAnimationState == ERequiemCombatAnimationState::Inactive
 		&& LocomotionState == ERequiemLocomotionState::CrouchLoop
@@ -272,6 +275,7 @@ void URequiemPlayerAnimInstance::StartDodgePresentation()
 	CombatAnimationState = ERequiemCombatAnimationState::Inactive;
 	ActiveComboAnimationIndex = INDEX_NONE;
 	CombatAnimationElapsedSeconds = 0.0f;
+	bDodgeLocomotionRecoveryPresentationActive = false;
 	LocomotionState = ERequiemLocomotionState::Dodge;
 	MovementDirection = ERequiemMovementDirection::None;
 	StateElapsedSeconds = 0.0f;
@@ -356,20 +360,92 @@ void URequiemPlayerAnimInstance::UpdateDodgePresentation()
 	SetRootMotionMode(DodgeComponent->IsDodgeMovementLocked()
 		? ERootMotionMode::RootMotionFromMontagesOnly
 		: ERootMotionMode::IgnoreRootMotion);
+
+	if (DodgeComponent->IsDodgeActive()
+		&& !DodgeComponent->IsDodgeMovementLocked()
+		&& !bObservedIsFalling
+		&& !bObservedIsCrouched
+		&& HasMovementIntent())
+	{
+		StartDodgeLocomotionRecoveryPresentation();
+	}
+}
+
+void URequiemPlayerAnimInstance::StartDodgeLocomotionRecoveryPresentation()
+{
+	if (!DodgeComponent
+		|| !DodgeComponent->IsDodgeActive()
+		|| DodgeComponent->IsDodgeMovementLocked()
+		|| !HasMovementIntent())
+	{
+		return;
+	}
+
+	// From this point the component's own tick advances the committed action clock.
+	// The Jog montage must never be fed back into Roll timing synchronization.
+	bDodgeLocomotionRecoveryPresentationActive = true;
+	SetRootMotionMode(ERootMotionMode::IgnoreRootMotion);
+	if (ActiveLocomotionMontage)
+	{
+		Montage_Stop(FMath::Max(0.0f, DodgeJogHandoffBlendTime), ActiveLocomotionMontage);
+	}
+
+	LocomotionState = ERequiemLocomotionState::Jog;
+	StateElapsedSeconds = 0.0f;
+	ActiveAnimationPlayRate = JogAuthoredSpeed > UE_KINDA_SMALL_NUMBER
+		? FMath::Clamp(
+			ObservedGroundSpeed / JogAuthoredSpeed,
+			MinimumLoopPlayRate,
+			MaximumLoopPlayRate)
+		: 1.0f;
+	PlayStateAnimation();
+	UpdateJogPlayRate();
+}
+
+void URequiemPlayerAnimInstance::UpdateDodgeLocomotionRecoveryPresentation()
+{
+	SetRootMotionMode(ERootMotionMode::IgnoreRootMotion);
+	if (LocomotionState != ERequiemLocomotionState::Jog)
+	{
+		LocomotionState = ERequiemLocomotionState::Jog;
+		StateElapsedSeconds = 0.0f;
+		PlayStateAnimation();
+	}
+	else
+	{
+		RefreshDirectionalLoop();
+	}
+	UpdateJogPlayRate();
 }
 
 void URequiemPlayerAnimInstance::FinishDodgePresentation()
 {
+	const bool bKeepActiveJog =
+		bDodgeLocomotionRecoveryPresentationActive
+		&& LocomotionState == ERequiemLocomotionState::Jog
+		&& ActiveLocomotionMontage
+		&& Montage_IsPlaying(ActiveLocomotionMontage)
+		&& (HasMovementIntent() || ObservedGroundSpeed >= DirectionalLoopMinimumSpeed);
+
+	bDodgePresentationActive = false;
+	bDodgeLocomotionRecoveryPresentationActive = false;
+	CombatAnimationState = ERequiemCombatAnimationState::Inactive;
+	ActiveComboAnimationIndex = INDEX_NONE;
+	CombatAnimationElapsedSeconds = 0.0f;
+	SetRootMotionMode(ERootMotionMode::IgnoreRootMotion);
+	if (bKeepActiveJog)
+	{
+		// Preserve phase and montage ownership across gameplay completion so the
+		// 100% boundary cannot introduce an Idle flick or restart the Jog loop.
+		StateElapsedSeconds = 0.0f;
+		UpdateJogPlayRate();
+		return;
+	}
+
 	if (ActiveLocomotionMontage)
 	{
 		Montage_Stop(0.05f, ActiveLocomotionMontage);
 	}
-	SetRootMotionMode(ERootMotionMode::IgnoreRootMotion);
-
-	bDodgePresentationActive = false;
-	CombatAnimationState = ERequiemCombatAnimationState::Inactive;
-	ActiveComboAnimationIndex = INDEX_NONE;
-	CombatAnimationElapsedSeconds = 0.0f;
 	ActiveAnimation = nullptr;
 	ActiveLocomotionAnimation = nullptr;
 	ActiveLocomotionMontage = nullptr;
@@ -1303,6 +1379,22 @@ void URequiemPlayerAnimInstance::RefreshDirectionalLoop()
 	PlayStateAnimation(StartTime);
 }
 
+void URequiemPlayerAnimInstance::UpdateJogPlayRate()
+{
+	if (LocomotionState != ERequiemLocomotionState::Jog || !ActiveLocomotionMontage)
+	{
+		return;
+	}
+
+	ActiveAnimationPlayRate = JogAuthoredSpeed > UE_KINDA_SMALL_NUMBER
+		? FMath::Clamp(
+			ObservedGroundSpeed / JogAuthoredSpeed,
+			MinimumLoopPlayRate,
+			MaximumLoopPlayRate)
+		: 1.0f;
+	Montage_SetPlayRate(ActiveLocomotionMontage, ActiveAnimationPlayRate);
+}
+
 void URequiemPlayerAnimInstance::PlayStateAnimation(const float StartTime)
 {
 	UAnimSequenceBase* NewAnimation = GetAnimationForCurrentState();
@@ -1387,6 +1479,10 @@ float URequiemPlayerAnimInstance::GetStateBlendTime(const ERequiemLocomotionStat
 {
 	switch (State)
 	{
+	case ERequiemLocomotionState::Jog:
+		return bDodgeLocomotionRecoveryPresentationActive
+			? FMath::Max(0.0f, DodgeJogHandoffBlendTime)
+			: 0.12f;
 	case ERequiemLocomotionState::JumpStart:
 	case ERequiemLocomotionState::JumpLoop:
 	case ERequiemLocomotionState::JumpLand:

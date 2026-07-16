@@ -61,6 +61,7 @@ constexpr float MinimumDodgeDisplacement = 25.0f;
 constexpr float MinimumPostDodgeJogSpeed = 100.0f;
 constexpr float MinimumPostDodgeDisplacement = 2.0f;
 constexpr float NormalizedBoundaryTolerance = 0.025f;
+constexpr float PresentationHandoffTolerance = 0.06f;
 constexpr double MaximumPostDodgeJogResumeSeconds = 0.15;
 
 const FName DirectionalJogAnimationNames[] = {
@@ -711,10 +712,49 @@ public:
 					*DirectionLabel,
 					DirectionDot));
 			}
-			if (!HasValidDodgePlayback(Snapshot, *RunState))
+			const bool bBeforePresentationHandoff = Snapshot.DodgeNormalizedTime
+				< Snapshot.MovementRecoveryNormalized - NormalizedBoundaryTolerance;
+			const bool bPastPresentationHandoff = Snapshot.DodgeNormalizedTime
+				>= Snapshot.MovementRecoveryNormalized + PresentationHandoffTolerance;
+			if (bBeforePresentationHandoff
+				&& !HasValidDodgePlayback(Snapshot, *RunState))
 			{
 				return AbortWithError(FString::Printf(
-					TEXT("%s dodge did not own DefaultSlot with Roll."),
+					TEXT("%s dodge lost Roll before movement recovery."),
+					*DirectionLabel));
+			}
+			if (bPastPresentationHandoff)
+			{
+				if (MovementInput.IsNearlyZero())
+				{
+					if (!HasValidDodgePlayback(Snapshot, *RunState))
+					{
+						return AbortWithError(TEXT("Neutral dodge left Roll without movement intent."));
+					}
+					bSawNeutralRollAfterRecovery = true;
+				}
+				else
+				{
+					if (Snapshot.bDodgeMovementLocked
+						|| !HasValidDirectionalJogPlayback(Snapshot))
+					{
+						return AbortWithError(FString::Printf(
+							TEXT("%s dodge did not hand active recovery to directional Jog (t=%.3f, state=%d, animation=%s)."),
+							*DirectionLabel,
+							Snapshot.DodgeNormalizedTime,
+							static_cast<int32>(Snapshot.LocomotionState),
+							*Snapshot.ActivePresentationAnimationName.ToString()));
+					}
+					bSawDirectionalJogWhileDodgeActive = true;
+				}
+			}
+			else if (!bBeforePresentationHandoff
+				&& !HasValidDodgePlayback(Snapshot, *RunState)
+				&& (MovementInput.IsNearlyZero()
+					|| !HasValidDirectionalJogPlayback(Snapshot)))
+			{
+				return AbortWithError(FString::Printf(
+					TEXT("%s dodge had no valid Roll/Jog presentation during handoff."),
 					*DirectionLabel));
 			}
 			if (!Snapshot.bDodgeRestrictedActionsLocked)
@@ -762,6 +802,9 @@ public:
 				&& DisplacementDistance >= MinimumDodgeDisplacement
 				&& DirectionDot >= DirectionDotTolerance
 				&& bReturnedUnlocked
+				&& (MovementInput.IsNearlyZero()
+					? bSawNeutralRollAfterRecovery
+					: bSawDirectionalJogWhileDodgeActive)
 				&& Snapshot.CombatState == CombatStateBefore
 				&& Snapshot.AttackRequestSerial == AttackRequestSerialBefore;
 
@@ -805,7 +848,7 @@ public:
 				{
 					StopContinuousAction(MoveActionPath);
 					Test->AddInfo(FString::Printf(
-						TEXT("%s dodge handed off immediately to %s at %.1f uu/s within %.3fs of Roll ending."),
+						TEXT("%s dodge preserved %s at %.1f uu/s through completion (observed %.3fs later)."),
 						*DirectionLabel,
 						*Snapshot.ActivePresentationAnimationName.ToString(),
 						Snapshot.GroundSpeed,
@@ -853,6 +896,8 @@ private:
 	bool bRollInputReleased = false;
 	bool bSawDodge = false;
 	bool bSawCommittedMovementLock = false;
+	bool bSawDirectionalJogWhileDodgeActive = false;
+	bool bSawNeutralRollAfterRecovery = false;
 	bool bRequirePhysicalContinuation = false;
 };
 
@@ -1041,9 +1086,33 @@ public:
 				return AbortWithError(TEXT("A repeated Shift advanced the accepted-dodge serial."));
 			}
 
-			if (!HasValidDodgePlayback(Snapshot, *RunState))
+			const float NormalizedTime = Snapshot.DodgeNormalizedTime;
+			const bool bBeforePresentationHandoff = NormalizedTime
+				< Snapshot.MovementRecoveryNormalized - NormalizedBoundaryTolerance;
+			const bool bPastPresentationHandoff = NormalizedTime
+				>= Snapshot.MovementRecoveryNormalized + PresentationHandoffTolerance;
+			if (bBeforePresentationHandoff
+				&& !HasValidDodgePlayback(Snapshot, *RunState))
 			{
-				return AbortWithError(TEXT("Timeline dodge lost Roll playback on DefaultSlot."));
+				return AbortWithError(TEXT("Timeline dodge lost Roll before recovery."));
+			}
+			if (bPastPresentationHandoff)
+			{
+				if (!HasValidDirectionalJogPlayback(Snapshot))
+				{
+					return AbortWithError(FString::Printf(
+						TEXT("Timeline dodge did not use directional Jog during active recovery (t=%.3f, animation=%s)."),
+						NormalizedTime,
+						*Snapshot.ActivePresentationAnimationName.ToString()));
+				}
+				bSawActiveJogHandoff = true;
+				bSawRestrictedLockDuringJog |= Snapshot.bDodgeRestrictedActionsLocked;
+			}
+			else if (!bBeforePresentationHandoff
+				&& !HasValidDodgePlayback(Snapshot, *RunState)
+				&& !HasValidDirectionalJogPlayback(Snapshot))
+			{
+				return AbortWithError(TEXT("Timeline dodge had no valid Roll/Jog presentation during handoff."));
 			}
 			if (Snapshot.CombatState != ERequiemCombatState::Normal
 				|| Snapshot.AttackRequestSerial != AttackRequestSerialBefore
@@ -1069,7 +1138,6 @@ public:
 					DirectionDot));
 			}
 
-			const float NormalizedTime = Snapshot.DodgeNormalizedTime;
 			if (NormalizedTime + 0.04f < HighestObservedNormalizedTime)
 			{
 				return AbortWithError(FString::Printf(
@@ -1228,6 +1296,8 @@ public:
 				&& bSawMovementRecovery
 				&& bSawRecoveredRedirection
 				&& bSawRecoveredDisplacement
+				&& bSawActiveJogHandoff
+				&& bSawRestrictedLockDuringJog
 				&& bSawPreIFrame
 				&& bSawInsideIFrame
 				&& bSawPostIFrame
@@ -1346,6 +1416,8 @@ private:
 	bool bSawRecoveredRedirection = false;
 	bool bHasRecoveryLocation = false;
 	bool bSawRecoveredDisplacement = false;
+	bool bSawActiveJogHandoff = false;
+	bool bSawRestrictedLockDuringJog = false;
 	FVector RecoveryLocation = FVector::ZeroVector;
 	bool bSawPreIFrame = false;
 	bool bSawInsideIFrame = false;
@@ -1426,12 +1498,36 @@ public:
 
 		if (Snapshot.bDodgeActive)
 		{
-			StopContinuousAction(MoveActionPath);
 			bSawDodge = true;
-			if (Snapshot.DodgeRequestSerial == DodgeRequestSerialBefore
-				|| !HasValidDodgePlayback(Snapshot, *RunState))
+			if (Snapshot.DodgeRequestSerial == DodgeRequestSerialBefore)
 			{
-				return AbortWithError(TEXT("CombatUnarmed Shift did not start a valid Roll."));
+				return AbortWithError(TEXT("CombatUnarmed Shift did not start a dodge."));
+			}
+
+			const bool bBeforePresentationHandoff = Snapshot.DodgeNormalizedTime
+				< Snapshot.MovementRecoveryNormalized - NormalizedBoundaryTolerance;
+			const bool bPastPresentationHandoff = Snapshot.DodgeNormalizedTime
+				>= Snapshot.MovementRecoveryNormalized + PresentationHandoffTolerance;
+			if (bBeforePresentationHandoff
+				&& !HasValidDodgePlayback(Snapshot, *RunState))
+			{
+				return AbortWithError(TEXT("CombatUnarmed dodge lost Roll before recovery."));
+			}
+			if (bPastPresentationHandoff)
+			{
+				if (Snapshot.bDodgeMovementLocked
+					|| !Snapshot.bDodgeRestrictedActionsLocked
+					|| !HasValidDirectionalJogPlayback(Snapshot))
+				{
+					return AbortWithError(TEXT("CombatUnarmed dodge did not preserve locks while handing recovery to Jog."));
+				}
+				bSawCombatJogHandoff = true;
+			}
+			else if (!bBeforePresentationHandoff
+				&& !HasValidDodgePlayback(Snapshot, *RunState)
+				&& !HasValidDirectionalJogPlayback(Snapshot))
+			{
+				return AbortWithError(TEXT("CombatUnarmed dodge had no valid Roll/Jog presentation during handoff."));
 			}
 			if (Snapshot.CombatState != ERequiemCombatState::CombatUnarmed
 				|| Snapshot.AttackRequestSerial != AttackRequestSerialBefore
@@ -1444,7 +1540,14 @@ public:
 			return false;
 		}
 
+		if (bSawDodge && !bMoveInputReleasedAfterDodge)
+		{
+			StopContinuousAction(MoveActionPath);
+			bMoveInputReleasedAfterDodge = true;
+		}
+
 		if (bSawDodge
+			&& bSawCombatJogHandoff
 			&& Snapshot.CombatState == ERequiemCombatState::CombatUnarmed
 			&& Snapshot.CombatAnimationState == ERequiemCombatAnimationState::Idle
 			&& Snapshot.AttackRequestSerial == AttackRequestSerialBefore
@@ -1475,6 +1578,8 @@ private:
 	bool bRollInputInjected = false;
 	bool bRollInputReleased = false;
 	bool bSawDodge = false;
+	bool bSawCombatJogHandoff = false;
+	bool bMoveInputReleasedAfterDodge = false;
 };
 
 class FValidateDodgeRejectedDuringComboCommand final : public FTimedCommand

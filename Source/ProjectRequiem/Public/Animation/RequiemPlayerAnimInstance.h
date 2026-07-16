@@ -156,6 +156,10 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Dodge|Tuning", meta = (ClampMin = "0.1"))
 	float DodgePlayRate = 1.35f;
 
+	/** Short visual handoff from Roll's completed displacement into directional Jog. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Dodge|Tuning", meta = (ClampMin = "0.0"))
+	float DodgeJogHandoffBlendTime = 0.05f;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Locomotion|Crouch")
 	TObjectPtr<UAnimSequenceBase> CrouchEnterAnimation;
 
@@ -291,6 +295,8 @@ private:
 	void UpdateObservedMovement();
 	void StartDodgePresentation();
 	void UpdateDodgePresentation();
+	void StartDodgeLocomotionRecoveryPresentation();
+	void UpdateDodgeLocomotionRecoveryPresentation();
 	void FinishDodgePresentation();
 	void HandleCombatStateChange();
 	void UpdateCombatPresentation();
@@ -325,6 +331,7 @@ private:
 	void TransitionTo(ERequiemLocomotionState NewState, bool bForceReplay = false);
 	void HandleFinishedOneShot();
 	void RefreshDirectionalLoop();
+	void UpdateJogPlayRate();
 	void PlayStateAnimation(float StartTime = 0.0f);
 	void ScheduleNextLookAround();
 	bool HasMovementIntent() const;
@@ -367,6 +374,7 @@ private:
 	bool bCombatStanceEstablished = false;
 	bool bCombatAssetsInvalid = false;
 	bool bDodgePresentationActive = false;
+	bool bDodgeLocomotionRecoveryPresentationActive = false;
 
 	static const FName LocomotionSlotName;
 };

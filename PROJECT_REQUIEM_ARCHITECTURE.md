@@ -202,16 +202,20 @@ relativo à câmera ou a própria frente como fallback e bloqueia ataque, pulo,
 entrada em agachamento e novas esquivas até o fim da ação. O asset encerra seu
 deslocamento de raiz em aproximadamente `0.59`; root motion e movimento ficam
 comprometidos até `0.62`, quando o root motion deixa de ser aplicado sem zerar a
-velocidade corrente. Na cauda visual o `CharacterMovement` volta a responder ao input
-com sua aceleração e frenagem, enquanto a orientação capturada e os
-demais locks permanecem até o fim. `TakeDamage` retorna zero
+velocidade corrente. O `CharacterMovement` volta a responder ao input com sua aceleração
+e frenagem; se houver intenção de movimento, a apresentação cruza do `Roll` para o `Jog`
+direcional em `0.05s` e preserva esse loop através do fim da ação, sem reiniciá-lo em
+`1.0`. Sem input, o `Roll` conclui normalmente. A orientação capturada e os demais locks
+permanecem até o fim em ambos os casos. `TakeDamage` retorna zero
 durante os i-frames como proteção mínima, e futuros resolvedores de hit devem
 consultar `ShouldIgnoreIncomingDamage` antes de aplicar impacto.
 
-`URequiemPlayerAnimInstance` dá prioridade total ao `Roll` no `DefaultSlot`, usa
-temporariamente `RootMotionFromMontagesOnly` e devolve o slot à locomoção ou à
-postura desarmada quando a ação termina. O asset vem de `UAL1_RM`; nenhum parâmetro
-global de velocidade, aceleração ou frenagem do `CharacterMovement` é alterado.
+`URequiemPlayerAnimInstance` dá prioridade de gameplay à esquiva no `DefaultSlot`, usa
+temporariamente `RootMotionFromMontagesOnly` e separa o relógio comprometido da
+apresentação: após o recovery, um `Jog` visual nunca é usado para ressincronizar o tempo
+do `Roll`. Ao fim, o slot permanece na locomoção já ativa ou retorna à postura compatível.
+O asset vem de `UAL1_RM`; nenhum parâmetro global de velocidade, aceleração ou frenagem
+do `CharacterMovement` é alterado.
 O combo desarmado continua com os mesmos clipes, janelas e avanços já validados.
 
 ## Convenções principais
