@@ -3,6 +3,7 @@
 #include "Components/RequiemCombatComponent.h"
 
 #include "Components/RequiemDodgeComponent.h"
+#include "Components/RequiemHealthComponent.h"
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -39,6 +40,13 @@ FName URequiemCombatComponent::GetCombatStateName() const
 
 void URequiemCombatComponent::ToggleUnarmedCombat()
 {
+	if (const URequiemHealthComponent* HealthComponent =
+		GetOwner() ? GetOwner()->FindComponentByClass<URequiemHealthComponent>() : nullptr;
+		HealthComponent && HealthComponent->AreActionsLocked())
+	{
+		return;
+	}
+
 	if (const URequiemDodgeComponent* DodgeComponent =
 		GetOwner() ? GetOwner()->FindComponentByClass<URequiemDodgeComponent>() : nullptr;
 		DodgeComponent && DodgeComponent->AreDodgeRestrictedActionsLocked())
@@ -57,6 +65,13 @@ void URequiemCombatComponent::ToggleUnarmedCombat()
 
 ERequiemUnarmedAttackRequestResult URequiemCombatComponent::RequestUnarmedAttack()
 {
+	if (const URequiemHealthComponent* HealthComponent =
+		GetOwner() ? GetOwner()->FindComponentByClass<URequiemHealthComponent>() : nullptr;
+		HealthComponent && HealthComponent->AreActionsLocked())
+	{
+		return ERequiemUnarmedAttackRequestResult::Rejected;
+	}
+
 	if (const URequiemDodgeComponent* DodgeComponent =
 		GetOwner() ? GetOwner()->FindComponentByClass<URequiemDodgeComponent>() : nullptr;
 		DodgeComponent && DodgeComponent->AreDodgeRestrictedActionsLocked())
@@ -151,6 +166,14 @@ void URequiemCombatComponent::ExitCombat()
 
 bool URequiemCombatComponent::ConsumeInitialUnarmedAttackRequest()
 {
+	if (const URequiemHealthComponent* HealthComponent =
+		GetOwner() ? GetOwner()->FindComponentByClass<URequiemHealthComponent>() : nullptr;
+		HealthComponent && HealthComponent->AreActionsLocked())
+	{
+		bInitialUnarmedAttackRequested = false;
+		return false;
+	}
+
 	if (!bInitialUnarmedAttackRequested
 		|| CombatState != ERequiemCombatState::CombatUnarmed)
 	{
@@ -163,6 +186,14 @@ bool URequiemCombatComponent::ConsumeInitialUnarmedAttackRequest()
 
 void URequiemCombatComponent::BeginUnarmedAttackStep(const bool bApplyForwardLunge)
 {
+	if (const URequiemHealthComponent* HealthComponent =
+		GetOwner() ? GetOwner()->FindComponentByClass<URequiemHealthComponent>() : nullptr;
+		HealthComponent && HealthComponent->AreActionsLocked())
+	{
+		CancelUnarmedAttackForExternalReaction();
+		return;
+	}
+
 	bUnarmedAttackActive = true;
 	bUnarmedAttackMovementLocked = true;
 	bUnarmedAttackInputWindowOpen = false;
@@ -242,6 +273,12 @@ void URequiemCombatComponent::EndUnarmedAttackSequence()
 		// authored lunge. Normal completion never stops movement a second time.
 		SetPlanarVelocity(MovementComponent, FVector::ZeroVector);
 	}
+}
+
+void URequiemCombatComponent::CancelUnarmedAttackForExternalReaction()
+{
+	bInitialUnarmedAttackRequested = false;
+	EndUnarmedAttackSequence();
 }
 
 bool URequiemCombatComponent::CanAutoExit(const bool bEnemyNearby) const

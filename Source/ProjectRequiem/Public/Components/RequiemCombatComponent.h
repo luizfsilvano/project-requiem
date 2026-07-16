@@ -13,7 +13,7 @@ enum class ERequiemCombatState : uint8
 	CombatUnarmed
 };
 
-/** Source that requested combat mode. Lock-on and damage remain future callers. */
+/** Source that requested combat mode. Lock-on remains a future caller. */
 UENUM(BlueprintType)
 enum class ERequiemCombatEntryReason : uint8
 {
@@ -83,6 +83,9 @@ public:
 
 	/** Clears the current attack-step runtime state. */
 	void EndUnarmedAttackSequence();
+
+	/** Explicit damage/death interruption that also clears an unconsumed initial request. */
+	void CancelUnarmedAttackForExternalReaction();
 
 	UFUNCTION(BlueprintPure, Category = "Combat|Unarmed")
 	bool IsUnarmedAttackActive() const { return bUnarmedAttackActive; }

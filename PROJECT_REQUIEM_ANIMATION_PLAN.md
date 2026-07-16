@@ -62,8 +62,9 @@ Não há, neste momento, uma animação específica de queda. `Jump_Loop` cobre 
   posterior não altera a trajetória; sem direção, usa-se a frente do personagem.
 - O personagem gira para a direção capturada antes do início do root motion e essa
   orientação permanece comprometida até o fim da animação.
-- A esquiva não pode ser interrompida. Ataque, pulo, entrada em agachamento e uma
-  nova esquiva ficam bloqueados durante todo o clipe.
+- A esquiva não pode ser interrompida por input. Ataque, pulo, entrada em agachamento
+  e uma nova esquiva ficam bloqueados durante todo o clipe. Dano letal recebido fora
+  dos i-frames é a exceção explícita e inicia a morte imediatamente.
 - A janela central entre `0.25` e `0.65` normalizado concede i-frames. O contrato
   `URequiemDodgeComponent::ShouldIgnoreIncomingDamage` deve ser consultado por
   futuros ataques; o fallback de dano genérico da Unreal também retorna zero nessa janela.
@@ -102,9 +103,9 @@ O jogador começa em postura normal. O modo de batalha pode ser ativado por:
 - ataque com o botão esquerdo;
 - lock-on futuro;
 - tecla `Z`;
-- recebimento de dano futuro.
+- recebimento de dano.
 
-Os estados de gameplay são `Normal` e `CombatUnarmed`. `Z` alterna entre eles e o botão esquerdo entra automaticamente em `CombatUnarmed` antes do primeiro golpe. Lock-on e recebimento de dano usam futuramente o mesmo ponto de entrada, mas não estão funcionais nesta etapa.
+Os estados de gameplay são `Normal` e `CombatUnarmed`. `Z` alterna entre eles, o botão esquerdo entra automaticamente em `CombatUnarmed` antes do primeiro golpe e dano aceito usa o mesmo ponto de entrada com a razão `ReceivedDamage`. Lock-on permanece futuro.
 
 Fluxo de entrada:
 
@@ -142,7 +143,7 @@ Sem armas, o jogador não pode bloquear. O contrato expõe a elegibilidade futur
 
 Todas as animações deste passe usam as fontes UAL1/UAL2 sem root motion. O modo de combate e o combo não alteram os parâmetros globais de velocidade, aceleração ou desaceleração; o deslocamento continua pertencendo ao `CharacterMovement`. Em `CombatUnarmed`, o idle de combate aparece parado e a locomoção direcional existente permanece ativa enquanto nenhum golpe está comprometido. Um LMB aceito durante movimento bloqueia novos `IA_Move`, mantém o Jog durante a frenagem do `CharacterMovement` e só então executa `PunchKick_Enter` antes do primeiro golpe. Durante cada `Attack`, o lock físico termina em `0.60`; o restante do clipe continua comprometido visualmente e para o combo, mas já aceita locomoção. Cada golpe real substitui brevemente a velocidade planar por um avanço frontal de referência de `350 uu/s`, resolvido pelo próprio `CharacterMovement` com colisão, aceleração e frenagem; recuperações não criam um novo avanço nem relock de movimento.
 
-## Reações de dano e morte — futuro
+## Reações de dano e morte — primeiro passe
 
 Reações leves ou direcionais:
 
@@ -155,14 +156,32 @@ Reações leves ou direcionais:
 Ataques muito fortes:
 
 - `Hit_Knockback`;
-- usar a versão root motion disponível em `UAL2_RM.fbx` quando apropriado.
+- usa a versão root motion de `UAL2_RM`, isolada em
+  `/Game/ProjectRequiem/Characters/Player/Animations/Damage/UAL2_RM/Hit_Knockback`.
 
 Morte:
 
 - `Death01`;
 - `Death02`.
 
-O sistema futuro deverá escolher a reação com base na região e na direção do impacto.
+`FRequiemDamageRequest` recebe uma região controlada e o `AnimInstance` escolhe o
+clipe correspondente. O fallback genérico da Unreal usa `Chest`; futuros hitboxes
+podem fornecer a região real sem mudar o contrato de vida. Dano forte orienta o
+personagem para que o root motion de `Hit_Knockback` produza a direção mundial de
+impacto pedida.
+
+Os i-frames entre `0.25` e `0.65` continuam prioritários: dentro da janela, o dano
+é ignorado antes de reduzir vida, entrar em combate ou disparar animação. Fora da
+janela, dano não letal durante `Roll` é aplicado, mas sua reação espera o término da
+esquiva. Dano letal fora dos i-frames encerra a esquiva e inicia imediatamente uma
+única morte.
+
+Durante reação, novos inputs de ação ficam bloqueados até o one-shot terminar. Em
+morte, movimento, ataque, pulo, agachamento e esquiva permanecem bloqueados, o
+`CharacterMovement` fica em `MOVE_None` e a pose final é mantida. Dano posterior
+é ignorado. `ResetForTesting` e os comandos `RequiemTestDamage`,
+`RequiemTestKill` e `RequiemTestReset` são recursos temporários para PIE; não
+representam respawn final.
 
 ## Interações — futuro
 
@@ -187,8 +206,9 @@ O sistema futuro deverá escolher a reação com base na região e na direção 
 - Durante o trecho de deslocamento comprometido de `Roll`, até `0.62`, o AnimInstance
   usa `RootMotionFromMontagesOnly`; depois retorna a `IgnoreRootMotion`. Se houver input,
   o slot já apresenta o `Jog` direcional sem root motion enquanto o relógio e os locks
-  restantes da esquiva continuam independentes até `1.0`. Fora da esquiva, permanece
-  preservado o controle do `CharacterMovement` e o combo sem root motion.
+  restantes da esquiva continuam independentes até `1.0`. `Hit_Knockback` também usa
+  `RootMotionFromMontagesOnly` somente durante seu one-shot. Fora dessas duas ações,
+  permanece preservado o controle do `CharacterMovement` e o combo sem root motion.
 - A velocidade real deve continuar sob responsabilidade do `CharacterMovement`.
 - O Animation Blueprint deve reagir ao estado do personagem; não deve definir sozinho a velocidade de movimento.
 - Implementar primeiro locomoção e estados gerais.

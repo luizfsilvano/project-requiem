@@ -3,6 +3,7 @@
 #include "Components/RequiemDodgeComponent.h"
 
 #include "Components/RequiemCombatComponent.h"
+#include "Components/RequiemHealthComponent.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
 
@@ -52,10 +53,14 @@ bool URequiemDodgeComponent::RequestDodge(const FVector& Direction)
 	const URequiemCombatComponent* CombatComponent = Character
 		? Character->FindComponentByClass<URequiemCombatComponent>()
 		: nullptr;
+	const URequiemHealthComponent* HealthComponent = Character
+		? Character->FindComponentByClass<URequiemHealthComponent>()
+		: nullptr;
 
 	if (bDodgeActive
 		|| !Character
 		|| !MovementComponent
+		|| (HealthComponent && HealthComponent->AreActionsLocked())
 		|| Character->IsCrouched()
 		|| MovementComponent->IsFalling()
 		|| !MovementComponent->IsMovingOnGround()

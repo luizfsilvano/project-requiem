@@ -5,6 +5,8 @@
 #include "Camera/CameraComponent.h"
 #include "Components/RequiemCombatComponent.h"
 #include "Components/RequiemDodgeComponent.h"
+#include "Components/RequiemHealthComponent.h"
+#include "Engine/DamageEvents.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedPlayerInput.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -12,6 +14,32 @@
 #include "GameFramework/SpringArmComponent.h"
 #include "InputActionValue.h"
 #include "Math/RotationMatrix.h"
+
+namespace
+{
+ERequiemHitRegion ParseTestHitRegion(const FString& RegionName)
+{
+	if (RegionName.Equals(TEXT("Head"), ESearchCase::IgnoreCase))
+	{
+		return ERequiemHitRegion::Head;
+	}
+	if (RegionName.Equals(TEXT("Stomach"), ESearchCase::IgnoreCase))
+	{
+		return ERequiemHitRegion::Stomach;
+	}
+	if (RegionName.Equals(TEXT("Shoulder_L"), ESearchCase::IgnoreCase)
+		|| RegionName.Equals(TEXT("ShoulderLeft"), ESearchCase::IgnoreCase))
+	{
+		return ERequiemHitRegion::ShoulderLeft;
+	}
+	if (RegionName.Equals(TEXT("Shoulder_R"), ESearchCase::IgnoreCase)
+		|| RegionName.Equals(TEXT("ShoulderRight"), ESearchCase::IgnoreCase))
+	{
+		return ERequiemHitRegion::ShoulderRight;
+	}
+	return ERequiemHitRegion::Chest;
+}
+}
 
 ARequiemCharacter::ARequiemCharacter()
 {
@@ -38,6 +66,7 @@ ARequiemCharacter::ARequiemCharacter()
 
 	CombatComponent = CreateDefaultSubobject<URequiemCombatComponent>(TEXT("CombatComponent"));
 	DodgeComponent = CreateDefaultSubobject<URequiemDodgeComponent>(TEXT("DodgeComponent"));
+	HealthComponent = CreateDefaultSubobject<URequiemHealthComponent>(TEXT("HealthComponent"));
 
 	CameraBoom = CreateDefaultSubobject<USpringArmComponent>(TEXT("CameraBoom"));
 	CameraBoom->SetupAttachment(RootComponent);
@@ -119,12 +148,55 @@ float ARequiemCharacter::TakeDamage(
 	AController* EventInstigator,
 	AActor* DamageCauser)
 {
-	if (DodgeComponent && DodgeComponent->ShouldIgnoreIncomingDamage())
+	if (!HealthComponent)
 	{
 		return 0.0f;
 	}
 
-	return Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
+	FRequiemDamageRequest Request;
+	Request.DamageAmount = DamageAmount;
+	Request.HitRegion = ERequiemHitRegion::Chest;
+	Request.Strength = DamageAmount >= HealthComponent->GetStrongDamageThreshold()
+		? ERequiemDamageStrength::Strong
+		: ERequiemDamageStrength::Light;
+	Request.ImpactDirection = DamageCauser
+		? (GetActorLocation() - DamageCauser->GetActorLocation()).GetSafeNormal2D()
+		: FVector::ZeroVector;
+	Request.DamageTypeClass = DamageEvent.DamageTypeClass;
+
+	const ERequiemDamageOutcome Outcome = ApplyRequiemDamage(Request);
+	if (Outcome != ERequiemDamageOutcome::Applied
+		&& Outcome != ERequiemDamageOutcome::Killed)
+	{
+		return 0.0f;
+	}
+
+	const float AppliedDamage = HealthComponent->GetLastAppliedDamage();
+	return Super::TakeDamage(AppliedDamage, DamageEvent, EventInstigator, DamageCauser);
+}
+
+ERequiemDamageOutcome ARequiemCharacter::ApplyRequiemDamage(
+	const FRequiemDamageRequest& Request)
+{
+	const ERequiemDamageOutcome Outcome = HealthComponent
+		? HealthComponent->ApplyDamage(Request)
+		: ERequiemDamageOutcome::IgnoredInvalid;
+	if (Outcome == ERequiemDamageOutcome::Applied
+		|| Outcome == ERequiemDamageOutcome::Killed)
+	{
+		CurrentMovementInputDirection = FVector::ZeroVector;
+	}
+	return Outcome;
+}
+
+bool ARequiemCharacter::CanCrouch() const
+{
+	return !AreDamageActionsLocked() && Super::CanCrouch();
+}
+
+bool ARequiemCharacter::CanJumpInternal_Implementation() const
+{
+	return !AreDamageActionsLocked() && Super::CanJumpInternal_Implementation();
 }
 
 bool ARequiemCharacter::IsDodgeInvulnerable() const
@@ -152,8 +224,9 @@ void ARequiemCharacter::OnEndCrouch(const float HalfHeightAdjust, const float Sc
 void ARequiemCharacter::Move(const FInputActionValue& Value)
 {
 	const FVector2D MovementVector = Value.Get<FVector2D>();
-	if (!Controller)
+	if (!Controller || AreDamageActionsLocked())
 	{
+		CurrentMovementInputDirection = FVector::ZeroVector;
 		return;
 	}
 
@@ -189,7 +262,8 @@ void ARequiemCharacter::Look(const FInputActionValue& Value)
 
 void ARequiemCharacter::StartJump()
 {
-	if (!DodgeComponent || !DodgeComponent->AreDodgeRestrictedActionsLocked())
+	if (!AreDamageActionsLocked()
+		&& (!DodgeComponent || !DodgeComponent->AreDodgeRestrictedActionsLocked()))
 	{
 		Jump();
 	}
@@ -202,7 +276,8 @@ void ARequiemCharacter::StopJump()
 
 void ARequiemCharacter::StartCrouch()
 {
-	if (!DodgeComponent || !DodgeComponent->AreDodgeRestrictedActionsLocked())
+	if (!AreDamageActionsLocked()
+		&& (!DodgeComponent || !DodgeComponent->AreDodgeRestrictedActionsLocked()))
 	{
 		Crouch();
 	}
@@ -210,12 +285,15 @@ void ARequiemCharacter::StartCrouch()
 
 void ARequiemCharacter::StopCrouch()
 {
-	UnCrouch();
+	if (!AreDamageActionsLocked())
+	{
+		UnCrouch();
+	}
 }
 
 void ARequiemCharacter::StartDodge()
 {
-	if (!DodgeComponent)
+	if (!DodgeComponent || AreDamageActionsLocked())
 	{
 		return;
 	}
@@ -266,6 +344,7 @@ FVector ARequiemCharacter::GetCurrentDodgeInputDirection() const
 void ARequiemCharacter::ToggleCombat()
 {
 	if (CombatComponent
+		&& !AreDamageActionsLocked()
 		&& (!DodgeComponent || !DodgeComponent->AreDodgeRestrictedActionsLocked()))
 	{
 		CombatComponent->ToggleUnarmedCombat();
@@ -275,8 +354,60 @@ void ARequiemCharacter::ToggleCombat()
 void ARequiemCharacter::PrimaryAttack()
 {
 	if (CombatComponent
+		&& !AreDamageActionsLocked()
 		&& (!DodgeComponent || !DodgeComponent->AreDodgeRestrictedActionsLocked()))
 	{
 		CombatComponent->RequestUnarmedAttack();
 	}
+}
+
+bool ARequiemCharacter::AreDamageActionsLocked() const
+{
+	return HealthComponent && HealthComponent->AreActionsLocked();
+}
+
+void ARequiemCharacter::RequiemTestDamage(
+	const FString& RegionName,
+	const float DamageAmount,
+	const bool bStrong)
+{
+#if !UE_BUILD_SHIPPING
+	FRequiemDamageRequest Request;
+	Request.DamageAmount = DamageAmount;
+	Request.HitRegion = ParseTestHitRegion(RegionName);
+	Request.Strength = bStrong
+		? ERequiemDamageStrength::Strong
+		: ERequiemDamageStrength::Light;
+	Request.ImpactDirection = -GetActorForwardVector();
+	ApplyRequiemDamage(Request);
+#endif
+}
+
+void ARequiemCharacter::RequiemTestKill(const int32 DeathVariant)
+{
+#if !UE_BUILD_SHIPPING
+	if (!HealthComponent)
+	{
+		return;
+	}
+
+	FRequiemDamageRequest Request;
+	Request.DamageAmount = FMath::Max(HealthComponent->GetCurrentHealth(), 1.0f);
+	Request.HitRegion = ERequiemHitRegion::Chest;
+	Request.Strength = ERequiemDamageStrength::Strong;
+	Request.DeathAnimation = DeathVariant == 2
+		? ERequiemDeathAnimation::Death02
+		: ERequiemDeathAnimation::Death01;
+	ApplyRequiemDamage(Request);
+#endif
+}
+
+void ARequiemCharacter::RequiemTestReset()
+{
+#if !UE_BUILD_SHIPPING
+	if (HealthComponent)
+	{
+		HealthComponent->ResetForTesting();
+	}
+#endif
 }

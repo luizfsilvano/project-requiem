@@ -4,6 +4,7 @@
 
 #include "Animation/AnimInstance.h"
 #include "Components/RequiemCombatComponent.h"
+#include "Components/RequiemHealthComponent.h"
 #include "CoreMinimal.h"
 #include "RequiemPlayerAnimInstance.generated.h"
 
@@ -13,6 +14,7 @@ class UAnimSequenceBase;
 class UCharacterMovementComponent;
 class URequiemCombatComponent;
 class URequiemDodgeComponent;
+class URequiemHealthComponent;
 
 UENUM(BlueprintType)
 enum class ERequiemLocomotionState : uint8
@@ -53,6 +55,15 @@ enum class ERequiemCombatAnimationState : uint8
 	Attack,
 	Recovery,
 	Exit
+};
+
+UENUM(BlueprintType)
+enum class ERequiemDamageAnimationState : uint8
+{
+	Inactive,
+	HitReaction,
+	Knockback,
+	Death
 };
 
 /**
@@ -103,11 +114,26 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Combat")
 	float GetActivePresentationPlayRate() const { return ActiveAnimationPlayRate; }
 
+	UFUNCTION(BlueprintPure, Category = "Locomotion|Tuning")
+	float GetJogAuthoredSpeed() const { return JogAuthoredSpeed; }
+
 	UFUNCTION(BlueprintPure, Category = "Combat")
 	float GetCombatAnimationNormalizedTime() const;
 
 	UFUNCTION(BlueprintPure, Category = "Dodge")
 	bool IsDodgePresentationActive() const { return bDodgePresentationActive; }
+
+	UFUNCTION(BlueprintPure, Category = "Damage")
+	ERequiemDamageAnimationState GetDamageAnimationState() const
+	{
+		return DamageAnimationState;
+	}
+
+	UFUNCTION(BlueprintPure, Category = "Damage")
+	float GetDamageAnimationNormalizedTime() const;
+
+	UFUNCTION(BlueprintPure, Category = "Damage")
+	bool IsDeathPoseHeld() const { return bDeathPoseHeld; }
 
 protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Locomotion|Idle")
@@ -223,6 +249,36 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed|Combo")
 	TObjectPtr<UAnimSequenceBase> MeleeUppercutAnimation;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Damage|Hit Reaction")
+	TObjectPtr<UAnimSequenceBase> HitHeadAnimation;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Damage|Hit Reaction")
+	TObjectPtr<UAnimSequenceBase> HitChestAnimation;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Damage|Hit Reaction")
+	TObjectPtr<UAnimSequenceBase> HitStomachAnimation;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Damage|Hit Reaction")
+	TObjectPtr<UAnimSequenceBase> HitShoulderLeftAnimation;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Damage|Hit Reaction")
+	TObjectPtr<UAnimSequenceBase> HitShoulderRightAnimation;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Damage|Knockback")
+	TObjectPtr<UAnimSequenceBase> HitKnockbackAnimation;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Damage|Death")
+	TObjectPtr<UAnimSequenceBase> Death01Animation;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Damage|Death")
+	TObjectPtr<UAnimSequenceBase> Death02Animation;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Damage|Tuning", meta = (ClampMin = "0.1"))
+	float HitReactionPlayRate = 1.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Damage|Tuning", meta = (ClampMin = "0.1"))
+	float KnockbackPlayRate = 1.0f;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed|Tuning", meta = (ClampMin = "0.1"))
 	float UnarmedAttackPlayRate = 1.25f;
 
@@ -290,9 +346,26 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Combat|Runtime")
 	int32 ActiveComboAnimationIndex = INDEX_NONE;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Damage|Runtime")
+	ERequiemDamageAnimationState DamageAnimationState =
+		ERequiemDamageAnimationState::Inactive;
+
 private:
 	void CacheCharacterReferences();
 	void UpdateObservedMovement();
+	void HandleDamageReset();
+	void UpdateDamagePresentation();
+	void StartHitReactionPresentation();
+	void StartDeathPresentation();
+	void FinishHitReactionPresentation();
+	void PlayDamageAnimation(
+		ERequiemDamageAnimationState NewState,
+		UAnimSequenceBase* NewAnimation,
+		bool bUsesRootMotion);
+	void HoldDeathFinalPose();
+	bool HasDamageOneShotFinished() const;
+	UAnimSequenceBase* GetHitReactionAnimation() const;
+	UAnimSequenceBase* GetDeathAnimation() const;
 	void StartDodgePresentation();
 	void UpdateDodgePresentation();
 	void StartDodgeLocomotionRecoveryPresentation();
@@ -356,6 +429,9 @@ private:
 	TObjectPtr<URequiemDodgeComponent> DodgeComponent;
 
 	UPROPERTY(Transient)
+	TObjectPtr<URequiemHealthComponent> HealthComponent;
+
+	UPROPERTY(Transient)
 	TObjectPtr<UAnimMontage> ActiveLocomotionMontage;
 
 	UPROPERTY(Transient)
@@ -366,6 +442,7 @@ private:
 
 	float StateElapsedSeconds = 0.0f;
 	float CombatAnimationElapsedSeconds = 0.0f;
+	float DamageAnimationElapsedSeconds = 0.0f;
 	float ActiveAnimationPlayRate = 1.0f;
 	float LookAroundCountdown = 0.0f;
 	bool bNeedsInitialState = true;
@@ -375,6 +452,11 @@ private:
 	bool bCombatAssetsInvalid = false;
 	bool bDodgePresentationActive = false;
 	bool bDodgeLocomotionRecoveryPresentationActive = false;
+	bool bDeathPoseHeld = false;
+	bool bDamageAssetsInvalid = false;
+	int32 LastObservedDamageRequestSerial = 0;
+	int32 LastObservedDeathSerial = 0;
+	int32 LastObservedResetSerial = 0;
 
 	static const FName LocomotionSlotName;
 };

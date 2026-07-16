@@ -181,7 +181,7 @@ Componentes como interação e combate serão criados somente nas etapas em que 
 
 ### Primeiro passe de combate desarmado
 
-O primeiro uso concreto de composição de combate é `URequiemCombatComponent`, anexado a `ARequiemCharacter`. O componente é a fonte de verdade dos estados `Normal` e `CombatUnarmed`, recebe pedidos de entrada e ataque e expõe pontos futuros de entrada por lock-on e dano. Para o combo desarmado, ele aceita somente um pedido inicial e um único follow-up por janela; cliques excedentes são descartados, nunca acumulados como uma fila de golpes futuros. Ele não implementa armas, dano, hitboxes, inimigos ou bloqueio.
+O primeiro uso concreto de composição de combate é `URequiemCombatComponent`, anexado a `ARequiemCharacter`. O componente é a fonte de verdade dos estados `Normal` e `CombatUnarmed`, recebe pedidos de entrada e ataque, usa `ReceivedDamage` como razão de entrada no lote atual e mantém somente o lock-on como ponto futuro. Para o combo desarmado, ele aceita somente um pedido inicial e um único follow-up por janela; cliques excedentes são descartados, nunca acumulados como uma fila de golpes futuros. Ele não implementa armas, vida, cálculo de dano, hitboxes, inimigos ou bloqueio.
 
 `ARequiemCharacter` encaminha `IA_ToggleCombat` e `IA_PrimaryAttack` ao componente e ignora `IA_Move` durante os `60%` iniciais de cada golpe. O componente separa esse lock físico do ataque ativo e da janela de combo: o movimento pode retornar durante o follow-through sem cancelar a animação nem o follow-up, e cada golpe seguinte reaplica seu próprio lock. Em uma autoentrada ainda em movimento, o lock inicial permite que o `CharacterMovement` freie a velocidade herdada antes de `PunchKick_Enter`, sem acumular novo input. Movimento, colisão, velocidade, aceleração e frenagem continuam pertencendo ao `CharacterMovement`; o pequeno avanço de cada golpe é aplicado pelo componente como uma substituição curta da velocidade planar, sem root motion e sem alterar os parâmetros globais de locomoção.
 
@@ -195,7 +195,7 @@ O componente mantém apenas a consulta de elegibilidade para uma futura saída a
 esquiva e permanece ortogonal a `Normal` e `CombatUnarmed`. Ele aceita apenas uma
 esquiva aterrissada e não agachada, captura uma direção mundial imutável, mantém o
 relógio normalizado da ação e expõe os locks, recovery e i-frames. O componente não
-implementa stamina, hitboxes, inimigos ou um sistema de dano.
+implementa stamina, hitboxes, inimigos nem a vida do personagem.
 
 `ARequiemCharacter` encaminha `IA_Roll` no `Shift`, usa o input direcional atual
 relativo à câmera ou a própria frente como fallback e bloqueia ataque, pulo,
@@ -217,6 +217,38 @@ do `Roll`. Ao fim, o slot permanece na locomoção já ativa ou retorna à postu
 O asset vem de `UAL1_RM`; nenhum parâmetro global de velocidade, aceleração ou frenagem
 do `CharacterMovement` é alterado.
 O combo desarmado continua com os mesmos clipes, janelas e avanços já validados.
+
+### Primeiro passe de dano e morte
+
+`URequiemHealthComponent`, anexado a `ARequiemCharacter`, é a fonte de verdade de
+`MaxHealth`, `CurrentHealth`, reação e morte. `FRequiemDamageRequest` é o contrato
+estável para o fallback `TakeDamage`, testes controlados e futuros inimigos ou
+hitboxes. O request já carrega quantidade, região (`Head`, `Chest`, `Stomach`,
+`ShoulderLeft` ou `ShoulderRight`), força, direção mundial do impacto, tipo de dano
+nativo da Unreal e override opcional da animação de morte. Não há GAS, atributos,
+resistências, inimigos ou resolução ofensiva nesta etapa.
+
+Os i-frames continuam pertencendo exclusivamente ao `URequiemDodgeComponent` e têm
+prioridade sobre qualquer alteração de vida, entrada em combate ou reação. Dano não
+letal recebido fora dos i-frames durante `Roll` reduz a vida e fica pendente até a
+esquiva terminar, preservando o relógio e a trajetória validados. Dano letal fora da
+janela é a única exceção que encerra a esquiva imediatamente. Todo dano aceito cancela
+o pedido/step atual do combo por uma API externa explícita e entra em
+`CombatUnarmed` com `ReceivedDamage`, sem alterar o fluxo normal do combo.
+
+`URequiemPlayerAnimInstance` observa os serials do componente e escolhe `Hit_Head`,
+`Hit_Chest`, `Hit_Stomach`, `Hit_Shoulder_L` ou `Hit_Shoulder_R` conforme a região.
+Reações leves e `Death01`/`Death02` são in-place. Dano forte usa
+`Hit_Knockback` de `UAL2_RM` com `RootMotionFromMontagesOnly` somente durante o
+one-shot; o personagem é orientado para que o deslocamento autoral local resulte na
+direção mundial pedida. Ao terminar, o controle volta a `IgnoreRootMotion`.
+
+Morte é idempotente: a primeira transição para `Dead` zera e desabilita o
+`CharacterMovement`, interrompe ataque e bloqueia movimento, pulo, agachamento,
+ataque e esquiva. Novos danos são ignorados e não reiniciam a montagem. A pose final
+da morte permanece pausada até `ResetForTesting`, que existe somente como apoio
+temporário de validação PIE e restaura vida, `MOVE_Walking`, modo `Normal` e a
+apresentação de locomoção.
 
 ## Convenções principais
 

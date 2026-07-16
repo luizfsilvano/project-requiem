@@ -76,6 +76,7 @@ struct FCharacterSnapshot
 	bool bLocomotionMontageIsPlaying = false;
 	FName LocomotionMontageSlot = NAME_None;
 	float LocomotionMontagePlayRate = 0.0f;
+	float JogAuthoredSpeed = 0.0f;
 };
 
 UWorld* FindPIEWorld()
@@ -145,6 +146,7 @@ bool ReadCharacterSnapshot(FCharacterSnapshot& OutSnapshot)
 			: NAME_None;
 	OutSnapshot.LocomotionMontagePlayRate =
 		ActiveMontage ? AnimInstance->Montage_GetPlayRate(ActiveMontage) : 0.0f;
+	OutSnapshot.JogAuthoredSpeed = AnimInstance->GetJogAuthoredSpeed();
 	return true;
 }
 
@@ -394,24 +396,59 @@ public:
 		}
 
 		const double ElapsedSeconds = GetElapsedSeconds();
+		FCharacterSnapshot Snapshot;
+		UWorld* World = FindPIEWorld();
+		if (!World || !ReadCharacterSnapshot(Snapshot))
+		{
+			return AbortIfTimedOut(ElapsedSeconds, TEXT("reading the jog player snapshot"));
+		}
+
+		const double WorldTimeSeconds = World->GetTimeSeconds();
+		if (!bInputStarted)
+		{
+			StartLocation = Snapshot.Location;
+			PreviousGroundSpeed = Snapshot.GroundSpeed;
+			PreviousWorldTimeSeconds = WorldTimeSeconds;
+			bInputStarted = true;
+			if (!SetContinuousAction(MoveActionPath, FInputActionValue(FVector2D(1.0, 1.0))))
+			{
+				return AbortIfTimedOut(ElapsedSeconds, TEXT("injecting IA_Move for the jog stage"));
+			}
+			return false;
+		}
+
 		if (!SetContinuousAction(MoveActionPath, FInputActionValue(FVector2D(1.0, 1.0))))
 		{
 			return AbortIfTimedOut(ElapsedSeconds, TEXT("injecting IA_Move for the jog stage"));
 		}
 
-		FCharacterSnapshot Snapshot;
-		if (!ReadCharacterSnapshot(Snapshot))
+		if (WorldTimeSeconds > PreviousWorldTimeSeconds + UE_SMALL_NUMBER)
 		{
-			return AbortIfTimedOut(ElapsedSeconds, TEXT("reading the jog player snapshot"));
+			const double DeltaWorldSeconds = WorldTimeSeconds - PreviousWorldTimeSeconds;
+			const float DeltaSpeed = FMath::Max(0.0f, Snapshot.GroundSpeed - PreviousGroundSpeed);
+			const float MaximumExpectedDelta =
+				Snapshot.MaximumAcceleration * static_cast<float>(DeltaWorldSeconds) + 20.0f;
+			if (DeltaSpeed > MaximumExpectedDelta)
+			{
+				return AbortWithError(FString::Printf(
+					TEXT("Jog speed increased %.1f cm/s over %.3fs, exceeding CharacterMovement's %.1f cm/s bound."),
+					DeltaSpeed,
+					DeltaWorldSeconds,
+					MaximumExpectedDelta));
+			}
+			if (DeltaSpeed > 1.0f)
+			{
+				bSawBoundedAccelerationStep = true;
+				LastAccelerationDeltaSeconds = DeltaWorldSeconds;
+				LastAccelerationDeltaSpeed = DeltaSpeed;
+			}
+			PreviousGroundSpeed = Snapshot.GroundSpeed;
+			PreviousWorldTimeSeconds = WorldTimeSeconds;
 		}
 
-		if (!bHasStartLocation)
-		{
-			StartLocation = Snapshot.Location;
-			bHasStartLocation = true;
-		}
-
-		if (Snapshot.GroundSpeed >= 20.0f && Snapshot.LocomotionState != JogState)
+		if (!bSawJogState
+			&& Snapshot.GroundSpeed >= 20.0f
+			&& Snapshot.LocomotionState != JogState)
 		{
 			return AbortWithError(FString::Printf(
 				TEXT("Movement reached %.1f cm/s without transitioning directly to Jog (state=%s)."),
@@ -419,20 +456,13 @@ public:
 				*Snapshot.LocomotionState.ToString()));
 		}
 
+		bSawJogState |= Snapshot.LocomotionState == JogState;
 		bSawJogPlayback |= Snapshot.LocomotionState == JogState
 			&& HasExpectedLocomotionPlayback(Snapshot, FName(TEXT("Jog_Fwd_R_Loop")));
 		bSawForwardRight |=
 			Snapshot.MovementDirection == ERequiemMovementDirection::ForwardRight;
 		bSawMeaningfulDisplacement |=
 			(Snapshot.Location - StartLocation).Size2D() >= 100.0f;
-		bSawAccelerationSample |= Snapshot.MaximumSpeed > 0.0f
-			&& Snapshot.GroundSpeed >= 20.0f
-			&& Snapshot.GroundSpeed < Snapshot.MaximumSpeed * 0.85f;
-		if (FirstMovementSeconds < 0.0 && Snapshot.GroundSpeed >= 20.0f)
-		{
-			FirstMovementSeconds = ElapsedSeconds;
-		}
-
 		const bool bHasConfiguredJogSpeed = FMath::IsNearlyEqual(Snapshot.MaximumSpeed, 500.0f, 1.0f);
 		const bool bHasConfiguredAcceleration =
 			FMath::IsNearlyEqual(Snapshot.MaximumAcceleration, 2000.0f, 5.0f);
@@ -440,24 +470,22 @@ public:
 			FMath::IsNearlyEqual(Snapshot.WalkingBrakingDeceleration, 2000.0f, 5.0f);
 		const bool bAtExpectedSpeed = bHasConfiguredJogSpeed
 			&& Snapshot.GroundSpeed >= Snapshot.MaximumSpeed * 0.95f;
-		if (ReachedMaximumSpeedSeconds < 0.0 && bAtExpectedSpeed)
-		{
-			ReachedMaximumSpeedSeconds = ElapsedSeconds;
-		}
-		const bool bUsedShortNonInstantRamp = FirstMovementSeconds >= 0.0
-			&& ReachedMaximumSpeedSeconds > FirstMovementSeconds
-			&& ReachedMaximumSpeedSeconds - FirstMovementSeconds <= 1.0;
 		const bool bExpectedPlayRate = FMath::IsNearlyEqual(
 			Snapshot.LocomotionMontagePlayRate,
-			FMath::Clamp(Snapshot.GroundSpeed / 500.0f, 0.35f, 1.2f),
+			Snapshot.JogAuthoredSpeed > UE_KINDA_SMALL_NUMBER
+				? FMath::Clamp(
+					Snapshot.GroundSpeed / Snapshot.JogAuthoredSpeed,
+					0.35f,
+					1.2f)
+				: 1.0f,
 			0.08f);
+		const float DistanceFromStart = (Snapshot.Location - StartLocation).Size2D();
 		if (bSawJogPlayback
 			&& bSawForwardRight
 			&& bSawMeaningfulDisplacement
-			&& bSawAccelerationSample
+			&& bSawBoundedAccelerationStep
 			&& bHasConfiguredAcceleration
 			&& bHasConfiguredBraking
-			&& bUsedShortNonInstantRamp
 			&& bAtExpectedSpeed
 			&& bExpectedPlayRate
 			&& Snapshot.LocomotionState == JogState
@@ -471,29 +499,39 @@ public:
 		return AbortIfTimedOut(
 			ElapsedSeconds,
 			FString::Printf(
-				TEXT("W+D jog (state=%s, direction=%d, speed=%.1f, max=%.1f, acceleration=%.1f, braking=%.1f, ramp=%.2fs, sampled=%d, playback=%d)"),
+				TEXT("W+D jog (state=%s, direction=%d, speed=%.1f, max=%.1f, acceleration=%.1f, braking=%.1f, distance=%.1f, rate=%.2f/%.2f, boundedStep=%d [%.1f cm/s over %.3fs], playback=%d)"),
 				*Snapshot.LocomotionState.ToString(),
 				static_cast<int32>(Snapshot.MovementDirection),
 				Snapshot.GroundSpeed,
 				Snapshot.MaximumSpeed,
 				Snapshot.MaximumAcceleration,
 				Snapshot.WalkingBrakingDeceleration,
-				FirstMovementSeconds >= 0.0 && ReachedMaximumSpeedSeconds >= 0.0
-					? ReachedMaximumSpeedSeconds - FirstMovementSeconds
-					: -1.0,
-				bSawAccelerationSample,
+				DistanceFromStart,
+				Snapshot.LocomotionMontagePlayRate,
+				Snapshot.JogAuthoredSpeed > UE_KINDA_SMALL_NUMBER
+					? FMath::Clamp(
+						Snapshot.GroundSpeed / Snapshot.JogAuthoredSpeed,
+						0.35f,
+						1.2f)
+					: 1.0f,
+				bSawBoundedAccelerationStep,
+				LastAccelerationDeltaSpeed,
+				LastAccelerationDeltaSeconds,
 				bSawJogPlayback));
 	}
 
 private:
 	FVector StartLocation = FVector::ZeroVector;
-	bool bHasStartLocation = false;
+	double PreviousWorldTimeSeconds = -1.0;
+	double LastAccelerationDeltaSeconds = -1.0;
+	float PreviousGroundSpeed = 0.0f;
+	float LastAccelerationDeltaSpeed = 0.0f;
+	bool bInputStarted = false;
+	bool bSawJogState = false;
 	bool bSawJogPlayback = false;
 	bool bSawForwardRight = false;
 	bool bSawMeaningfulDisplacement = false;
-	bool bSawAccelerationSample = false;
-	double FirstMovementSeconds = -1.0;
-	double ReachedMaximumSpeedSeconds = -1.0;
+	bool bSawBoundedAccelerationStep = false;
 };
 
 class FWaitForDirectionalLoopCommand final : public FTimedCommand
@@ -548,9 +586,16 @@ public:
 		}
 
 		const FName ExpectedState = bCrouched ? CrouchLoopState : JogState;
-		const float ExpectedPlayRate = Snapshot.MaximumSpeed > UE_KINDA_SMALL_NUMBER
-			? FMath::Clamp(Snapshot.GroundSpeed / Snapshot.MaximumSpeed, 0.35f, 1.2f)
-			: 1.0f;
+		const float ExpectedPlayRate = bCrouched
+			? (Snapshot.MaximumSpeed > UE_KINDA_SMALL_NUMBER
+				? FMath::Clamp(Snapshot.GroundSpeed / Snapshot.MaximumSpeed, 0.35f, 1.2f)
+				: 1.0f)
+			: (Snapshot.JogAuthoredSpeed > UE_KINDA_SMALL_NUMBER
+				? FMath::Clamp(
+					Snapshot.GroundSpeed / Snapshot.JogAuthoredSpeed,
+					0.35f,
+					1.2f)
+				: 1.0f);
 		const bool bPlayRateMatchesCharacterMovement =
 			FMath::IsNearlyEqual(Snapshot.LocomotionMontagePlayRate, ExpectedPlayRate, 0.08f);
 		if (Snapshot.LocomotionState == ExpectedState

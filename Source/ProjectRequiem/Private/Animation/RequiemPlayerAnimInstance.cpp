@@ -7,6 +7,7 @@
 #include "Animation/AnimSequenceBase.h"
 #include "Characters/RequiemCharacter.h"
 #include "Components/RequiemDodgeComponent.h"
+#include "Components/RequiemHealthComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "ProjectRequiem.h"
 
@@ -85,12 +86,14 @@ void URequiemPlayerAnimInstance::NativeInitializeAnimation()
 	MovementDirection = ERequiemMovementDirection::None;
 	ObservedCombatState = ERequiemCombatState::Normal;
 	CombatAnimationState = ERequiemCombatAnimationState::Inactive;
+	DamageAnimationState = ERequiemDamageAnimationState::Inactive;
 	ActiveComboAnimationIndex = INDEX_NONE;
 	ActiveLocomotionMontage = nullptr;
 	ActiveAnimation = nullptr;
 	ActiveLocomotionAnimation = nullptr;
 	StateElapsedSeconds = 0.0f;
 	CombatAnimationElapsedSeconds = 0.0f;
+	DamageAnimationElapsedSeconds = 0.0f;
 	ActiveAnimationPlayRate = 1.0f;
 	bNeedsInitialState = true;
 	bEnterQueued = false;
@@ -99,6 +102,12 @@ void URequiemPlayerAnimInstance::NativeInitializeAnimation()
 	bCombatAssetsInvalid = false;
 	bDodgePresentationActive = false;
 	bDodgeLocomotionRecoveryPresentationActive = false;
+	bDeathPoseHeld = false;
+	bDamageAssetsInvalid = false;
+	LastObservedDamageRequestSerial =
+		HealthComponent ? HealthComponent->GetDamageRequestSerial() : 0;
+	LastObservedDeathSerial = HealthComponent ? HealthComponent->GetDeathSerial() : 0;
+	LastObservedResetSerial = HealthComponent ? HealthComponent->GetResetSerial() : 0;
 	if (CombatComponent)
 	{
 		CombatComponent->EndUnarmedAttackSequence();
@@ -110,7 +119,11 @@ void URequiemPlayerAnimInstance::NativeUpdateAnimation(const float DeltaSeconds)
 {
 	Super::NativeUpdateAnimation(DeltaSeconds);
 
-	if (!OwningCharacter || !OwningMovementComponent || !CombatComponent || !DodgeComponent)
+	if (!OwningCharacter
+		|| !OwningMovementComponent
+		|| !CombatComponent
+		|| !DodgeComponent
+		|| !HealthComponent)
 	{
 		CacheCharacterReferences();
 	}
@@ -123,11 +136,24 @@ void URequiemPlayerAnimInstance::NativeUpdateAnimation(const float DeltaSeconds)
 	UpdateObservedMovement();
 	StateElapsedSeconds += DeltaSeconds;
 	CombatAnimationElapsedSeconds += DeltaSeconds;
+	DamageAnimationElapsedSeconds += DeltaSeconds;
 
 	if (bNeedsInitialState)
 	{
 		bNeedsInitialState = false;
 		TransitionTo(ERequiemLocomotionState::Idle, true);
+	}
+
+	HandleDamageReset();
+
+	if (HealthComponent && HealthComponent->IsDead())
+	{
+		if (bDodgePresentationActive)
+		{
+			FinishDodgePresentation();
+		}
+		UpdateDamagePresentation();
+		return;
 	}
 
 	// A committed dodge keeps gameplay priority until its clock ends. Once authored
@@ -153,6 +179,17 @@ void URequiemPlayerAnimInstance::NativeUpdateAnimation(const float DeltaSeconds)
 	if (bDodgePresentationActive)
 	{
 		FinishDodgePresentation();
+	}
+
+	if (HealthComponent && HealthComponent->IsDamageReactionActive())
+	{
+		UpdateDamagePresentation();
+		return;
+	}
+	if (DamageAnimationState == ERequiemDamageAnimationState::HitReaction
+		|| DamageAnimationState == ERequiemDamageAnimationState::Knockback)
+	{
+		FinishHitReactionPresentation();
 	}
 
 	HandleCombatStateChange();
@@ -208,6 +245,371 @@ void URequiemPlayerAnimInstance::CacheCharacterReferences()
 	OwningMovementComponent = OwningCharacter ? OwningCharacter->GetCharacterMovement() : nullptr;
 	CombatComponent = OwningCharacter ? OwningCharacter->GetCombatComponent() : nullptr;
 	DodgeComponent = OwningCharacter ? OwningCharacter->GetDodgeComponent() : nullptr;
+	HealthComponent = OwningCharacter ? OwningCharacter->GetHealthComponent() : nullptr;
+}
+
+void URequiemPlayerAnimInstance::HandleDamageReset()
+{
+	if (!HealthComponent
+		|| LastObservedResetSerial == HealthComponent->GetResetSerial())
+	{
+		return;
+	}
+
+	LastObservedResetSerial = HealthComponent->GetResetSerial();
+	LastObservedDamageRequestSerial = HealthComponent->GetDamageRequestSerial();
+	LastObservedDeathSerial = HealthComponent->GetDeathSerial();
+	if (ActiveLocomotionMontage)
+	{
+		Montage_Stop(0.0f, ActiveLocomotionMontage);
+	}
+
+	SetRootMotionMode(ERootMotionMode::IgnoreRootMotion);
+	DamageAnimationState = ERequiemDamageAnimationState::Inactive;
+	CombatAnimationState = ERequiemCombatAnimationState::Inactive;
+	ActiveComboAnimationIndex = INDEX_NONE;
+	ActiveAnimation = nullptr;
+	ActiveLocomotionAnimation = nullptr;
+	ActiveLocomotionMontage = nullptr;
+	DamageAnimationElapsedSeconds = 0.0f;
+	CombatAnimationElapsedSeconds = 0.0f;
+	StateElapsedSeconds = 0.0f;
+	bDeathPoseHeld = false;
+	bDodgePresentationActive = false;
+	bDodgeLocomotionRecoveryPresentationActive = false;
+	bDamageAssetsInvalid = false;
+	bEnterQueued = false;
+	bExitQueued = false;
+	bCombatStanceEstablished = false;
+	ObservedCombatState = CombatComponent
+		? CombatComponent->GetCombatState()
+		: ERequiemCombatState::Normal;
+	LocomotionState = ERequiemLocomotionState::Idle;
+	MovementDirection = ERequiemMovementDirection::None;
+	TransitionTo(ERequiemLocomotionState::Idle, true);
+}
+
+void URequiemPlayerAnimInstance::UpdateDamagePresentation()
+{
+	if (!HealthComponent || bDamageAssetsInvalid)
+	{
+		return;
+	}
+
+	if (HealthComponent->IsDead())
+	{
+		const bool bNeedsDeathPresentation =
+			DamageAnimationState != ERequiemDamageAnimationState::Death
+			|| LastObservedDeathSerial != HealthComponent->GetDeathSerial();
+		if (bNeedsDeathPresentation)
+		{
+			StartDeathPresentation();
+		}
+		else if (!bDeathPoseHeld)
+		{
+			HoldDeathFinalPose();
+		}
+		return;
+	}
+
+	if (!HealthComponent->IsDamageReactionActive())
+	{
+		if (DamageAnimationState == ERequiemDamageAnimationState::HitReaction
+			|| DamageAnimationState == ERequiemDamageAnimationState::Knockback)
+		{
+			FinishHitReactionPresentation();
+		}
+		return;
+	}
+
+	if (DamageAnimationState == ERequiemDamageAnimationState::Inactive
+		|| LastObservedDamageRequestSerial
+			!= HealthComponent->GetDamageRequestSerial())
+	{
+		StartHitReactionPresentation();
+		return;
+	}
+
+	if (ActiveAnimation)
+	{
+		const float DurationSeconds =
+			ActiveAnimation->GetPlayLength()
+			/ FMath::Max(ActiveAnimationPlayRate, 0.1f);
+		HealthComponent->SynchronizeDamageReactionPresentation(
+			DurationSeconds,
+			GetDamageAnimationNormalizedTime());
+	}
+
+	if (HasDamageOneShotFinished())
+	{
+		FinishHitReactionPresentation();
+	}
+}
+
+void URequiemPlayerAnimInstance::StartHitReactionPresentation()
+{
+	if (!HealthComponent || !HealthComponent->IsDamageReactionActive())
+	{
+		return;
+	}
+
+	LastObservedDamageRequestSerial = HealthComponent->GetDamageRequestSerial();
+	const bool bStrong =
+		HealthComponent->GetLastDamageStrength() == ERequiemDamageStrength::Strong;
+	UAnimSequenceBase* DamageAnimation =
+		bStrong ? HitKnockbackAnimation.Get() : GetHitReactionAnimation();
+	const float PlayRate = bStrong
+		? FMath::Max(KnockbackPlayRate, 0.1f)
+		: FMath::Max(HitReactionPlayRate, 0.1f);
+	HealthComponent->BeginDamageReactionPresentation(
+		DamageAnimation
+			? DamageAnimation->GetPlayLength() / PlayRate
+			: 0.0f);
+	PlayDamageAnimation(
+		bStrong
+			? ERequiemDamageAnimationState::Knockback
+			: ERequiemDamageAnimationState::HitReaction,
+		DamageAnimation,
+		bStrong);
+}
+
+void URequiemPlayerAnimInstance::StartDeathPresentation()
+{
+	if (!HealthComponent || !HealthComponent->IsDead())
+	{
+		return;
+	}
+
+	LastObservedDeathSerial = HealthComponent->GetDeathSerial();
+	PlayDamageAnimation(
+		ERequiemDamageAnimationState::Death,
+		GetDeathAnimation(),
+		false);
+}
+
+void URequiemPlayerAnimInstance::FinishHitReactionPresentation()
+{
+	if (ActiveLocomotionMontage)
+	{
+		Montage_Stop(0.06f, ActiveLocomotionMontage);
+	}
+	SetRootMotionMode(ERootMotionMode::IgnoreRootMotion);
+	DamageAnimationState = ERequiemDamageAnimationState::Inactive;
+	ActiveAnimation = nullptr;
+	ActiveLocomotionAnimation = nullptr;
+	ActiveLocomotionMontage = nullptr;
+	DamageAnimationElapsedSeconds = 0.0f;
+	bDeathPoseHeld = false;
+	if (HealthComponent)
+	{
+		HealthComponent->FinishDamageReactionPresentation();
+	}
+}
+
+void URequiemPlayerAnimInstance::PlayDamageAnimation(
+	const ERequiemDamageAnimationState NewState,
+	UAnimSequenceBase* NewAnimation,
+	const bool bUsesRootMotion)
+{
+	if (CombatComponent)
+	{
+		CombatComponent->CancelUnarmedAttackForExternalReaction();
+	}
+	if (ActiveLocomotionMontage)
+	{
+		Montage_Stop(0.03f, ActiveLocomotionMontage);
+	}
+
+	CombatAnimationState = ERequiemCombatAnimationState::Inactive;
+	ActiveComboAnimationIndex = INDEX_NONE;
+	CombatAnimationElapsedSeconds = 0.0f;
+	const bool bShouldRequeueCombatEnter =
+		NewState != ERequiemDamageAnimationState::Death
+		&& ObservedCombatState == ERequiemCombatState::CombatUnarmed
+		&& !bCombatStanceEstablished;
+	bEnterQueued = bShouldRequeueCombatEnter;
+	bExitQueued = false;
+	DamageAnimationState = NewState;
+	DamageAnimationElapsedSeconds = 0.0f;
+	bDeathPoseHeld = false;
+	ActiveAnimationPlayRate = NewState == ERequiemDamageAnimationState::Knockback
+		? FMath::Max(KnockbackPlayRate, 0.1f)
+		: NewState == ERequiemDamageAnimationState::HitReaction
+			? FMath::Max(HitReactionPlayRate, 0.1f)
+			: 1.0f;
+
+	const UAnimSequence* AnimationSequence = Cast<UAnimSequence>(NewAnimation);
+	const bool bValidRootMotion =
+		AnimationSequence && AnimationSequence->bEnableRootMotion;
+	if (!NewAnimation
+		|| !AnimationSequence
+		|| (bUsesRootMotion && !bValidRootMotion)
+		|| (!bUsesRootMotion && bValidRootMotion))
+	{
+		UE_LOG(
+			LogProjectRequiem,
+			Error,
+			TEXT("Invalid damage animation for state %d (asset=%s, root_motion=%d)"),
+			static_cast<int32>(NewState),
+			NewAnimation ? *NewAnimation->GetPathName() : TEXT("None"),
+			bValidRootMotion);
+		bDamageAssetsInvalid = true;
+		DamageAnimationState = ERequiemDamageAnimationState::Inactive;
+		ActiveAnimation = nullptr;
+		ActiveLocomotionAnimation = nullptr;
+		ActiveLocomotionMontage = nullptr;
+		SetRootMotionMode(ERootMotionMode::IgnoreRootMotion);
+		if (HealthComponent && !HealthComponent->IsDead())
+		{
+			HealthComponent->FinishDamageReactionPresentation();
+		}
+		return;
+	}
+
+	ActiveAnimation = NewAnimation;
+	ActiveLocomotionAnimation = nullptr;
+	SetRootMotionMode(bUsesRootMotion
+		? ERootMotionMode::RootMotionFromMontagesOnly
+		: ERootMotionMode::IgnoreRootMotion);
+	ActiveLocomotionMontage = PlaySlotAnimationAsDynamicMontage(
+		NewAnimation,
+		LocomotionSlotName,
+		0.05f,
+		NewState == ERequiemDamageAnimationState::Death ? 0.0f : 0.08f,
+		ActiveAnimationPlayRate,
+		1,
+		0.0f);
+
+	if (!ActiveLocomotionMontage)
+	{
+		UE_LOG(LogProjectRequiem, Error, TEXT("Failed to start damage dynamic montage"));
+		bDamageAssetsInvalid = true;
+		DamageAnimationState = ERequiemDamageAnimationState::Inactive;
+		SetRootMotionMode(ERootMotionMode::IgnoreRootMotion);
+		if (HealthComponent && !HealthComponent->IsDead())
+		{
+			HealthComponent->FinishDamageReactionPresentation();
+		}
+	}
+}
+
+void URequiemPlayerAnimInstance::HoldDeathFinalPose()
+{
+	if (DamageAnimationState != ERequiemDamageAnimationState::Death
+		|| !ActiveAnimation
+		|| !ActiveLocomotionMontage)
+	{
+		return;
+	}
+
+	const float Duration = ActiveAnimation->GetPlayLength();
+	if (Duration <= UE_KINDA_SMALL_NUMBER)
+	{
+		return;
+	}
+
+	const float HoldPosition = FMath::Max(0.0f, Duration - 1.0f / 30.0f);
+	if (GetDamageAnimationNormalizedTime() * Duration < HoldPosition)
+	{
+		return;
+	}
+
+	if (!Montage_IsActive(ActiveLocomotionMontage))
+	{
+		ActiveLocomotionMontage = PlaySlotAnimationAsDynamicMontage(
+			ActiveAnimation,
+			LocomotionSlotName,
+			0.0f,
+			0.0f,
+			1.0f,
+			1,
+			0.0f,
+			HoldPosition);
+	}
+	if (!ActiveLocomotionMontage || !Montage_IsActive(ActiveLocomotionMontage))
+	{
+		return;
+	}
+
+	Montage_SetPosition(ActiveLocomotionMontage, HoldPosition);
+	Montage_Pause(ActiveLocomotionMontage);
+	bDeathPoseHeld = Montage_IsActive(ActiveLocomotionMontage);
+}
+
+bool URequiemPlayerAnimInstance::HasDamageOneShotFinished() const
+{
+	if (!ActiveAnimation)
+	{
+		return true;
+	}
+
+	const float Duration = ActiveAnimation->GetPlayLength();
+	if (Duration <= UE_KINDA_SMALL_NUMBER)
+	{
+		return true;
+	}
+
+	return GetDamageAnimationNormalizedTime() >= 0.999f;
+}
+
+UAnimSequenceBase* URequiemPlayerAnimInstance::GetHitReactionAnimation() const
+{
+	if (!HealthComponent)
+	{
+		return nullptr;
+	}
+
+	switch (HealthComponent->GetLastHitRegion())
+	{
+	case ERequiemHitRegion::Head:
+		return HitHeadAnimation;
+	case ERequiemHitRegion::Chest:
+		return HitChestAnimation;
+	case ERequiemHitRegion::Stomach:
+		return HitStomachAnimation;
+	case ERequiemHitRegion::ShoulderLeft:
+		return HitShoulderLeftAnimation;
+	case ERequiemHitRegion::ShoulderRight:
+		return HitShoulderRightAnimation;
+	default:
+		return HitChestAnimation;
+	}
+}
+
+UAnimSequenceBase* URequiemPlayerAnimInstance::GetDeathAnimation() const
+{
+	return HealthComponent
+			&& HealthComponent->GetSelectedDeathAnimation()
+				== ERequiemDeathAnimation::Death02
+		? Death02Animation.Get()
+		: Death01Animation.Get();
+}
+
+float URequiemPlayerAnimInstance::GetDamageAnimationNormalizedTime() const
+{
+	if (!ActiveAnimation)
+	{
+		return 0.0f;
+	}
+
+	const float Duration = ActiveAnimation->GetPlayLength();
+	if (Duration <= UE_KINDA_SMALL_NUMBER)
+	{
+		return 1.0f;
+	}
+
+	if (ActiveLocomotionMontage && Montage_IsActive(ActiveLocomotionMontage))
+	{
+		return FMath::Clamp(
+			Montage_GetPosition(ActiveLocomotionMontage) / Duration,
+			0.0f,
+			1.0f);
+	}
+
+	return FMath::Clamp(
+		DamageAnimationElapsedSeconds * ActiveAnimationPlayRate / Duration,
+		0.0f,
+		1.0f);
 }
 
 void URequiemPlayerAnimInstance::UpdateObservedMovement()
@@ -1015,6 +1417,7 @@ bool URequiemPlayerAnimInstance::CanPlayCombatAnimation() const
 {
 	if (bDodgePresentationActive
 		|| (DodgeComponent && DodgeComponent->IsDodgeActive())
+		|| (HealthComponent && HealthComponent->AreActionsLocked())
 		|| bObservedIsFalling
 		|| bObservedIsCrouched)
 	{
@@ -1449,7 +1852,8 @@ bool URequiemPlayerAnimInstance::HasMovementIntent() const
 {
 	const bool bMovementLocked =
 		(CombatComponent && CombatComponent->IsUnarmedAttackMovementLocked())
-		|| (DodgeComponent && DodgeComponent->IsDodgeMovementLocked());
+		|| (DodgeComponent && DodgeComponent->IsDodgeMovementLocked())
+		|| (HealthComponent && HealthComponent->AreActionsLocked());
 	return !bMovementLocked
 		&& ((OwningMovementComponent
 				&& !OwningMovementComponent->GetCurrentAcceleration().IsNearlyZero(1.0f))

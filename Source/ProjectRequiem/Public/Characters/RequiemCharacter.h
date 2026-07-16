@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "Components/RequiemHealthComponent.h"
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
 #include "RequiemCharacter.generated.h"
@@ -10,6 +11,7 @@ class UCameraComponent;
 class UInputAction;
 class URequiemCombatComponent;
 class URequiemDodgeComponent;
+class URequiemHealthComponent;
 class USpringArmComponent;
 struct FInputActionValue;
 
@@ -29,12 +31,20 @@ public:
 		struct FDamageEvent const& DamageEvent,
 		class AController* EventInstigator,
 		AActor* DamageCauser) override;
+	virtual bool CanCrouch() const override;
 
 	UFUNCTION(BlueprintPure, Category = "Combat")
 	URequiemCombatComponent* GetCombatComponent() const { return CombatComponent; }
 
 	UFUNCTION(BlueprintPure, Category = "Dodge")
 	URequiemDodgeComponent* GetDodgeComponent() const { return DodgeComponent; }
+
+	UFUNCTION(BlueprintPure, Category = "Health")
+	URequiemHealthComponent* GetHealthComponent() const { return HealthComponent; }
+
+	/** Canonical explicit damage path for future hitboxes and enemies. */
+	UFUNCTION(BlueprintCallable, Category = "Damage")
+	ERequiemDamageOutcome ApplyRequiemDamage(const FRequiemDamageRequest& Request);
 
 	/** Generic UE damage fallback; future attack resolution should query the component directly. */
 	UFUNCTION(BlueprintPure, Category = "Dodge")
@@ -47,8 +57,24 @@ public:
 		return !CurrentMovementInputDirection.IsNearlyZero();
 	}
 
+	/** Temporary console hook: RequiemTestDamage Head 20 false. */
+	UFUNCTION(Exec)
+	void RequiemTestDamage(
+		const FString& RegionName = TEXT("Chest"),
+		float DamageAmount = 20.0f,
+		bool bStrong = false);
+
+	/** Temporary console hook: RequiemTestKill 1 (Death01) or 2 (Death02). */
+	UFUNCTION(Exec)
+	void RequiemTestKill(int32 DeathVariant = 1);
+
+	/** Temporary console hook for repeatable PIE checks. */
+	UFUNCTION(Exec)
+	void RequiemTestReset();
+
 protected:
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
+	virtual bool CanJumpInternal_Implementation() const override;
 	virtual void OnStartCrouch(float HalfHeightAdjust, float ScaledHalfHeightAdjust) override;
 	virtual void OnEndCrouch(float HalfHeightAdjust, float ScaledHalfHeightAdjust) override;
 
@@ -63,6 +89,9 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Dodge")
 	TObjectPtr<URequiemDodgeComponent> DodgeComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Health")
+	TObjectPtr<URequiemHealthComponent> HealthComponent;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
 	TObjectPtr<UInputAction> MoveAction;
@@ -99,6 +128,7 @@ private:
 	FVector GetCurrentDodgeInputDirection() const;
 	void ToggleCombat();
 	void PrimaryAttack();
+	bool AreDamageActionsLocked() const;
 
 	FVector CurrentMovementInputDirection = FVector::ZeroVector;
 };
