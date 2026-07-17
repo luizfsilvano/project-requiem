@@ -110,8 +110,8 @@ ERequiemUnarmedAttackRequestResult URequiemCombatComponent::RequestUnarmedAttack
 			&& !MovementComponent->IsFalling())
 		{
 			bUnarmedAttackMovementLocked = true;
-			// A moving auto-entry keeps its current CharacterMovement velocity and
-			// brakes naturally, but no new Move input can postpone the stationary Enter.
+			// A grounded auto-entry claims movement before the presentation update;
+			// the AnimInstance may skip stance Enter and commit the first strike directly.
 			Character->ConsumeMovementInputVector();
 		}
 		if (!bEnteredCombat)

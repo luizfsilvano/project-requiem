@@ -57,6 +57,7 @@ const FName ExitAnimationStateName(TEXT("Exit"));
 
 const FName JogForwardAnimationName(TEXT("Jog_Fwd_Loop"));
 const FName JogBackwardAnimationName(TEXT("Jog_Bwd_Loop"));
+const FName IdleAnimationName(TEXT("Idle_Loop"));
 const FName CombatEnterAnimationName(TEXT("PunchKick_Enter"));
 const FName CombatIdleAnimationName(TEXT("CombatUnarmed_Idle_Loop"));
 const FName CombatExitAnimationName(TEXT("PunchKick_Exit"));
@@ -158,10 +159,16 @@ constexpr float ExpectedUnarmedMovementUnlock = 0.60f;
 constexpr float MovementUnlockSamplingTolerance = 0.02f;
 constexpr float ExpectedUnarmedLungeSpeed = 350.0f;
 constexpr int32 InputSpamCount = 6;
+constexpr float TransitionInputResponseTimeBudget = 0.35f;
+constexpr float MinimumHeldMovementObservationTime = 0.15f;
+constexpr float MinimumStablePresentationTime = 0.10f;
 
 struct FRunState
 {
 	bool bAborted = false;
+	bool bHasPlayerStartTransform = false;
+	FTransform PlayerStartTransform = FTransform::Identity;
+	FRotator PlayerStartControlRotation = FRotator::ZeroRotator;
 };
 
 enum class ETestCombatCommand : uint8
@@ -171,8 +178,21 @@ enum class ETestCombatCommand : uint8
 	PrimaryAttack
 };
 
+enum class EStanceTransitionUnderTest : uint8
+{
+	Enter,
+	Exit
+};
+
+enum class ETransitionMovementInputTiming : uint8
+{
+	DuringTransition,
+	BeforeTransition
+};
+
 struct FCharacterSnapshot
 {
+	float WorldTimeSeconds = 0.0f;
 	FVector Location = FVector::ZeroVector;
 	FVector Velocity = FVector::ZeroVector;
 	FVector Acceleration = FVector::ZeroVector;
@@ -266,6 +286,9 @@ bool ReadCharacterSnapshot(FCharacterSnapshot& OutSnapshot)
 		return false;
 	}
 
+	OutSnapshot.WorldTimeSeconds = Character->GetWorld()
+		? Character->GetWorld()->GetTimeSeconds()
+		: 0.0f;
 	OutSnapshot.Location = Character->GetActorLocation();
 	OutSnapshot.Velocity = Character->GetVelocity();
 	OutSnapshot.Acceleration = MovementComponent->GetCurrentAcceleration();
@@ -368,6 +391,24 @@ bool IsCombatStanceTransitionPlaying(const FCharacterSnapshot& Snapshot)
 		|| Snapshot.CombatAnimationStateName == ExitAnimationStateName
 		|| Snapshot.ActivePresentationAnimationName == CombatEnterAnimationName
 		|| Snapshot.ActivePresentationAnimationName == CombatExitAnimationName;
+}
+
+float GetConfiguredStanceTransitionDuration(
+	const EStanceTransitionUnderTest Transition)
+{
+	const int32 ClipIndex = Transition == EStanceTransitionUnderTest::Enter
+		? 0
+		: UE_ARRAY_COUNT(CombatClips) - 1;
+	const UAnimSequenceBase* Animation = LoadObject<UAnimSequenceBase>(
+		nullptr,
+		CombatClips[ClipIndex].AssetPath);
+	return Animation ? Animation->GetPlayLength() : 0.0f;
+}
+
+float GetSnapshotPresentationDuration(const FCharacterSnapshot& Snapshot)
+{
+	return Snapshot.PresentationAnimationLength
+		/ FMath::Max(Snapshot.PresentationMontagePlayRate, UE_KINDA_SMALL_NUMBER);
 }
 
 float GetExpectedCombatPlayRate(const int32 ComboIndex)
@@ -691,6 +732,13 @@ public:
 			{
 				return false;
 			}
+			if (!RunState->bHasPlayerStartTransform)
+			{
+				RunState->PlayerStartTransform = Character->GetActorTransform();
+				RunState->PlayerStartControlRotation =
+					PlayerController->GetControlRotation();
+				RunState->bHasPlayerStartTransform = true;
+			}
 
 			const UEnhancedInputComponent* InputComponent = Character
 				? Character->FindComponentByClass<UEnhancedInputComponent>()
@@ -847,13 +895,15 @@ private:
 	bool bSawEnter = false;
 };
 
-class FEnterCombatWhileMovingCommand final : public FTimedCommand
+class FHoldMovementBeforeCombatTransitionCommand final : public FTimedCommand
 {
 public:
-	FEnterCombatWhileMovingCommand(
+	FHoldMovementBeforeCombatTransitionCommand(
 		FAutomationTestBase* InTest,
-		TSharedRef<FRunState> InRunState)
-		: FTimedCommand(InTest, MoveTemp(InRunState), 6.0)
+		TSharedRef<FRunState> InRunState,
+		const EStanceTransitionUnderTest InTransition)
+		: FTimedCommand(InTest, MoveTemp(InRunState), 5.0)
+		, Transition(InTransition)
 	{
 	}
 
@@ -866,79 +916,353 @@ public:
 		}
 
 		const double ElapsedSeconds = GetElapsedSeconds();
-		if (!SetContinuousAction(MoveActionPath, FInputActionValue(FVector2D(0.0, 1.0))))
+		const bool bPreparingEnter = Transition == EStanceTransitionUnderTest::Enter;
+		const FVector2D HeldMovementValue = bPreparingEnter
+			? FVector2D(0.0, -1.0)
+			: FVector2D(0.0, 1.0);
+		const FName ExpectedJogAnimation = bPreparingEnter
+			? JogBackwardAnimationName
+			: JogForwardAnimationName;
+		if (!SetContinuousAction(
+				MoveActionPath,
+				FInputActionValue(HeldMovementValue)))
 		{
-			return AbortIfTimedOut(ElapsedSeconds, TEXT("injecting movement before combat entry"));
+			return AbortWithError(TEXT("Could not hold movement before a combat transition."));
 		}
 
 		FCharacterSnapshot Snapshot;
 		if (!ReadCharacterSnapshot(Snapshot))
 		{
-			return AbortIfTimedOut(ElapsedSeconds, TEXT("reading moving combat entry"));
+			return AbortIfTimedOut(ElapsedSeconds, TEXT("reading held movement before a combat transition"));
 		}
 
-		if (!bEntryRequested)
+		const ERequiemCombatState ExpectedGameplayState = bPreparingEnter
+			? ERequiemCombatState::Normal
+			: ERequiemCombatState::CombatUnarmed;
+		if (IsCombatStanceTransitionPlaying(Snapshot))
 		{
-			if (Snapshot.GroundSpeed < ExpectedMaximumSpeed * 0.9f
-				|| Snapshot.LocomotionStateName != FName(TEXT("Jog"))
-				|| Snapshot.ActivePresentationAnimationName != JogForwardAnimationName)
+			StopContinuousAction(MoveActionPath);
+			return AbortWithError(TEXT("A stance transition was already active before the held-input case began."));
+		}
+
+		const bool bHeldMovementEstablished =
+			Snapshot.CombatState == ExpectedGameplayState
+			&& Snapshot.ObservedCombatState == ExpectedGameplayState
+			&& Snapshot.CombatAnimationStateName == InactiveAnimationStateName
+			&& Snapshot.LocomotionStateName == FName(TEXT("Jog"))
+			&& Snapshot.ActivePresentationAnimationName == ExpectedJogAnimation
+			&& HasValidPresentationPlayback(Snapshot)
+			&& (!Snapshot.Acceleration.IsNearlyZero(1.0f)
+				|| Snapshot.GroundSpeed > 1.0f);
+		if (bHeldMovementEstablished)
+		{
+			if (HeldMovementSinceWorldTime < 0.0f)
 			{
-				return AbortIfTimedOut(
-					ElapsedSeconds,
-					FString::Printf(
-						TEXT("reaching Jog before combat entry (speed=%.1f, locomotion=%s, animation=%s)"),
-						Snapshot.GroundSpeed,
-						*Snapshot.LocomotionStateName.ToString(),
-						*Snapshot.ActivePresentationAnimationName.ToString()));
+				HeldMovementSinceWorldTime = Snapshot.WorldTimeSeconds;
+			}
+			if (Snapshot.WorldTimeSeconds - HeldMovementSinceWorldTime
+				>= MinimumHeldMovementObservationTime)
+			{
+				Test->AddInfo(FString::Printf(
+					TEXT("IA_Move was held before combat %s."),
+					bPreparingEnter ? TEXT("Enter") : TEXT("Exit")));
+				return true;
+			}
+		}
+		else
+		{
+			HeldMovementSinceWorldTime = -1.0f;
+		}
+
+		return AbortIfTimedOut(
+			ElapsedSeconds,
+			FString::Printf(
+				TEXT("establishing held movement before combat %s (combat=%s, presentation=%s, locomotion=%s, animation=%s, speed=%.1f)"),
+				bPreparingEnter ? TEXT("Enter") : TEXT("Exit"),
+				*Snapshot.CombatStateName.ToString(),
+				*Snapshot.CombatAnimationStateName.ToString(),
+				*Snapshot.LocomotionStateName.ToString(),
+				*Snapshot.ActivePresentationAnimationName.ToString(),
+				Snapshot.GroundSpeed));
+	}
+
+private:
+	EStanceTransitionUnderTest Transition;
+	float HeldMovementSinceWorldTime = -1.0f;
+};
+
+class FInterruptCombatTransitionWithMovementCommand final : public FTimedCommand
+{
+public:
+	FInterruptCombatTransitionWithMovementCommand(
+		FAutomationTestBase* InTest,
+		TSharedRef<FRunState> InRunState,
+		const EStanceTransitionUnderTest InTransition,
+		const ETransitionMovementInputTiming InInputTiming =
+			ETransitionMovementInputTiming::DuringTransition)
+		: FTimedCommand(InTest, MoveTemp(InRunState), 15.0)
+		, Transition(InTransition)
+		, InputTiming(InInputTiming)
+	{
+	}
+
+	virtual bool Update() override
+	{
+		if (ShouldSkip())
+		{
+			StopContinuousAction(MoveActionPath);
+			return true;
+		}
+
+		const double ElapsedSeconds = GetElapsedSeconds();
+		FCharacterSnapshot Snapshot;
+		if (!ReadCharacterSnapshot(Snapshot))
+		{
+			return AbortIfTimedOut(ElapsedSeconds, TEXT("reading a movement-interrupted combat transition"));
+		}
+
+		const bool bTestingEnter = Transition == EStanceTransitionUnderTest::Enter;
+		const FName ExpectedTransitionState = bTestingEnter
+			? EnterAnimationStateName
+			: ExitAnimationStateName;
+		const FName ExpectedTransitionAnimation = bTestingEnter
+			? CombatEnterAnimationName
+			: CombatExitAnimationName;
+		const ERequiemCombatState ExpectedGameplayState = bTestingEnter
+			? ERequiemCombatState::CombatUnarmed
+			: ERequiemCombatState::Normal;
+		const TCHAR* TransitionLabel = bTestingEnter ? TEXT("Enter") : TEXT("Exit");
+		const bool bMovementWasHeldBefore =
+			InputTiming == ETransitionMovementInputTiming::BeforeTransition;
+		const FVector2D InterruptingMovementValue = bTestingEnter
+			? FVector2D(0.0, -1.0)
+			: FVector2D(0.0, 1.0);
+		const FName ExpectedJogAnimation = bTestingEnter
+			? JogBackwardAnimationName
+			: JogForwardAnimationName;
+
+		if (!bMovementInjected)
+		{
+			if (bMovementWasHeldBefore)
+			{
+				NoReplayObservationDurationSeconds =
+					GetConfiguredStanceTransitionDuration(Transition);
+				if (NoReplayObservationDurationSeconds <= UE_KINDA_SMALL_NUMBER)
+				{
+					StopContinuousAction(MoveActionPath);
+					return AbortWithError(FString::Printf(
+						TEXT("Could not read the configured combat %s duration for the held-input case."),
+						TransitionLabel));
+				}
+			}
+			else
+			{
+				const bool bTransitionStarted =
+					Snapshot.CombatAnimationStateName == ExpectedTransitionState
+					&& Snapshot.ActivePresentationAnimationName == ExpectedTransitionAnimation
+					&& HasValidCombatOneShotPlayback(Snapshot);
+				if (!bTransitionStarted)
+				{
+					return AbortIfTimedOut(
+						ElapsedSeconds,
+						FString::Printf(
+							TEXT("waiting for %s before injecting movement (presentation=%s, animation=%s)"),
+							TransitionLabel,
+							*Snapshot.CombatAnimationStateName.ToString(),
+							*Snapshot.ActivePresentationAnimationName.ToString()));
+				}
+				if (Snapshot.CombatNormalizedTime > 0.65f)
+				{
+					return AbortWithError(FString::Printf(
+						TEXT("%s was already %.2f complete before the interrupting movement was injected."),
+						TransitionLabel,
+						Snapshot.CombatNormalizedTime));
+				}
+				NoReplayObservationDurationSeconds =
+					GetSnapshotPresentationDuration(Snapshot);
+			}
+			if (NoReplayObservationDurationSeconds <= UE_KINDA_SMALL_NUMBER)
+			{
+				StopContinuousAction(MoveActionPath);
+				return AbortWithError(FString::Printf(
+					TEXT("Could not capture the combat %s duration for no-replay observation."),
+					TransitionLabel));
+			}
+			if (!SetContinuousAction(
+					MoveActionPath,
+					FInputActionValue(InterruptingMovementValue)))
+			{
+				return AbortWithError(FString::Printf(
+					TEXT("Could not inject movement during combat %s."),
+					TransitionLabel));
 			}
 
-			if (!InvokeCombatContract(ETestCombatCommand::EnterManual))
+			bMovementInjected = true;
+			MovementInputStartWorldTime = Snapshot.WorldTimeSeconds;
+			if (!bMovementWasHeldBefore)
 			{
-				return AbortIfTimedOut(ElapsedSeconds, TEXT("entering combat while moving"));
+				return false;
 			}
-			bEntryRequested = true;
-			EntryRequestSeconds = ElapsedSeconds;
+		}
+
+		if (IsCombatStanceTransitionPlaying(Snapshot))
+		{
+			if (bMovementWasHeldBefore)
+			{
+				StopContinuousAction(MoveActionPath);
+				return AbortWithError(FString::Printf(
+					TEXT("Combat %s played even though IA_Move was already held."),
+					TransitionLabel));
+			}
+			const float ResponseSeconds =
+				Snapshot.WorldTimeSeconds - MovementInputStartWorldTime;
+			if (ResponseSeconds > TransitionInputResponseTimeBudget)
+			{
+				StopContinuousAction(MoveActionPath);
+				return AbortWithError(FString::Printf(
+					TEXT("Movement did not cancel combat %s within %.2f world seconds."),
+					TransitionLabel,
+					TransitionInputResponseTimeBudget));
+			}
 			return false;
 		}
 
-		const bool bMoving = !Snapshot.Acceleration.IsNearlyZero(1.0f)
-			|| Snapshot.GroundSpeed > 1.0f;
-		if (bMoving && IsCombatStanceTransitionPlaying(Snapshot))
-		{
-			return AbortWithError(TEXT("Combat stance Enter/Exit played while movement remained active."));
-		}
-		if (Snapshot.CombatState == ERequiemCombatState::CombatUnarmed
-			&& Snapshot.ObservedCombatState == ERequiemCombatState::CombatUnarmed
-			&& Snapshot.CombatAnimationStateName == InactiveAnimationStateName
-			&& Snapshot.LocomotionStateName == FName(TEXT("Jog"))
-			&& Snapshot.ActivePresentationAnimationName == JogForwardAnimationName
-			&& bMoving)
-		{
-			++MovingLocomotionSamples;
-		}
-
-		if (MovingLocomotionSamples >= 3
-			&& ElapsedSeconds - EntryRequestSeconds >= 0.2)
+		if (Snapshot.CombatState != ExpectedGameplayState)
 		{
 			StopContinuousAction(MoveActionPath);
-			Test->AddInfo(TEXT("CombatUnarmed entry stayed on Jog while moving and deferred PunchKick_Enter."));
+			return AbortWithError(FString::Printf(
+				TEXT("Movement-interrupted %s changed the gameplay combat state (gameplay=%s, observed=%s)."),
+				TransitionLabel,
+				*Snapshot.CombatStateName.ToString(),
+				*Snapshot.ObservedCombatStateName.ToString()));
+		}
+		if (Snapshot.ObservedCombatState != ExpectedGameplayState)
+		{
+			const float ObservationLagSeconds =
+				Snapshot.WorldTimeSeconds - MovementInputStartWorldTime;
+			if (bMovementWasHeldBefore
+				&& ObservationLagSeconds <= TransitionInputResponseTimeBudget)
+			{
+				// The component changes synchronously, while the AnimInstance observes
+				// that state on its next update. Enter/Exit was already rejected above.
+				return false;
+			}
+
+			StopContinuousAction(MoveActionPath);
+			return AbortWithError(FString::Printf(
+				TEXT("AnimInstance did not observe movement-interrupted %s within %.2f world seconds (gameplay=%s, observed=%s)."),
+				TransitionLabel,
+				TransitionInputResponseTimeBudget,
+				*Snapshot.CombatStateName.ToString(),
+				*Snapshot.ObservedCombatStateName.ToString()));
+		}
+
+		if (!bMovementReleased)
+		{
+			if (!SetContinuousAction(
+					MoveActionPath,
+					FInputActionValue(InterruptingMovementValue)))
+			{
+				return AbortWithError(FString::Printf(
+					TEXT("Could not keep movement held while validating combat %s cancellation."),
+					TransitionLabel));
+			}
+			const bool bCancelledIntoJog =
+				Snapshot.CombatAnimationStateName == InactiveAnimationStateName
+				&& Snapshot.LocomotionStateName == FName(TEXT("Jog"))
+				&& Snapshot.ActivePresentationAnimationName == ExpectedJogAnimation
+				&& HasValidPresentationPlayback(Snapshot)
+				&& (!Snapshot.Acceleration.IsNearlyZero(1.0f)
+					|| Snapshot.GroundSpeed > 1.0f);
+			if (bCancelledIntoJog)
+			{
+				if (MovingJogSinceWorldTime < 0.0f)
+				{
+					MovingJogSinceWorldTime = Snapshot.WorldTimeSeconds;
+				}
+			}
+			else
+			{
+				MovingJogSinceWorldTime = -1.0f;
+			}
+			const float MovingJogSeconds = MovingJogSinceWorldTime >= 0.0f
+				? Snapshot.WorldTimeSeconds - MovingJogSinceWorldTime
+				: 0.0f;
+			if (MovingJogSeconds >= MinimumHeldMovementObservationTime)
+			{
+				StopContinuousAction(MoveActionPath);
+				bMovementReleased = true;
+			}
+			return AbortIfTimedOut(
+				ElapsedSeconds,
+				FString::Printf(
+					TEXT("cancelling %s into Jog (presentation=%s, locomotion=%s, speed=%.1f, held=%.2f/%.2fs)"),
+					TransitionLabel,
+					*Snapshot.CombatAnimationStateName.ToString(),
+					*Snapshot.LocomotionStateName.ToString(),
+					Snapshot.GroundSpeed,
+					MovingJogSeconds,
+					MinimumHeldMovementObservationTime));
+		}
+
+		const bool bFullyStopped = Snapshot.Acceleration.IsNearlyZero(1.0f)
+			&& Snapshot.GroundSpeed <= 1.0f;
+		const bool bSettledWithoutReplay = bTestingEnter
+			? Snapshot.CombatAnimationStateName == IdleAnimationStateName
+				&& Snapshot.ActivePresentationAnimationName == CombatIdleAnimationName
+				&& HasValidPresentationPlayback(Snapshot)
+			: Snapshot.CombatAnimationStateName == InactiveAnimationStateName
+				&& Snapshot.LocomotionStateName == FName(TEXT("Idle"))
+				&& Snapshot.ActivePresentationAnimationName == IdleAnimationName
+				&& HasValidPresentationPlayback(Snapshot);
+		if (bFullyStopped && bSettledWithoutReplay)
+		{
+			if (StablePresentationSinceWorldTime < 0.0f)
+			{
+				StablePresentationSinceWorldTime = Snapshot.WorldTimeSeconds;
+			}
+		}
+		else
+		{
+			StablePresentationSinceWorldTime = -1.0f;
+		}
+
+		const float StableObservationSeconds =
+			StablePresentationSinceWorldTime >= 0.0f
+				? Snapshot.WorldTimeSeconds - StablePresentationSinceWorldTime
+				: 0.0f;
+		if (StableObservationSeconds >= NoReplayObservationDurationSeconds)
+		{
+			Test->AddInfo(FString::Printf(
+				TEXT("Movement %s combat %s; it did not play or replay for %.2f world seconds after stabilization."),
+				bMovementWasHeldBefore ? TEXT("preceded") : TEXT("cancelled"),
+				TransitionLabel,
+				StableObservationSeconds));
 			return true;
 		}
 
 		return AbortIfTimedOut(
 			ElapsedSeconds,
 			FString::Printf(
-				TEXT("deferring combat entry while moving (combat=%s, presentation=%s, speed=%.1f, samples=%d)"),
-				*Snapshot.CombatStateName.ToString(),
+				TEXT("settling after movement-suppressed %s (presentation=%s, locomotion=%s, animation=%s, speed=%.1f, stable=%.2f/%.2fs)"),
+				TransitionLabel,
 				*Snapshot.CombatAnimationStateName.ToString(),
+				*Snapshot.LocomotionStateName.ToString(),
+				*Snapshot.ActivePresentationAnimationName.ToString(),
 				Snapshot.GroundSpeed,
-				MovingLocomotionSamples));
+				StableObservationSeconds,
+				NoReplayObservationDurationSeconds));
 	}
 
 private:
-	double EntryRequestSeconds = -1.0;
-	int32 MovingLocomotionSamples = 0;
-	bool bEntryRequested = false;
+	EStanceTransitionUnderTest Transition;
+	ETransitionMovementInputTiming InputTiming;
+	float MovementInputStartWorldTime = -1.0f;
+	float MovingJogSinceWorldTime = -1.0f;
+	float StablePresentationSinceWorldTime = -1.0f;
+	float NoReplayObservationDurationSeconds = 0.0f;
+	bool bMovementInjected = false;
+	bool bMovementReleased = false;
 };
 
 class FMoveInCombatCommand final : public FTimedCommand
@@ -1009,17 +1333,86 @@ private:
 	bool bHasStartLocation = false;
 };
 
+class FStopAndWaitForCombatIdleCommand final : public FTimedCommand
+{
+public:
+	FStopAndWaitForCombatIdleCommand(
+		FAutomationTestBase* InTest,
+		TSharedRef<FRunState> InRunState)
+		: FTimedCommand(InTest, MoveTemp(InRunState), 5.0)
+	{
+	}
+
+	virtual bool Update() override
+	{
+		if (ShouldSkip())
+		{
+			StopContinuousAction(MoveActionPath);
+			return true;
+		}
+
+		const double ElapsedSeconds = GetElapsedSeconds();
+		StopContinuousAction(MoveActionPath);
+		FCharacterSnapshot Snapshot;
+		if (!ReadCharacterSnapshot(Snapshot))
+		{
+			return AbortIfTimedOut(ElapsedSeconds, TEXT("reading combat idle after movement"));
+		}
+		if (IsCombatStanceTransitionPlaying(Snapshot))
+		{
+			return AbortWithError(TEXT("A stance transition replayed while settling combat movement."));
+		}
+
+		const bool bReachedStableCombatIdle =
+			Snapshot.CombatState == ERequiemCombatState::CombatUnarmed
+			&& Snapshot.ObservedCombatState == ERequiemCombatState::CombatUnarmed
+			&& Snapshot.CombatAnimationStateName == IdleAnimationStateName
+			&& Snapshot.ActivePresentationAnimationName == CombatIdleAnimationName
+			&& Snapshot.Acceleration.IsNearlyZero(1.0f)
+			&& Snapshot.GroundSpeed <= 1.0f
+			&& HasValidPresentationPlayback(Snapshot);
+		if (bReachedStableCombatIdle)
+		{
+			if (StableSinceWorldTime < 0.0f)
+			{
+				StableSinceWorldTime = Snapshot.WorldTimeSeconds;
+			}
+		}
+		else
+		{
+			StableSinceWorldTime = -1.0f;
+		}
+		if (StableSinceWorldTime >= 0.0f
+			&& Snapshot.WorldTimeSeconds - StableSinceWorldTime
+				>= MinimumStablePresentationTime)
+		{
+			Test->AddInfo(TEXT("Combat movement stopped and returned to a stable combat idle."));
+			return true;
+		}
+
+		return AbortIfTimedOut(
+			ElapsedSeconds,
+			FString::Printf(
+				TEXT("waiting for combat idle after movement (presentation=%s, locomotion=%s, animation=%s, speed=%.1f)"),
+				*Snapshot.CombatAnimationStateName.ToString(),
+				*Snapshot.LocomotionStateName.ToString(),
+				*Snapshot.ActivePresentationAnimationName.ToString(),
+				Snapshot.GroundSpeed));
+	}
+
+private:
+	float StableSinceWorldTime = -1.0f;
+};
+
 class FWaitForExitToNormalCommand final : public FTimedCommand
 {
 public:
 	FWaitForExitToNormalCommand(
 		FAutomationTestBase* InTest,
 		TSharedRef<FRunState> InRunState,
-		const TCHAR* InStageDescription,
-		const bool bInValidateMovingDeferral = false)
+		const TCHAR* InStageDescription)
 		: FTimedCommand(InTest, MoveTemp(InRunState), 5.0)
 		, StageDescription(InStageDescription)
-		, bValidateMovingDeferral(bInValidateMovingDeferral)
 	{
 	}
 
@@ -1044,36 +1437,6 @@ public:
 			return AbortWithError(FString::Printf(TEXT("%s used root motion."), StageDescription));
 		}
 
-		const bool bMoving = !Snapshot.Acceleration.IsNearlyZero(1.0f)
-			|| Snapshot.GroundSpeed > 1.0f;
-		if (bValidateMovingDeferral)
-		{
-			if (bMoving && IsCombatStanceTransitionPlaying(Snapshot))
-			{
-				return AbortWithError(TEXT("PunchKick_Exit started while movement was still active."));
-			}
-			if (!bMovementReleased)
-			{
-				if (Snapshot.CombatState == ERequiemCombatState::Normal
-					&& Snapshot.ObservedCombatState == ERequiemCombatState::Normal
-					&& Snapshot.CombatAnimationStateName == InactiveAnimationStateName
-					&& Snapshot.LocomotionStateName == FName(TEXT("Jog"))
-					&& bMoving)
-				{
-					++MovingLocomotionSamples;
-				}
-				if (MovingLocomotionSamples >= 3 && ElapsedSeconds >= 0.2)
-				{
-					StopContinuousAction(MoveActionPath);
-					bMovementReleased = true;
-				}
-			}
-			else if (bMoving)
-			{
-				bSawBrakingWithoutExit = true;
-			}
-		}
-
 		bSawExit |= Snapshot.CombatAnimationStateName == ExitAnimationStateName
 			&& Snapshot.ActivePresentationAnimationName == CombatExitAnimationName
 			&& HasValidCombatOneShotPlayback(Snapshot);
@@ -1085,11 +1448,7 @@ public:
 			&& Snapshot.CombatAnimationStateName == InactiveAnimationStateName
 			&& Snapshot.ActiveComboAnimationIndex == INDEX_NONE
 			&& !Snapshot.bCanBlock;
-		const bool bMovingDeferralValidated = !bValidateMovingDeferral
-			|| (bMovementReleased
-				&& MovingLocomotionSamples >= 3
-				&& bSawBrakingWithoutExit);
-		if (bMovingDeferralValidated && bSawExit && bReachedNormal)
+		if (bSawExit && bReachedNormal)
 		{
 			Test->AddInfo(FString::Printf(TEXT("%s played PunchKick_Exit and returned to Normal."), StageDescription));
 			return true;
@@ -1108,10 +1467,6 @@ public:
 
 private:
 	const TCHAR* StageDescription;
-	bool bValidateMovingDeferral = false;
-	bool bMovementReleased = false;
-	bool bSawBrakingWithoutExit = false;
-	int32 MovingLocomotionSamples = 0;
 	bool bSawExit = false;
 };
 
@@ -1253,6 +1608,188 @@ bool HasResumedMovementInputAfterUnlock(const FCharacterSnapshot& Snapshot)
 		&& !Snapshot.Acceleration.IsNearlyZero(1.0f);
 }
 
+class FInterruptCombatTransitionWithAttackCommand final : public FTimedCommand
+{
+public:
+	FInterruptCombatTransitionWithAttackCommand(
+		FAutomationTestBase* InTest,
+		TSharedRef<FRunState> InRunState,
+		const EStanceTransitionUnderTest InTransition)
+		: FTimedCommand(InTest, MoveTemp(InRunState), 15.0)
+		, Transition(InTransition)
+	{
+	}
+
+	virtual bool Update() override
+	{
+		if (ShouldSkip())
+		{
+			return true;
+		}
+
+		const double ElapsedSeconds = GetElapsedSeconds();
+		FCharacterSnapshot Snapshot;
+		if (!ReadCharacterSnapshot(Snapshot))
+		{
+			return AbortIfTimedOut(ElapsedSeconds, TEXT("reading an attack-interrupted combat transition"));
+		}
+
+		const bool bTestingEnter = Transition == EStanceTransitionUnderTest::Enter;
+		const FName ExpectedTransitionState = bTestingEnter
+			? EnterAnimationStateName
+			: ExitAnimationStateName;
+		const FName ExpectedTransitionAnimation = bTestingEnter
+			? CombatEnterAnimationName
+			: CombatExitAnimationName;
+		const TCHAR* TransitionLabel = bTestingEnter ? TEXT("Enter") : TEXT("Exit");
+
+		if (!bAttackRequested)
+		{
+			const bool bTransitionStarted =
+				Snapshot.CombatAnimationStateName == ExpectedTransitionState
+				&& Snapshot.ActivePresentationAnimationName == ExpectedTransitionAnimation
+				&& HasValidCombatOneShotPlayback(Snapshot);
+			if (!bTransitionStarted)
+			{
+				return AbortIfTimedOut(
+					ElapsedSeconds,
+					FString::Printf(
+						TEXT("waiting for %s before requesting the direct attack (presentation=%s, animation=%s)"),
+						TransitionLabel,
+						*Snapshot.CombatAnimationStateName.ToString(),
+						*Snapshot.ActivePresentationAnimationName.ToString()));
+			}
+			if (Snapshot.CombatNormalizedTime > 0.65f)
+			{
+				return AbortWithError(FString::Printf(
+					TEXT("%s was already %.2f complete before the direct attack was requested."),
+					TransitionLabel,
+					Snapshot.CombatNormalizedTime));
+			}
+
+			AttackRequestSerialBefore = Snapshot.AttackRequestSerial;
+			AttackRequestWorldTime = Snapshot.WorldTimeSeconds;
+			NoReplayObservationDurationSeconds =
+				GetSnapshotPresentationDuration(Snapshot);
+			if (NoReplayObservationDurationSeconds <= UE_KINDA_SMALL_NUMBER)
+			{
+				return AbortWithError(FString::Printf(
+					TEXT("Could not capture the interrupted combat %s duration."),
+					TransitionLabel));
+			}
+			const ERequiemUnarmedAttackRequestResult Result = RequestPrimaryAttack();
+			if (Result != ERequiemUnarmedAttackRequestResult::InitialAccepted)
+			{
+				return AbortWithError(FString::Printf(
+					TEXT("Attack during combat %s was not accepted as the initial attack (result=%d)."),
+					TransitionLabel,
+					static_cast<int32>(Result)));
+			}
+
+			bAttackRequested = true;
+			return false;
+		}
+
+		if (!bSawDirectAttack)
+		{
+			const bool bDirectCrossStarted =
+				Snapshot.CombatState == ERequiemCombatState::CombatUnarmed
+				&& Snapshot.ObservedCombatState == ERequiemCombatState::CombatUnarmed
+				&& Snapshot.AttackRequestSerial != AttackRequestSerialBefore
+				&& Snapshot.CombatAnimationStateName == AttackAnimationStateName
+				&& Snapshot.ActiveComboAnimationIndex == 0
+				&& Snapshot.ActivePresentationAnimationName
+					== CombatClips[FirstComboClipIndex].AnimationName
+				&& Snapshot.bUnarmedAttackActive
+				&& Snapshot.bUnarmedAttackMovementLocked
+				&& HasValidCommittedAttackPlayback(Snapshot);
+			if (bDirectCrossStarted)
+			{
+				bSawDirectAttack = true;
+			}
+			else if (Snapshot.WorldTimeSeconds - AttackRequestWorldTime
+				> TransitionInputResponseTimeBudget)
+			{
+				return AbortWithError(FString::Printf(
+					TEXT("Attack did not replace combat %s with Punch_Cross within %.2f world seconds (presentation=%s, animation=%s)."),
+					TransitionLabel,
+					TransitionInputResponseTimeBudget,
+					*Snapshot.CombatAnimationStateName.ToString(),
+					*Snapshot.ActivePresentationAnimationName.ToString()));
+			}
+			return false;
+		}
+
+		if (IsCombatStanceTransitionPlaying(Snapshot))
+		{
+			return AbortWithError(FString::Printf(
+				TEXT("A stance transition played after Punch_Cross interrupted combat %s."),
+				TransitionLabel));
+		}
+		if (Snapshot.ActiveComboAnimationIndex != INDEX_NONE
+			&& Snapshot.ActiveComboAnimationIndex != 0)
+		{
+			return AbortWithError(FString::Printf(
+				TEXT("Direct attack during %s unexpectedly advanced to combo index %d."),
+				TransitionLabel,
+				Snapshot.ActiveComboAnimationIndex));
+		}
+
+		const bool bReachedCombatIdle =
+			Snapshot.CombatState == ERequiemCombatState::CombatUnarmed
+			&& Snapshot.ObservedCombatState == ERequiemCombatState::CombatUnarmed
+			&& Snapshot.CombatAnimationStateName == IdleAnimationStateName
+			&& Snapshot.ActiveComboAnimationIndex == INDEX_NONE
+			&& Snapshot.ActivePresentationAnimationName == CombatIdleAnimationName
+			&& HasValidPresentationPlayback(Snapshot)
+			&& !Snapshot.bUnarmedAttackActive
+			&& !Snapshot.bUnarmedAttackMovementLocked;
+		if (bReachedCombatIdle)
+		{
+			if (StableCombatIdleSinceWorldTime < 0.0f)
+			{
+				StableCombatIdleSinceWorldTime = Snapshot.WorldTimeSeconds;
+			}
+		}
+		else
+		{
+			StableCombatIdleSinceWorldTime = -1.0f;
+		}
+		const float StableObservationSeconds =
+			StableCombatIdleSinceWorldTime >= 0.0f
+				? Snapshot.WorldTimeSeconds - StableCombatIdleSinceWorldTime
+				: 0.0f;
+		if (StableObservationSeconds >= NoReplayObservationDurationSeconds)
+		{
+			Test->AddInfo(FString::Printf(
+				TEXT("Punch_Cross replaced combat %s directly; no stance transition replayed for %.2f world seconds after combat idle stabilized."),
+				TransitionLabel,
+				StableObservationSeconds));
+			return true;
+		}
+
+		return AbortIfTimedOut(
+			ElapsedSeconds,
+			FString::Printf(
+				TEXT("finishing the direct attack from %s (presentation=%s, animation=%s, combo=%d, stable=%.2f/%.2fs)"),
+				TransitionLabel,
+				*Snapshot.CombatAnimationStateName.ToString(),
+				*Snapshot.ActivePresentationAnimationName.ToString(),
+				Snapshot.ActiveComboAnimationIndex,
+				StableObservationSeconds,
+				NoReplayObservationDurationSeconds));
+	}
+
+private:
+	EStanceTransitionUnderTest Transition;
+	int32 AttackRequestSerialBefore = 0;
+	float AttackRequestWorldTime = -1.0f;
+	float StableCombatIdleSinceWorldTime = -1.0f;
+	float NoReplayObservationDurationSeconds = 0.0f;
+	bool bAttackRequested = false;
+	bool bSawDirectAttack = false;
+};
+
 class FObserveAutoEntrySpamCommand final : public FTimedCommand
 {
 public:
@@ -1288,50 +1825,32 @@ public:
 		{
 			return AbortWithError(TEXT("Blocking became available during unarmed combat."));
 		}
-		if (IsCombatStanceTransitionPlaying(Snapshot)
-			&& (!Snapshot.Acceleration.IsNearlyZero(1.0f)
-				|| Snapshot.GroundSpeed > 1.0f))
+		if (Snapshot.CombatAnimationStateName == EnterAnimationStateName
+			|| Snapshot.ActivePresentationAnimationName == CombatEnterAnimationName)
 		{
-			return AbortWithError(TEXT("Moving LMB auto-entry played a stance transition before fully stopping."));
-		}
-
-		if (!bSawAutomaticEnter
-			&& Snapshot.CombatState == ERequiemCombatState::CombatUnarmed
-			&& Snapshot.CombatAnimationStateName == InactiveAnimationStateName
-			&& Snapshot.LocomotionStateName == FName(TEXT("Jog"))
-			&& HasValidPresentationPlayback(Snapshot)
-			&& Snapshot.bUnarmedAttackMovementLocked
-			&& !Snapshot.bUnarmedAttackActive
-			&& Snapshot.PendingMovementInput.IsNearlyZero(0.01f)
-			&& Snapshot.GroundSpeed > 1.0f)
-		{
-			MaximumAutoEntryBrakingSpeed = FMath::Max(
-				MaximumAutoEntryBrakingSpeed,
-				Snapshot.GroundSpeed);
-			MinimumAutoEntryBrakingSpeed = FMath::Min(
-				MinimumAutoEntryBrakingSpeed,
-				Snapshot.GroundSpeed);
-			bSawNaturalAutoEntryBraking = true;
-		}
-
-		if (Snapshot.ActivePresentationAnimationName == CombatEnterAnimationName)
-		{
-			bSawAutomaticEnter |= Snapshot.CombatAnimationStateName == EnterAnimationStateName
-				&& Snapshot.CombatState == ERequiemCombatState::CombatUnarmed
-				&& HasValidCombatOneShotPlayback(Snapshot)
-				&& HasConsistentCombatTiming(Snapshot, 1.0f);
-			bSawPendingEntryMovementLock |= Snapshot.bUnarmedAttackMovementLocked
-				&& !Snapshot.bUnarmedAttackActive
-				&& Snapshot.PendingMovementInput.IsNearlyZero(0.01f);
+			return AbortWithError(TEXT("LMB auto-entry played PunchKick_Enter instead of attacking directly."));
 		}
 
 		const int32 ComboIndex = FindExpectedComboIndex(Snapshot.ActivePresentationAnimationName);
+		if (ComboIndex == 0
+			&& Snapshot.CombatState == ERequiemCombatState::CombatUnarmed
+			&& Snapshot.bUnarmedAttackMovementLocked
+			&& Snapshot.PendingMovementInput.IsNearlyZero(0.01f)
+			&& Snapshot.GroundSpeed > 1.0f)
+		{
+			MaximumDirectEntryLockedSpeed = FMath::Max(
+				MaximumDirectEntryLockedSpeed,
+				Snapshot.GroundSpeed);
+			MinimumDirectEntryLockedSpeed = FMath::Min(
+				MinimumDirectEntryLockedSpeed,
+				Snapshot.GroundSpeed);
+			bSawMovingDirectEntryLock = true;
+			bSawPendingEntryMovementLock |= Snapshot.bUnarmedAttackMovementLocked
+				&& Snapshot.PendingMovementInput.IsNearlyZero(0.01f);
+		}
+
 		if (ComboIndex != INDEX_NONE && Snapshot.ActivePresentationAnimationName != LastObservedComboClip)
 		{
-			if (!bSawAutomaticEnter)
-			{
-				return AbortWithError(TEXT("LMB started a combo clip before PunchKick_Enter was observed."));
-			}
 			if (ComboIndex != ObservedComboClipCount || ComboIndex > 1)
 			{
 				return AbortWithError(FString::Printf(
@@ -1348,6 +1867,7 @@ public:
 				AttackStartLocation = Snapshot.Location;
 				AttackForward = Snapshot.ActorForward;
 				bHasAttackStart = true;
+				bSawDirectAutomaticAttack = true;
 			}
 		}
 
@@ -1485,8 +2005,8 @@ public:
 			&& RejectedBurstRequests == InputSpamCount - 1
 			&& bSawForwardLunge
 			&& HasConfiguredMovement(Snapshot);
-		if (bSawNaturalAutoEntryBraking
-			&& bSawAutomaticEnter
+		if (bSawMovingDirectEntryLock
+			&& bSawDirectAutomaticAttack
 			&& bSawPendingEntryMovementLock
 			&& LockedAttackIndices.Num() == 2
 			&& UnlockedAttackIndices.Num() == 2
@@ -1495,14 +2015,14 @@ public:
 			&& bSawFollowUpRelock
 			&& bReachedFinalIdle)
 		{
-			Test->AddInfo(TEXT("Cross and Jab released movement at 0.60, the queued Jab relocked, and six clicks still occupied one slot."));
+			Test->AddInfo(TEXT("Moving LMB skipped Enter; Cross and Jab released movement at 0.60, the queued Jab relocked, and six clicks still occupied one slot."));
 			return true;
 		}
 
 		return AbortIfTimedOut(
 			ElapsedSeconds,
 			FString::Printf(
-				TEXT("single-slot spam (combat=%s, presentation=%s, animation=%s, clips=%d/2, accepted=%d, rejected=%d, lunged=%d, locked=%d/2, unlocked=%d/2, resumed=%d/2, relock=%d, queuePreserved=%d, brake=%.1f..%.1f, enter=%d, pendingLock=%d)"),
+				TEXT("single-slot spam (combat=%s, presentation=%s, animation=%s, clips=%d/2, accepted=%d, rejected=%d, lunged=%d, locked=%d/2, unlocked=%d/2, resumed=%d/2, relock=%d, queuePreserved=%d, entryLockedSpeed=%.1f..%.1f, direct=%d, pendingLock=%d)"),
 				*Snapshot.CombatStateName.ToString(),
 				*Snapshot.CombatAnimationStateName.ToString(),
 				*Snapshot.ActivePresentationAnimationName.ToString(),
@@ -1515,9 +2035,9 @@ public:
 				MovementResumedAttackIndices.Num(),
 				bSawFollowUpRelock,
 				bSawQueuePreservedThroughUnlock,
-				MinimumAutoEntryBrakingSpeed,
-				MaximumAutoEntryBrakingSpeed,
-				bSawAutomaticEnter,
+				MinimumDirectEntryLockedSpeed,
+				MaximumDirectEntryLockedSpeed,
+				bSawDirectAutomaticAttack,
 				bSawPendingEntryMovementLock));
 	}
 
@@ -1533,12 +2053,12 @@ private:
 	int32 RejectedBurstRequests = 0;
 	float MaximumForwardSpeed = 0.0f;
 	float MaximumForwardDisplacement = 0.0f;
-	float MaximumAutoEntryBrakingSpeed = 0.0f;
-	float MinimumAutoEntryBrakingSpeed = TNumericLimits<float>::Max();
+	float MaximumDirectEntryLockedSpeed = 0.0f;
+	float MinimumDirectEntryLockedSpeed = TNumericLimits<float>::Max();
 	bool bHasAttackStart = false;
-	bool bSawAutomaticEnter = false;
+	bool bSawDirectAutomaticAttack = false;
 	bool bSawPendingEntryMovementLock = false;
-	bool bSawNaturalAutoEntryBraking = false;
+	bool bSawMovingDirectEntryLock = false;
 	bool bBurstSubmitted = false;
 	bool bInputInjectionStopped = false;
 	bool bSawForwardLunge = false;
@@ -1860,6 +2380,92 @@ private:
 	bool bHasStartLocation = false;
 };
 
+class FResetCharacterToStartCommand final : public FTimedCommand
+{
+public:
+	FResetCharacterToStartCommand(
+		FAutomationTestBase* InTest,
+		TSharedRef<FRunState> InRunState)
+		: FTimedCommand(InTest, MoveTemp(InRunState), 4.0)
+	{
+	}
+
+	virtual bool Update() override
+	{
+		if (ShouldSkip())
+		{
+			return true;
+		}
+
+		const double ElapsedSeconds = GetElapsedSeconds();
+		APlayerController* PlayerController = FindPIEPlayerController();
+		ARequiemCharacter* Character = PlayerController
+			? Cast<ARequiemCharacter>(PlayerController->GetPawn())
+			: nullptr;
+		UCharacterMovementComponent* MovementComponent = Character
+			? Character->GetCharacterMovement()
+			: nullptr;
+		if (!RunState->bHasPlayerStartTransform
+			|| !PlayerController
+			|| !Character
+			|| !MovementComponent)
+		{
+			return AbortIfTimedOut(ElapsedSeconds, TEXT("recovering the PIE start transform"));
+		}
+
+		ReleaseAllTestInput();
+		if (!bTeleported)
+		{
+			MovementComponent->StopMovementImmediately();
+			Character->SetActorLocationAndRotation(
+				RunState->PlayerStartTransform.GetLocation(),
+				RunState->PlayerStartTransform.Rotator(),
+				false,
+				nullptr,
+				ETeleportType::TeleportPhysics);
+			PlayerController->SetControlRotation(RunState->PlayerStartControlRotation);
+			bTeleported = true;
+			return false;
+		}
+
+		FCharacterSnapshot Snapshot;
+		if (!ReadCharacterSnapshot(Snapshot))
+		{
+			return AbortIfTimedOut(ElapsedSeconds, TEXT("reading the reset combat snapshot"));
+		}
+
+		const bool bReadyForMovementValidation =
+			Snapshot.Location.Equals(RunState->PlayerStartTransform.GetLocation(), 1.0f)
+			&& Snapshot.GroundSpeed <= 1.0f
+			&& Snapshot.CombatState == ERequiemCombatState::Normal
+			&& Snapshot.ObservedCombatState == ERequiemCombatState::Normal
+			&& Snapshot.CombatAnimationStateName == InactiveAnimationStateName
+			&& Snapshot.LocomotionStateName == FName(TEXT("Idle"))
+			&& Snapshot.ActivePresentationAnimationName == IdleAnimationName
+			&& HasValidPresentationPlayback(Snapshot)
+			&& !Snapshot.bUnarmedAttackActive
+			&& !Snapshot.bUnarmedAttackMovementLocked;
+		if (bReadyForMovementValidation)
+		{
+			Test->AddInfo(TEXT("Player was recentered before the independent post-combat movement check."));
+			return true;
+		}
+
+		return AbortIfTimedOut(
+			ElapsedSeconds,
+			FString::Printf(
+				TEXT("recentering the combat player (speed=%.1f, combat=%s, presentation=%s, locomotion=%s, locked=%d)"),
+				Snapshot.GroundSpeed,
+				*Snapshot.CombatStateName.ToString(),
+				*Snapshot.CombatAnimationStateName.ToString(),
+				*Snapshot.LocomotionStateName.ToString(),
+				Snapshot.bUnarmedAttackMovementLocked));
+	}
+
+private:
+	bool bTeleported = false;
+};
+
 class FReleaseAllInputCommand final : public IAutomationLatentCommand
 {
 public:
@@ -2120,16 +2726,89 @@ bool FRequiemUnarmedCombatPIETest::RunTest(const FString& Parameters)
 	ADD_LATENT_AUTOMATION_COMMAND(FStartPIECommand(false));
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitForPIEReadyCommand(this, RunState));
 
-	ADD_LATENT_AUTOMATION_COMMAND(FEnterCombatWhileMovingCommand(this, RunState));
+	// A completely idle player still receives both authored stance transitions.
+	ADD_LATENT_AUTOMATION_COMMAND(FInvokeCombatContractCommand(
+		this,
+		RunState,
+		ETestCombatCommand::EnterManual,
+		TEXT("stationary manual combat entry")));
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitForManualCombatIdleCommand(this, RunState));
-	ADD_LATENT_AUTOMATION_COMMAND(FMoveInCombatCommand(this, RunState));
 	ADD_LATENT_AUTOMATION_COMMAND(FInvokeCombatContractCommand(
 		this,
 		RunState,
 		ETestCombatCommand::Exit,
-		TEXT("manual combat exit contract (Z mapping verified)")));
+		TEXT("stationary manual combat exit")));
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitForExitToNormalCommand(
-		this, RunState, TEXT("manual Z exit"), true));
+		this, RunState, TEXT("stationary manual exit")));
+
+	// Holding movement before the mode change suppresses the stance transition
+	// entirely, including after that input is released and the player settles.
+	ADD_LATENT_AUTOMATION_COMMAND(FHoldMovementBeforeCombatTransitionCommand(
+		this, RunState, EStanceTransitionUnderTest::Enter));
+	ADD_LATENT_AUTOMATION_COMMAND(FInvokeCombatContractCommand(
+		this,
+		RunState,
+		ETestCombatCommand::EnterManual,
+		TEXT("combat entry with movement already held")));
+	ADD_LATENT_AUTOMATION_COMMAND(FInterruptCombatTransitionWithMovementCommand(
+		this,
+		RunState,
+		EStanceTransitionUnderTest::Enter,
+		ETransitionMovementInputTiming::BeforeTransition));
+	ADD_LATENT_AUTOMATION_COMMAND(FHoldMovementBeforeCombatTransitionCommand(
+		this, RunState, EStanceTransitionUnderTest::Exit));
+	ADD_LATENT_AUTOMATION_COMMAND(FInvokeCombatContractCommand(
+		this,
+		RunState,
+		ETestCombatCommand::Exit,
+		TEXT("combat exit with movement already held")));
+	ADD_LATENT_AUTOMATION_COMMAND(FInterruptCombatTransitionWithMovementCommand(
+		this,
+		RunState,
+		EStanceTransitionUnderTest::Exit,
+		ETransitionMovementInputTiming::BeforeTransition));
+
+	// Starting to move over Enter/Exit cancels that one-shot permanently. Stopping
+	// later must not replay the presentation that the player already interrupted.
+	ADD_LATENT_AUTOMATION_COMMAND(FInvokeCombatContractCommand(
+		this,
+		RunState,
+		ETestCombatCommand::EnterManual,
+		TEXT("movement-interrupted combat entry")));
+	ADD_LATENT_AUTOMATION_COMMAND(FInterruptCombatTransitionWithMovementCommand(
+		this, RunState, EStanceTransitionUnderTest::Enter));
+	ADD_LATENT_AUTOMATION_COMMAND(FMoveInCombatCommand(this, RunState));
+	ADD_LATENT_AUTOMATION_COMMAND(FStopAndWaitForCombatIdleCommand(this, RunState));
+	ADD_LATENT_AUTOMATION_COMMAND(FInvokeCombatContractCommand(
+		this,
+		RunState,
+		ETestCombatCommand::Exit,
+		TEXT("movement-interrupted combat exit")));
+	ADD_LATENT_AUTOMATION_COMMAND(FInterruptCombatTransitionWithMovementCommand(
+		this, RunState, EStanceTransitionUnderTest::Exit));
+
+	// Primary attack owns presentation priority over either stance transition.
+	ADD_LATENT_AUTOMATION_COMMAND(FInvokeCombatContractCommand(
+		this,
+		RunState,
+		ETestCombatCommand::EnterManual,
+		TEXT("attack-interrupted combat entry")));
+	ADD_LATENT_AUTOMATION_COMMAND(FInterruptCombatTransitionWithAttackCommand(
+		this, RunState, EStanceTransitionUnderTest::Enter));
+	ADD_LATENT_AUTOMATION_COMMAND(FInvokeCombatContractCommand(
+		this,
+		RunState,
+		ETestCombatCommand::Exit,
+		TEXT("attack-interrupted combat exit")));
+	ADD_LATENT_AUTOMATION_COMMAND(FInterruptCombatTransitionWithAttackCommand(
+		this, RunState, EStanceTransitionUnderTest::Exit));
+	ADD_LATENT_AUTOMATION_COMMAND(FInvokeCombatContractCommand(
+		this,
+		RunState,
+		ETestCombatCommand::Exit,
+		TEXT("reset to Normal after transition interruption coverage")));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitForExitToNormalCommand(
+		this, RunState, TEXT("stationary reset exit")));
 
 	ADD_LATENT_AUTOMATION_COMMAND(FPrepareMovingAutoAttackCommand(this, RunState));
 	ADD_LATENT_AUTOMATION_COMMAND(FInvokeCombatContractCommand(
@@ -2153,6 +2832,7 @@ bool FRequiemUnarmedCombatPIETest::RunTest(const FString& Parameters)
 		TEXT("post-combo combat exit contract (Z mapping verified)")));
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitForExitToNormalCommand(
 		this, RunState, TEXT("post-combo Z exit")));
+	ADD_LATENT_AUTOMATION_COMMAND(FResetCharacterToStartCommand(this, RunState));
 	ADD_LATENT_AUTOMATION_COMMAND(FMoveAfterCombatCommand(this, RunState));
 
 	// Every failed phase only marks the shared run state, so teardown remains unconditional.

@@ -423,11 +423,10 @@ void URequiemPlayerAnimInstance::PlayDamageAnimation(
 	CombatAnimationState = ERequiemCombatAnimationState::Inactive;
 	ActiveComboAnimationIndex = INDEX_NONE;
 	CombatAnimationElapsedSeconds = 0.0f;
-	const bool bShouldRequeueCombatEnter =
-		NewState != ERequiemDamageAnimationState::Death
-		&& ObservedCombatState == ERequiemCombatState::CombatUnarmed
-		&& !bCombatStanceEstablished;
-	bEnterQueued = bShouldRequeueCombatEnter;
+	// Damage owns the full-body presentation. Any stance transition it interrupts
+	// is discarded; a first damage entry from Normal is still observed as a fresh
+	// combat-state change after the reaction finishes.
+	bEnterQueued = false;
 	bExitQueued = false;
 	DamageAnimationState = NewState;
 	DamageAnimationElapsedSeconds = 0.0f;
@@ -650,11 +649,11 @@ void URequiemPlayerAnimInstance::StartDodgePresentation()
 
 	if (CombatAnimationState == ERequiemCombatAnimationState::Enter)
 	{
-		bEnterQueued = ObservedCombatState == ERequiemCombatState::CombatUnarmed;
+		SkipCombatStanceTransition(ERequiemCombatAnimationState::Enter);
 	}
 	else if (CombatAnimationState == ERequiemCombatAnimationState::Exit)
 	{
-		bExitQueued = ObservedCombatState == ERequiemCombatState::Normal;
+		SkipCombatStanceTransition(ERequiemCombatAnimationState::Exit);
 	}
 	else if (CombatAnimationState == ERequiemCombatAnimationState::Attack
 		|| CombatAnimationState == ERequiemCombatAnimationState::Recovery)
@@ -928,7 +927,7 @@ void URequiemPlayerAnimInstance::HandleCombatStateChange()
 		}
 		if (!CanPlayCombatStanceTransition())
 		{
-			bEnterQueued = true;
+			SkipCombatStanceTransition(ERequiemCombatAnimationState::Enter);
 			if (CombatAnimationState != ERequiemCombatAnimationState::Inactive)
 			{
 				ResumeLocomotionPresentation();
@@ -957,13 +956,15 @@ void URequiemPlayerAnimInstance::HandleCombatStateChange()
 		return;
 	}
 	if (CombatAnimationState == ERequiemCombatAnimationState::Attack
-		|| CombatAnimationState == ERequiemCombatAnimationState::Recovery
-		|| !CanPlayCombatStanceTransition())
+		|| CombatAnimationState == ERequiemCombatAnimationState::Recovery)
 	{
 		bExitQueued = true;
-		if (CombatAnimationState != ERequiemCombatAnimationState::Attack
-			&& CombatAnimationState != ERequiemCombatAnimationState::Recovery
-			&& CombatAnimationState != ERequiemCombatAnimationState::Inactive)
+		return;
+	}
+	if (!CanPlayCombatStanceTransition())
+	{
+		SkipCombatStanceTransition(ERequiemCombatAnimationState::Exit);
+		if (CombatAnimationState != ERequiemCombatAnimationState::Inactive)
 		{
 			ResumeLocomotionPresentation();
 		}
@@ -987,17 +988,17 @@ void URequiemPlayerAnimInstance::UpdateCombatPresentation()
 	}
 
 	// Airborne and crouched locomotion have immediate visual priority. Enter/Exit
-	// are deferred and an in-progress combo releases its movement commitment.
+	// are skipped and an in-progress combo releases its movement commitment.
 	if ((bObservedIsFalling || bObservedIsCrouched)
 		&& CombatAnimationState != ERequiemCombatAnimationState::Inactive)
 	{
 		if (CombatAnimationState == ERequiemCombatAnimationState::Enter)
 		{
-			bEnterQueued = ObservedCombatState == ERequiemCombatState::CombatUnarmed;
+			SkipCombatStanceTransition(ERequiemCombatAnimationState::Enter);
 		}
 		else if (CombatAnimationState == ERequiemCombatAnimationState::Exit)
 		{
-			bExitQueued = ObservedCombatState == ERequiemCombatState::Normal;
+			SkipCombatStanceTransition(ERequiemCombatAnimationState::Exit);
 		}
 		else if (CombatAnimationState == ERequiemCombatAnimationState::Attack
 			|| CombatAnimationState == ERequiemCombatAnimationState::Recovery)
@@ -1011,20 +1012,12 @@ void URequiemPlayerAnimInstance::UpdateCombatPresentation()
 
 	// PunchKick_Enter/Exit are full-body posture changes, not locomotion clips.
 	// If movement starts while either one is playing, hand presentation back to
-	// locomotion immediately and retry the posture change only after a full stop.
+	// locomotion immediately and discard that posture change.
 	if ((CombatAnimationState == ERequiemCombatAnimationState::Enter
 			|| CombatAnimationState == ERequiemCombatAnimationState::Exit)
 		&& !CanPlayCombatStanceTransition())
 	{
-		if (CombatAnimationState == ERequiemCombatAnimationState::Enter)
-		{
-			bEnterQueued = ObservedCombatState == ERequiemCombatState::CombatUnarmed;
-		}
-		else
-		{
-			bExitQueued = ObservedCombatState == ERequiemCombatState::Normal;
-		}
-
+		SkipCombatStanceTransition(CombatAnimationState);
 		ResumeLocomotionPresentation();
 		return;
 	}
@@ -1037,22 +1030,37 @@ void URequiemPlayerAnimInstance::UpdateCombatPresentation()
 	case ERequiemCombatAnimationState::Inactive:
 		if (ObservedCombatState == ERequiemCombatState::CombatUnarmed)
 		{
+			if (TryStartInitialUnarmedAttack())
+			{
+				return;
+			}
 			if (bEnterQueued)
 			{
 				if (CanPlayCombatStanceTransition())
 				{
 					StartCombatEnter();
 				}
+				else
+				{
+					SkipCombatStanceTransition(ERequiemCombatAnimationState::Enter);
+				}
 				return;
 			}
-			if (!TryStartInitialUnarmedAttack() && ShouldUseCombatIdle())
+			if (ShouldUseCombatIdle())
 			{
 				StartCombatIdle();
 			}
 		}
-		else if (bExitQueued && CanPlayCombatStanceTransition())
+		else if (bExitQueued)
 		{
-			StartCombatExit();
+			if (CanPlayCombatStanceTransition())
+			{
+				StartCombatExit();
+			}
+			else
+			{
+				SkipCombatStanceTransition(ERequiemCombatAnimationState::Exit);
+			}
 		}
 		return;
 
@@ -1065,7 +1073,7 @@ void URequiemPlayerAnimInstance::UpdateCombatPresentation()
 			}
 			else
 			{
-				bExitQueued = true;
+				SkipCombatStanceTransition(ERequiemCombatAnimationState::Exit);
 				ResumeLocomotionPresentation();
 			}
 			return;
@@ -1081,6 +1089,16 @@ void URequiemPlayerAnimInstance::UpdateCombatPresentation()
 		return;
 
 	case ERequiemCombatAnimationState::Enter:
+		if (TryStartInitialUnarmedAttack())
+		{
+			return;
+		}
+		if (ShouldAdvanceCombatOneShot())
+		{
+			HandleFinishedCombatOneShot();
+		}
+		return;
+
 	case ERequiemCombatAnimationState::Attack:
 	case ERequiemCombatAnimationState::Recovery:
 	case ERequiemCombatAnimationState::Exit:
@@ -1092,6 +1110,21 @@ void URequiemPlayerAnimInstance::UpdateCombatPresentation()
 
 	default:
 		return;
+	}
+}
+
+void URequiemPlayerAnimInstance::SkipCombatStanceTransition(
+	const ERequiemCombatAnimationState TransitionState)
+{
+	if (TransitionState == ERequiemCombatAnimationState::Enter)
+	{
+		bEnterQueued = false;
+		return;
+	}
+	if (TransitionState == ERequiemCombatAnimationState::Exit)
+	{
+		bExitQueued = false;
+		bCombatStanceEstablished = false;
 	}
 }
 
@@ -1146,6 +1179,8 @@ void URequiemPlayerAnimInstance::StartCombatIdle()
 		ERequiemCombatAnimationState::Idle,
 		CombatIdleAnimation,
 		true);
+	bCombatStanceEstablished =
+		CombatAnimationState == ERequiemCombatAnimationState::Idle;
 }
 
 void URequiemPlayerAnimInstance::StartCombatExit()
@@ -1161,7 +1196,7 @@ void URequiemPlayerAnimInstance::StartCombatExit()
 	}
 	if (!CanPlayCombatStanceTransition())
 	{
-		bExitQueued = true;
+		SkipCombatStanceTransition(ERequiemCombatAnimationState::Exit);
 		if (CombatAnimationState != ERequiemCombatAnimationState::Inactive)
 		{
 			ResumeLocomotionPresentation();
@@ -1184,6 +1219,7 @@ void URequiemPlayerAnimInstance::StartCombatComboClip(const int32 ComboIndex)
 {
 	// A direct attack from locomotion is itself a complete combat presentation,
 	// so a later return to Normal may still use the authored stance exit.
+	bEnterQueued = false;
 	bCombatStanceEstablished = true;
 	const bool bRecovery = ComboIndex == 3 || ComboIndex == 5;
 	if (CombatComponent)

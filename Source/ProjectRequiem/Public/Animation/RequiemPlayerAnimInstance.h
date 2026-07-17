@@ -373,6 +373,7 @@ private:
 	void FinishDodgePresentation();
 	void HandleCombatStateChange();
 	void UpdateCombatPresentation();
+	void SkipCombatStanceTransition(ERequiemCombatAnimationState TransitionState);
 	void UpdateCombatInputWindow();
 	void UpdateCombatMovementRecovery();
 	void StartCombatEnter();
