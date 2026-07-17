@@ -1024,6 +1024,10 @@ void URequiemPlayerAnimInstance::UpdateCombatPresentation()
 
 	UpdateCombatInputWindow();
 	UpdateCombatMovementRecovery();
+	if (CombatAnimationState == ERequiemCombatAnimationState::Attack && CombatComponent)
+	{
+		CombatComponent->UpdateUnarmedAttackHit(GetCombatAnimationNormalizedTime());
+	}
 
 	switch (CombatAnimationState)
 	{
@@ -1230,7 +1234,7 @@ void URequiemPlayerAnimInstance::StartCombatComboClip(const int32 ComboIndex)
 		}
 		else
 		{
-			CombatComponent->BeginUnarmedAttackStep(true);
+			CombatComponent->BeginUnarmedAttackStep(true, ComboIndex);
 		}
 	}
 	PlayCombatAnimation(

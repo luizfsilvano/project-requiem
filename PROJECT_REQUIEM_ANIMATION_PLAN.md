@@ -139,9 +139,9 @@ Saída manual:
 Combat → PunchKick_Exit → Normal
 ```
 
-Sem armas, o jogador não pode bloquear. O contrato expõe a elegibilidade futura para encerrar o combate após 30 segundos sem atacar e longe de inimigos, mas nenhuma saída automática é executada nesta etapa porque ainda não existem inimigos.
+Sem armas, o jogador não pode bloquear. O contrato expõe a elegibilidade futura para encerrar o combate após 30 segundos sem atacar e longe de inimigos, mas nenhuma saída automática é executada nesta etapa. O dummy de validação não fornece percepção nem proximidade para esse contrato.
 
-Todas as animações deste passe usam as fontes UAL1/UAL2 sem root motion. O modo de combate e o combo não alteram os parâmetros globais de velocidade, aceleração ou desaceleração; o deslocamento continua pertencendo ao `CharacterMovement`. Em `CombatUnarmed`, o idle de combate aparece parado e a locomoção direcional existente permanece ativa enquanto nenhum golpe está comprometido. Um LMB aceito entra em `CombatUnarmed` e executa diretamente `Punch_Cross`, mesmo que `PunchKick_Enter` esteja tocando; o lock físico aplicado é o do próprio golpe. Durante cada `Attack`, esse lock termina em `0.60`; o restante do clipe continua comprometido visualmente e para o combo, mas já aceita locomoção. Cada golpe real substitui brevemente a velocidade planar por um avanço frontal de referência de `350 uu/s`, resolvido pelo próprio `CharacterMovement` com colisão, aceleração e frenagem; recuperações não criam um novo avanço nem relock de movimento.
+Todas as animações deste passe usam as fontes UAL1/UAL2 sem root motion. O modo de combate e o combo não alteram os parâmetros globais de velocidade, aceleração ou desaceleração; o deslocamento continua pertencendo ao `CharacterMovement`. Em `CombatUnarmed`, o idle de combate aparece parado e a locomoção direcional existente permanece ativa enquanto nenhum golpe está comprometido. Um LMB aceito entra em `CombatUnarmed` e executa diretamente `Punch_Cross`, mesmo que `PunchKick_Enter` esteja tocando; o lock físico aplicado é o do próprio golpe. Durante cada `Attack`, esse lock termina em `0.60`; o restante do clipe continua comprometido visualmente e para o combo, mas já aceita locomoção. Cada golpe real substitui brevemente a velocidade planar por um avanço frontal de referência de `350 uu/s`, resolvido pelo próprio `CharacterMovement` com colisão, aceleração e frenagem; recuperações não criam um novo avanço nem relock de movimento. Para o alvo simples de validação, cada clipe de ataque consome uma única consulta ofensiva ao cruzar `0.40` do próprio relógio normalizado. Esse ponto não altera a janela de input, o handoff ou o unlock físico.
 
 ## Reações de dano e morte — primeiro passe
 
@@ -182,6 +182,24 @@ morte, movimento, ataque, pulo, agachamento e esquiva permanecem bloqueados, o
 é ignorado. `ResetForTesting` e os comandos `RequiemTestDamage`,
 `RequiemTestKill` e `RequiemTestReset` são recursos temporários para PIE; não
 representam respawn final.
+
+## Dummy de combate — apresentação de validação
+
+O asset Medieval Combat Dummy instalado pelo Fab é uma `StaticMesh`: não possui
+Skeleton, SkeletalMesh, AnimBP, AnimSequence, Montage ou Blueprint próprio. Ele é usado
+somente como visual de `BP_PR_CombatDummy`, em escala `0.5`, com a colisão original
+desativada e uma cápsula de gameplay no ator próprio.
+
+Como não existe animação compatível, o primeiro feedback de hit é um tilt curto e
+procedural do componente visual. A derrota inclina o mesmo componente e desativa a
+cápsula até `ResetForTesting`. Eventos Blueprint separados para hit, derrota, reset e
+telegraph permitem substituir essa apresentação quando existir um alvo esquelético,
+sem acoplar a base C++ a uma animação inexistente.
+
+O ataque do dummy é estacionário e explicitamente solicitado, com um windup antes da
+consulta. Não há loop de ataque, locomotion, navmesh ou máquina de estados de IA. Os
+comandos temporários `RequiemTestDummyAttack` e `RequiemTestDummyReset` permitem validar
+reação, i-frames, morte e reset no PIE sem adicionar um inimigo completo.
 
 ## Interações — futuro
 

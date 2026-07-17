@@ -181,7 +181,7 @@ Componentes como interação e combate serão criados somente nas etapas em que 
 
 ### Primeiro passe de combate desarmado
 
-O primeiro uso concreto de composição de combate é `URequiemCombatComponent`, anexado a `ARequiemCharacter`. O componente é a fonte de verdade dos estados `Normal` e `CombatUnarmed`, recebe pedidos de entrada e ataque, usa `ReceivedDamage` como razão de entrada no lote atual e mantém somente o lock-on como ponto futuro. Para o combo desarmado, ele aceita somente um pedido inicial e um único follow-up por janela; cliques excedentes são descartados, nunca acumulados como uma fila de golpes futuros. Ele não implementa armas, vida, cálculo de dano, hitboxes, inimigos ou bloqueio.
+O primeiro uso concreto de composição de combate é `URequiemCombatComponent`, anexado a `ARequiemCharacter`. O componente é a fonte de verdade dos estados `Normal` e `CombatUnarmed`, recebe pedidos de entrada e ataque, usa `ReceivedDamage` como razão de entrada no lote atual e mantém somente o lock-on como ponto futuro. Para o combo desarmado, ele aceita somente um pedido inicial e um único follow-up por janela; cliques excedentes são descartados, nunca acumulados como uma fila de golpes futuros. Ele não implementa armas, vida, inimigos completos ou bloqueio. O passe posterior do alvo de validação acrescenta somente uma consulta ofensiva curta por golpe, sem transformar o componente em um sistema geral de hitboxes.
 
 `ARequiemCharacter` encaminha `IA_ToggleCombat` e `IA_PrimaryAttack` ao componente e ignora `IA_Move` durante os `60%` iniciais de cada golpe. O componente separa esse lock físico do ataque ativo e da janela de combo: o movimento pode retornar durante o follow-through sem cancelar a animação nem o follow-up, e cada golpe seguinte reaplica seu próprio lock. Um ataque que também entra em `CombatUnarmed` começa diretamente em `Punch_Cross`; `PunchKick_Enter` nunca atrasa o primeiro golpe. Movimento, colisão, velocidade, aceleração e frenagem continuam pertencendo ao `CharacterMovement`; o pequeno avanço de cada golpe é aplicado pelo componente como uma substituição curta da velocidade planar, sem root motion e sem alterar os parâmetros globais de locomoção.
 
@@ -226,7 +226,8 @@ estável para o fallback `TakeDamage`, testes controlados e futuros inimigos ou
 hitboxes. O request já carrega quantidade, região (`Head`, `Chest`, `Stomach`,
 `ShoulderLeft` ou `ShoulderRight`), força, direção mundial do impacto, tipo de dano
 nativo da Unreal e override opcional da animação de morte. Não há GAS, atributos,
-resistências, inimigos ou resolução ofensiva nesta etapa.
+resistências ou atributos. A resolução ofensiva mínima pertence ao passe separado do
+alvo de validação descrito abaixo.
 
 Os i-frames continuam pertencendo exclusivamente ao `URequiemDodgeComponent` e têm
 prioridade sobre qualquer alteração de vida, entrada em combate ou reação. Dano não
@@ -249,6 +250,40 @@ ataque e esquiva. Novos danos são ignorados e não reiniciam a montagem. A pose
 da morte permanece pausada até `ResetForTesting`, que existe somente como apoio
 temporário de validação PIE e restaura vida, `MOVE_Walking`, modo `Normal` e a
 apresentação de locomoção.
+
+### Alvo simples de validação de combate
+
+`ARequiemCombatDummy` é um alvo estacionário e temporário, não a arquitetura final de
+inimigos. Ele mantém apenas vida própria, estados `Alive`, `Reacting` e `Defeated`,
+serials de diagnóstico, colisão de gameplay, reação visual curta, derrota idempotente,
+reset de teste e um ataque controlado. Não há percepção, polling, Behavior Tree,
+navegação, patrulha, seleção de alvo ou proximidade alimentando a saída automática de
+combate.
+
+`BP_PR_CombatDummy`, em
+`/Game/ProjectRequiem/Combat/Blueprints/Targets`, faz somente a composição visual. Ele
+referencia a `StaticMesh` original
+`/Game/Fab/Medieval_Combat_Dummy/medieval_combat_dummy/StaticMeshes/medieval_combat_dummy`
+em escala `0.5`; a colisão convexa `BlockAll` do Fab fica desativada. Uma cápsula própria
+do ator, com object type `Pawn`, é a única colisão usada por movimento e consultas de
+golpe. O asset é estático e não possui Blueprint, esqueleto ou animações, portanto o
+primeiro feedback é um recuo procedural do componente visual. Eventos Blueprint de hit,
+derrota, reset e telegraph preservam pontos de apresentação futuros sem antecipar um
+sistema completo de inimigos.
+
+Durante cada clipe real do combo, o `URequiemPlayerAnimInstance` publica a fase
+normalizada já autoral ao `URequiemCombatComponent`. Ao cruzar `0.40`, o componente
+consome exatamente uma tentativa e executa um sphere sweep frontal curto contra
+`Pawn`; recuperações não abrem uma tentativa nova. O dano é encaminhado pelo contrato
+nativo `TakeDamage`/`ApplyPointDamage`, de modo que outros alvos futuros podem integrar o
+mesmo ponto sem alterar as janelas, handoffs, play rates ou locks validados do combo.
+
+O ataque de teste do dummy permanece sob chamada explícita. Depois de um windup curto,
+ele confirma o jogador com a mesma geometria de colisão e envia um
+`FRequiemDamageRequest` ao caminho canônico de `ARequiemCharacter`. Assim, a decisão de
+ignorar dano continua acontecendo primeiro em `ShouldIgnoreIncomingDamage`; um acerto
+durante i-frames não reduz vida, não dispara reação e não entra em combate. Os comandos
+temporários `RequiemTestDummyAttack` e `RequiemTestDummyReset` servem somente ao PIE.
 
 ## Convenções principais
 

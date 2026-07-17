@@ -3,12 +3,14 @@
 #include "Characters/RequiemCharacter.h"
 
 #include "Camera/CameraComponent.h"
+#include "Combat/RequiemCombatDummy.h"
 #include "Components/RequiemCombatComponent.h"
 #include "Components/RequiemDodgeComponent.h"
 #include "Components/RequiemHealthComponent.h"
 #include "Engine/DamageEvents.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedPlayerInput.h"
+#include "EngineUtils.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/SpringArmComponent.h"
@@ -408,6 +410,49 @@ void ARequiemCharacter::RequiemTestReset()
 	if (HealthComponent)
 	{
 		HealthComponent->ResetForTesting();
+	}
+#endif
+}
+
+void ARequiemCharacter::RequiemTestDummyAttack()
+{
+#if !UE_BUILD_SHIPPING
+	ARequiemCombatDummy* NearestDummy = nullptr;
+	float NearestDistanceSquared = TNumericLimits<float>::Max();
+	for (TActorIterator<ARequiemCombatDummy> Iterator(GetWorld()); Iterator; ++Iterator)
+	{
+		ARequiemCombatDummy* Dummy = *Iterator;
+		if (!IsValid(Dummy) || Dummy->IsDefeated())
+		{
+			continue;
+		}
+
+		const float DistanceSquared = FVector::DistSquared2D(
+			GetActorLocation(),
+			Dummy->GetActorLocation());
+		if (DistanceSquared < NearestDistanceSquared)
+		{
+			NearestDistanceSquared = DistanceSquared;
+			NearestDummy = Dummy;
+		}
+	}
+
+	if (NearestDummy)
+	{
+		NearestDummy->RequestTestAttack(this);
+	}
+#endif
+}
+
+void ARequiemCharacter::RequiemTestDummyReset()
+{
+#if !UE_BUILD_SHIPPING
+	for (TActorIterator<ARequiemCombatDummy> Iterator(GetWorld()); Iterator; ++Iterator)
+	{
+		if (ARequiemCombatDummy* Dummy = *Iterator; IsValid(Dummy))
+		{
+			Dummy->ResetForTesting();
+		}
 	}
 #endif
 }

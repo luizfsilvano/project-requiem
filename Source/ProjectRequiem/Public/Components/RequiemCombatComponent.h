@@ -70,7 +70,10 @@ public:
 	bool ConsumeInitialUnarmedAttackRequest();
 
 	/** Starts one committed attack step and optionally applies its short forward lunge. */
-	void BeginUnarmedAttackStep(bool bApplyForwardLunge);
+	void BeginUnarmedAttackStep(bool bApplyForwardLunge, int32 ComboAnimationIndex);
+
+	/** Presentation publishes the authored strike phase; gameplay resolves at most one hit. */
+	void UpdateUnarmedAttackHit(float NormalizedTime);
 
 	/** Presentation publishes its normalized input window through this gameplay contract. */
 	void SetUnarmedAttackInputWindowOpen(bool bOpen);
@@ -105,6 +108,18 @@ public:
 	bool IsUnarmedAttackMovementLocked() const { return bUnarmedAttackMovementLocked; }
 
 	UFUNCTION(BlueprintPure, Category = "Combat|Unarmed")
+	int32 GetUnarmedHitAttemptSerial() const { return UnarmedHitAttemptSerial; }
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Unarmed")
+	int32 GetUnarmedHitConfirmSerial() const { return UnarmedHitConfirmSerial; }
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Unarmed")
+	float GetUnarmedHitDamage() const { return UnarmedHitDamage; }
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Unarmed")
+	AActor* GetLastUnarmedHitActor() const { return LastUnarmedHitActor.Get(); }
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Unarmed")
 	bool HasPendingInitialUnarmedAttackRequest() const
 	{
 		return bInitialUnarmedAttackRequested;
@@ -135,6 +150,22 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed|Tuning", meta = (ClampMin = "0.0"))
 	float UnarmedAttackLungeSpeed = 350.0f;
 
+	/** Authored normalized phase at which the active attack performs its single query. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed|Hit", meta = (ClampMin = "0.0", ClampMax = "0.70"))
+	float UnarmedHitMomentNormalized = 0.4f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed|Hit", meta = (ClampMin = "0.0"))
+	float UnarmedHitDamage = 25.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed|Hit", meta = (ClampMin = "0.0"))
+	float UnarmedHitRange = 135.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed|Hit", meta = (ClampMin = "0.0"))
+	float UnarmedHitRadius = 55.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed|Hit")
+	float UnarmedHitHeight = 70.0f;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Combat|Unarmed|Runtime")
 	bool bUnarmedAttackActive = false;
 
@@ -149,8 +180,14 @@ protected:
 
 private:
 	void MarkCombatActivity();
+	void ResolveUnarmedAttackHit();
 
 	int32 AttackRequestSerial = 0;
+	int32 ActiveUnarmedAttackIndex = INDEX_NONE;
+	int32 UnarmedHitAttemptSerial = 0;
+	int32 UnarmedHitConfirmSerial = 0;
 	float LastCombatActivityTimeSeconds = -1.0f;
 	bool bInitialUnarmedAttackRequested = false;
+	bool bUnarmedHitAttempted = false;
+	TWeakObjectPtr<AActor> LastUnarmedHitActor;
 };

@@ -72,6 +72,14 @@ public:
 	UFUNCTION(Exec)
 	void RequiemTestReset();
 
+	/** Temporary console hook: orders the nearest live combat dummy to attack once. */
+	UFUNCTION(Exec)
+	void RequiemTestDummyAttack();
+
+	/** Temporary console hook: resets every combat dummy in the current PIE world. */
+	UFUNCTION(Exec)
+	void RequiemTestDummyReset();
+
 protected:
 	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 	virtual bool CanJumpInternal_Implementation() const override;

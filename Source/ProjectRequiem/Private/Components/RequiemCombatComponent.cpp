@@ -7,6 +7,7 @@
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "Kismet/GameplayStatics.h"
 
 namespace
 {
@@ -23,6 +24,28 @@ void SetPlanarVelocity(
 	// Its normal walking tick still owns collision, braking and the resulting displacement.
 	MovementComponent->Velocity.X = NewPlanarVelocity.X;
 	MovementComponent->Velocity.Y = NewPlanarVelocity.Y;
+}
+
+bool HasClearDamagePath(
+	UWorld* World,
+	const FVector& TraceStart,
+	const FVector& TraceEnd,
+	const AActor* SourceActor,
+	const AActor* TargetActor)
+{
+	if (!World)
+	{
+		return false;
+	}
+
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(RequiemUnarmedObstruction), false);
+	QueryParams.AddIgnoredActor(SourceActor);
+	QueryParams.AddIgnoredActor(TargetActor);
+	return !World->LineTraceTestByChannel(
+		TraceStart,
+		TraceEnd,
+		ECC_Visibility,
+		QueryParams);
 }
 }
 
@@ -184,7 +207,9 @@ bool URequiemCombatComponent::ConsumeInitialUnarmedAttackRequest()
 	return true;
 }
 
-void URequiemCombatComponent::BeginUnarmedAttackStep(const bool bApplyForwardLunge)
+void URequiemCombatComponent::BeginUnarmedAttackStep(
+	const bool bApplyForwardLunge,
+	const int32 ComboAnimationIndex)
 {
 	if (const URequiemHealthComponent* HealthComponent =
 		GetOwner() ? GetOwner()->FindComponentByClass<URequiemHealthComponent>() : nullptr;
@@ -198,6 +223,9 @@ void URequiemCombatComponent::BeginUnarmedAttackStep(const bool bApplyForwardLun
 	bUnarmedAttackMovementLocked = true;
 	bUnarmedAttackInputWindowOpen = false;
 	bQueuedUnarmedFollowUp = false;
+	bUnarmedHitAttempted = false;
+	ActiveUnarmedAttackIndex = ComboAnimationIndex;
+	LastUnarmedHitActor.Reset();
 
 	ACharacter* Character = Cast<ACharacter>(GetOwner());
 	UCharacterMovementComponent* MovementComponent = Character
@@ -221,6 +249,23 @@ void URequiemCombatComponent::BeginUnarmedAttackStep(const bool bApplyForwardLun
 	const FVector ForwardDirection = Character->GetActorForwardVector().GetSafeNormal2D();
 	const FVector TargetPlanarVelocity = ForwardDirection * UnarmedAttackLungeSpeed;
 	SetPlanarVelocity(MovementComponent, TargetPlanarVelocity);
+}
+
+void URequiemCombatComponent::UpdateUnarmedAttackHit(const float NormalizedTime)
+{
+	if (!bUnarmedAttackActive
+		|| bUnarmedHitAttempted
+		|| ActiveUnarmedAttackIndex == INDEX_NONE
+		|| NormalizedTime < FMath::Clamp(UnarmedHitMomentNormalized, 0.0f, 0.7f))
+	{
+		return;
+	}
+
+	bUnarmedHitAttempted = true;
+	UnarmedHitAttemptSerial = UnarmedHitAttemptSerial == MAX_int32
+		? 1
+		: UnarmedHitAttemptSerial + 1;
+	ResolveUnarmedAttackHit();
 }
 
 void URequiemCombatComponent::SetUnarmedAttackInputWindowOpen(const bool bOpen)
@@ -262,6 +307,8 @@ void URequiemCombatComponent::EndUnarmedAttackSequence()
 	bUnarmedAttackActive = false;
 	bUnarmedAttackInputWindowOpen = false;
 	bQueuedUnarmedFollowUp = false;
+	bUnarmedHitAttempted = false;
+	ActiveUnarmedAttackIndex = INDEX_NONE;
 
 	ACharacter* Character = Cast<ACharacter>(GetOwner());
 	UCharacterMovementComponent* MovementComponent = Character
@@ -300,5 +347,83 @@ void URequiemCombatComponent::MarkCombatActivity()
 	if (const UWorld* World = GetWorld())
 	{
 		LastCombatActivityTimeSeconds = World->GetTimeSeconds();
+	}
+}
+
+void URequiemCombatComponent::ResolveUnarmedAttackHit()
+{
+	ACharacter* Character = Cast<ACharacter>(GetOwner());
+	UWorld* World = GetWorld();
+	if (!Character
+		|| !World
+		|| UnarmedHitDamage <= UE_KINDA_SMALL_NUMBER
+		|| UnarmedHitRadius <= UE_KINDA_SMALL_NUMBER)
+	{
+		return;
+	}
+
+	const FVector ForwardDirection = Character->GetActorForwardVector().GetSafeNormal2D();
+	if (ForwardDirection.IsNearlyZero())
+	{
+		return;
+	}
+
+	const FVector TraceStart = Character->GetActorLocation() + FVector::UpVector * UnarmedHitHeight;
+	const FVector TraceEnd = TraceStart + ForwardDirection * FMath::Max(0.0f, UnarmedHitRange);
+	FCollisionObjectQueryParams ObjectQueryParams;
+	ObjectQueryParams.AddObjectTypesToQuery(ECC_Pawn);
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(RequiemUnarmedHit), false, Character);
+	TArray<FHitResult> HitResults;
+	if (!World->SweepMultiByObjectType(
+		HitResults,
+		TraceStart,
+		TraceEnd,
+		FQuat::Identity,
+		ObjectQueryParams,
+		FCollisionShape::MakeSphere(UnarmedHitRadius),
+		QueryParams))
+	{
+		return;
+	}
+
+	HitResults.Sort([](const FHitResult& Left, const FHitResult& Right)
+	{
+		return Left.Time < Right.Time;
+	});
+
+	for (const FHitResult& HitResult : HitResults)
+	{
+		AActor* HitActor = HitResult.GetActor();
+		if (!HitActor || HitActor == Character || !HitActor->CanBeDamaged())
+		{
+			continue;
+		}
+		if (!HasClearDamagePath(
+			World,
+			TraceStart,
+			HitResult.ImpactPoint,
+			Character,
+			HitActor))
+		{
+			break;
+		}
+
+		const float AppliedDamage = UGameplayStatics::ApplyPointDamage(
+			HitActor,
+			UnarmedHitDamage,
+			ForwardDirection,
+			HitResult,
+			Character->GetController(),
+			Character,
+			nullptr);
+		if (AppliedDamage > UE_KINDA_SMALL_NUMBER)
+		{
+			LastUnarmedHitActor = HitActor;
+			UnarmedHitConfirmSerial = UnarmedHitConfirmSerial == MAX_int32
+				? 1
+				: UnarmedHitConfirmSerial + 1;
+			MarkCombatActivity();
+		}
+		break;
 	}
 }
