@@ -181,7 +181,7 @@ Componentes como interação e combate serão criados somente nas etapas em que 
 
 ### Primeiro passe de combate desarmado
 
-O primeiro uso concreto de composição de combate é `URequiemCombatComponent`, anexado a `ARequiemCharacter`. O componente é a fonte de verdade dos estados `Normal` e `CombatUnarmed`, recebe pedidos de entrada e ataque, usa `ReceivedDamage` como razão de entrada no lote atual e mantém somente o lock-on como ponto futuro. Para o combo desarmado, ele aceita somente um pedido inicial e um único follow-up por janela; cliques excedentes são descartados, nunca acumulados como uma fila de golpes futuros. Ele não implementa armas, vida, inimigos completos ou bloqueio. O passe posterior do alvo de validação acrescenta somente uma consulta ofensiva curta por golpe, sem transformar o componente em um sistema geral de hitboxes.
+O primeiro uso concreto de composição de combate é `URequiemCombatComponent`, anexado a `ARequiemCharacter`. O componente é a fonte de verdade dos estados `Normal` e `CombatUnarmed`, recebe pedidos de entrada e ataque e aceita `ReceivedDamage` e `LockOn` como razões externas de entrada. Para o combo desarmado, ele aceita somente um pedido inicial e um único follow-up por janela; cliques excedentes são descartados, nunca acumulados como uma fila de golpes futuros. Ele não implementa armas, vida, inimigos completos ou bloqueio. O passe posterior do alvo de validação acrescenta somente uma consulta ofensiva curta por golpe, sem transformar o componente em um sistema geral de hitboxes.
 
 `ARequiemCharacter` encaminha `IA_ToggleCombat` e `IA_PrimaryAttack` ao componente e ignora `IA_Move` durante os `60%` iniciais de cada golpe. O componente separa esse lock físico do ataque ativo e da janela de combo: o movimento pode retornar durante o follow-through sem cancelar a animação nem o follow-up, e cada golpe seguinte reaplica seu próprio lock. Um ataque que também entra em `CombatUnarmed` começa diretamente em `Punch_Cross`; `PunchKick_Enter` nunca atrasa o primeiro golpe. Movimento, colisão, velocidade, aceleração e frenagem continuam pertencendo ao `CharacterMovement`; o pequeno avanço de cada golpe é aplicado pelo componente como uma substituição curta da velocidade planar, sem root motion e sem alterar os parâmetros globais de locomoção.
 
@@ -284,6 +284,36 @@ ele confirma o jogador com a mesma geometria de colisão e envia um
 ignorar dano continua acontecendo primeiro em `ShouldIgnoreIncomingDamage`; um acerto
 durante i-frames não reduz vida, não dispara reação e não entra em combate. Os comandos
 temporários `RequiemTestDummyAttack` e `RequiemTestDummyReset` servem somente ao PIE.
+
+### Primeiro passe de lock-on
+
+`URequiemLockOnComponent`, anexado a `ARequiemCharacter`, é responsável somente por
+aquisição, manutenção e liberação do alvo atual. `URequiemCombatComponent` continua
+responsável pelo estado de combate: uma aquisição bem-sucedida chama
+`EnterUnarmedCombat(LockOn)`, mas perder ou soltar o alvo não força `ExitCombat` e não
+interrompe um ataque. `IA_LockOn`, mapeada no botão do meio do mouse, alterna entre tentar
+adquirir e liberar o lock atual.
+
+Alvos válidos implementam `URequiemLockOnTargetInterface`; o primeiro uso concreto é o
+`ARequiemCombatDummy`, que permanece válido nos estados `Alive` e `Reacting` e deixa de
+ser válido apenas em `Defeated`. A aquisição pontual escolhe o ator válido mais próximo
+dentro do alcance e de um cone à frente do jogador. Depois da aquisição, sair do cone não
+libera o alvo; o lock termina somente por novo input, invalidação ou destruição do alvo,
+derrota do dummy ou ultrapassagem do alcance de manutenção. Não existe seleção cíclica,
+percepção contínua, lista de inimigos ou IA neste passe.
+
+O acompanhamento interpola a rotação do controller para o ponto de foco do alvo. O
+`CameraBoom` já observa essa rotação e o `CharacterMovement` já usa a rotação desejada do
+controller, portanto câmera e personagem acompanham o alvo sem transferir velocidade ou
+movimento ao sistema de lock-on. Durante `Roll`, a direção mundial capturada e a política
+temporária de rotação da esquiva têm prioridade: a câmera pode continuar acompanhando,
+mas o lock-on não sobrescreve a trajetória nem o yaw comprometido. Reação e morte também
+mantêm seus próprios locks e apresentação; a morte do jogador encerra o lock.
+
+O indicador deste passe é temporário: um billboard sem colisão acompanha os bounds do
+alvo e usa uma cópia própria do ícone `S_TargetPoint` em
+`/Game/ProjectRequiem/UI/HUD/Temporary`. A mudança de alvo também fica exposta para
+composição Blueprint futura, sem introduzir HUD elaborado.
 
 ## Convenções principais
 

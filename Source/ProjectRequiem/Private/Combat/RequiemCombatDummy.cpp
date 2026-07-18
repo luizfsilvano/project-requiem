@@ -154,6 +154,17 @@ ERequiemDamageOutcome ARequiemCombatDummy::ApplyRequiemDamage(
 	return ERequiemDamageOutcome::Applied;
 }
 
+bool ARequiemCombatDummy::IsValidLockOnTarget_Implementation() const
+{
+	// Reacting remains targetable; only defeat or an explicit damage-disable invalidates it.
+	return !IsDefeated() && CanBeDamaged();
+}
+
+FVector ARequiemCombatDummy::GetLockOnFocusLocation_Implementation() const
+{
+	return HitCollision ? HitCollision->GetComponentLocation() : GetActorLocation();
+}
+
 bool ARequiemCombatDummy::RequestTestAttack(
 	ARequiemCharacter* Target,
 	const float WindupOverrideSeconds)

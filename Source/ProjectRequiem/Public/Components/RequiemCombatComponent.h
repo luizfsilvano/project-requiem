@@ -13,7 +13,7 @@ enum class ERequiemCombatState : uint8
 	CombatUnarmed
 };
 
-/** Source that requested combat mode. Lock-on remains a future caller. */
+/** Source that requested combat mode. Damage and lock-on reuse the same entry contract. */
 UENUM(BlueprintType)
 enum class ERequiemCombatEntryReason : uint8
 {
@@ -55,7 +55,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Combat")
 	ERequiemUnarmedAttackRequestResult RequestUnarmedAttack();
 
-	/** Shared entry point for manual input and future lock-on or damage systems. */
+	/** Shared entry point for manual input, lock-on and accepted damage. */
 	UFUNCTION(BlueprintCallable, Category = "Combat")
 	void EnterUnarmedCombat(ERequiemCombatEntryReason EntryReason);
 

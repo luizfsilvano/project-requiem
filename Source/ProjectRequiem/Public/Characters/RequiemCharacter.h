@@ -8,10 +8,12 @@
 #include "RequiemCharacter.generated.h"
 
 class UCameraComponent;
+class UBillboardComponent;
 class UInputAction;
 class URequiemCombatComponent;
 class URequiemDodgeComponent;
 class URequiemHealthComponent;
+class URequiemLockOnComponent;
 class USpringArmComponent;
 struct FInputActionValue;
 
@@ -41,6 +43,12 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Health")
 	URequiemHealthComponent* GetHealthComponent() const { return HealthComponent; }
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Lock On")
+	URequiemLockOnComponent* GetLockOnComponent() const { return LockOnComponent; }
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Lock On")
+	UBillboardComponent* GetLockOnIndicator() const { return LockOnIndicator; }
 
 	/** Canonical explicit damage path for future hitboxes and enemies. */
 	UFUNCTION(BlueprintCallable, Category = "Damage")
@@ -101,6 +109,13 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Health")
 	TObjectPtr<URequiemHealthComponent> HealthComponent;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|Lock On")
+	TObjectPtr<URequiemLockOnComponent> LockOnComponent;
+
+	/** Temporary presentation configured by BP_CH_Player; the lock-on component positions it. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|Lock On")
+	TObjectPtr<UBillboardComponent> LockOnIndicator;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
 	TObjectPtr<UInputAction> MoveAction;
 
@@ -124,6 +139,9 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
 	TObjectPtr<UInputAction> PrimaryAttackAction;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
+	TObjectPtr<UInputAction> LockOnAction;
+
 private:
 	void Move(const FInputActionValue& Value);
 	void StopMove();
@@ -136,6 +154,7 @@ private:
 	FVector GetCurrentDodgeInputDirection() const;
 	void ToggleCombat();
 	void PrimaryAttack();
+	void ToggleLockOn();
 	bool AreDamageActionsLocked() const;
 
 	FVector CurrentMovementInputDirection = FVector::ZeroVector;

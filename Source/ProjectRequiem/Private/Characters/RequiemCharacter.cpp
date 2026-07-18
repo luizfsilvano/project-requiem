@@ -4,9 +4,11 @@
 
 #include "Camera/CameraComponent.h"
 #include "Combat/RequiemCombatDummy.h"
+#include "Components/BillboardComponent.h"
 #include "Components/RequiemCombatComponent.h"
 #include "Components/RequiemDodgeComponent.h"
 #include "Components/RequiemHealthComponent.h"
+#include "Components/RequiemLockOnComponent.h"
 #include "Engine/DamageEvents.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedPlayerInput.h"
@@ -69,6 +71,7 @@ ARequiemCharacter::ARequiemCharacter()
 	CombatComponent = CreateDefaultSubobject<URequiemCombatComponent>(TEXT("CombatComponent"));
 	DodgeComponent = CreateDefaultSubobject<URequiemDodgeComponent>(TEXT("DodgeComponent"));
 	HealthComponent = CreateDefaultSubobject<URequiemHealthComponent>(TEXT("HealthComponent"));
+	LockOnComponent = CreateDefaultSubobject<URequiemLockOnComponent>(TEXT("LockOnComponent"));
 
 	CameraBoom = CreateDefaultSubobject<USpringArmComponent>(TEXT("CameraBoom"));
 	CameraBoom->SetupAttachment(RootComponent);
@@ -78,6 +81,15 @@ ARequiemCharacter::ARequiemCharacter()
 	FollowCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("FollowCamera"));
 	FollowCamera->SetupAttachment(CameraBoom, USpringArmComponent::SocketName);
 	FollowCamera->bUsePawnControlRotation = false;
+
+	LockOnIndicator = CreateDefaultSubobject<UBillboardComponent>(TEXT("LockOnIndicator"));
+	LockOnIndicator->SetupAttachment(RootComponent);
+	LockOnIndicator->SetAbsolute(true, true, true);
+	LockOnIndicator->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	LockOnIndicator->SetGenerateOverlapEvents(false);
+	LockOnIndicator->SetCanEverAffectNavigation(false);
+	LockOnIndicator->SetHiddenInGame(true);
+	LockOnIndicator->SetVisibility(false);
 }
 
 void ARequiemCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
@@ -142,6 +154,15 @@ void ARequiemCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 			this,
 			&ARequiemCharacter::PrimaryAttack);
 	}
+
+	if (LockOnAction)
+	{
+		EnhancedInputComponent->BindAction(
+			LockOnAction,
+			ETriggerEvent::Started,
+			this,
+			&ARequiemCharacter::ToggleLockOn);
+	}
 }
 
 float ARequiemCharacter::TakeDamage(
@@ -187,6 +208,10 @@ ERequiemDamageOutcome ARequiemCharacter::ApplyRequiemDamage(
 		|| Outcome == ERequiemDamageOutcome::Killed)
 	{
 		CurrentMovementInputDirection = FVector::ZeroVector;
+	}
+	if (Outcome == ERequiemDamageOutcome::Killed && LockOnComponent)
+	{
+		LockOnComponent->ClearLockOn();
 	}
 	return Outcome;
 }
@@ -257,6 +282,11 @@ void ARequiemCharacter::StopMove()
 
 void ARequiemCharacter::Look(const FInputActionValue& Value)
 {
+	if (LockOnComponent && LockOnComponent->IsLockOnActive())
+	{
+		return;
+	}
+
 	const FVector2D LookAxisVector = Value.Get<FVector2D>();
 	AddControllerYawInput(LookAxisVector.X);
 	AddControllerPitchInput(LookAxisVector.Y);
@@ -346,6 +376,7 @@ FVector ARequiemCharacter::GetCurrentDodgeInputDirection() const
 void ARequiemCharacter::ToggleCombat()
 {
 	if (CombatComponent
+		&& (!LockOnComponent || !LockOnComponent->IsLockOnActive())
 		&& !AreDamageActionsLocked()
 		&& (!DodgeComponent || !DodgeComponent->AreDodgeRestrictedActionsLocked()))
 	{
@@ -360,6 +391,14 @@ void ARequiemCharacter::PrimaryAttack()
 		&& (!DodgeComponent || !DodgeComponent->AreDodgeRestrictedActionsLocked()))
 	{
 		CombatComponent->RequestUnarmedAttack();
+	}
+}
+
+void ARequiemCharacter::ToggleLockOn()
+{
+	if (LockOnComponent)
+	{
+		LockOnComponent->ToggleLockOn();
 	}
 }
 

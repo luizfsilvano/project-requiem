@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "Combat/RequiemLockOnTargetInterface.h"
 #include "Components/RequiemHealthComponent.h"
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
@@ -27,7 +28,9 @@ enum class ERequiemCombatDummyState : uint8
  * This actor owns the temporary target health, collision and deterministic test attack.
  */
 UCLASS(Blueprintable)
-class PROJECTREQUIEM_API ARequiemCombatDummy : public AActor
+class PROJECTREQUIEM_API ARequiemCombatDummy
+	: public AActor
+	, public IRequiemLockOnTargetInterface
 {
 	GENERATED_BODY()
 
@@ -42,6 +45,9 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Combat Dummy|Damage")
 	ERequiemDamageOutcome ApplyRequiemDamage(const FRequiemDamageRequest& Request);
+
+	virtual bool IsValidLockOnTarget_Implementation() const override;
+	virtual FVector GetLockOnFocusLocation_Implementation() const override;
 
 	/** Starts one telegraphed, stationary attack. It never polls, navigates or selects targets. */
 	UFUNCTION(BlueprintCallable, Category = "Combat Dummy|Testing", meta = (DevelopmentOnly))
