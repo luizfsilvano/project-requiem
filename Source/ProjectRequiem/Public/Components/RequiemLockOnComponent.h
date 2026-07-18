@@ -87,14 +87,14 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Lock On|Camera", meta = (ClampMin = "0.0"))
 	float CameraTrackingInterpSpeed = 12.0f;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Lock On|Camera", meta = (ClampMin = "-89.0", ClampMax = "89.0"))
-	float MinimumCameraPitch = -35.0f;
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Lock On|Indicator", meta = (ClampMin = "0.0"))
+	float IndicatorRadius = 90.0f;
 
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Lock On|Camera", meta = (ClampMin = "-89.0", ClampMax = "89.0"))
-	float MaximumCameraPitch = 20.0f;
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Lock On|Indicator", meta = (ClampMin = "0.1"))
+	float IndicatorProjectionDepth = 8.0f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Lock On|Indicator", meta = (ClampMin = "0.0"))
-	float IndicatorHeightOffset = 30.0f;
+	float IndicatorGroundOffset = 3.0f;
 
 private:
 	ARequiemCharacter* GetOwnerCharacter() const;
@@ -103,8 +103,10 @@ private:
 	bool HasClearAcquisitionPath(const FVector& FocusLocation, const AActor* Candidate) const;
 	void BeginLockOn(AActor* NewTarget);
 	void UpdateCameraTracking(float DeltaTime);
-	void UpdateIndicator();
-	void HideIndicator();
+	void UpdateGroundIndicator();
+	void HideGroundIndicator();
 
 	TWeakObjectPtr<AActor> LockOnTarget;
+	float LockedCameraPitch = 0.0f;
+	bool bHasLockedCameraPitch = false;
 };

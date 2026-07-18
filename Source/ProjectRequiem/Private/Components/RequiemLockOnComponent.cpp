@@ -4,14 +4,13 @@
 
 #include "Characters/RequiemCharacter.h"
 #include "Combat/RequiemLockOnTargetInterface.h"
-#include "Components/BillboardComponent.h"
+#include "Components/DecalComponent.h"
 #include "Components/RequiemCombatComponent.h"
 #include "Components/RequiemDodgeComponent.h"
 #include "Components/RequiemHealthComponent.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/Controller.h"
-#include "GameFramework/PlayerController.h"
 
 URequiemLockOnComponent::URequiemLockOnComponent()
 {
@@ -48,7 +47,7 @@ void URequiemLockOnComponent::TickComponent(
 		return;
 	}
 
-	UpdateIndicator();
+	UpdateGroundIndicator();
 	if (HealthComponent && HealthComponent->IsDamageReactionActive())
 	{
 		// Hit reactions and authored knockback keep rotation ownership until presentation ends.
@@ -69,8 +68,9 @@ void URequiemLockOnComponent::TickComponent(
 
 void URequiemLockOnComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	HideIndicator();
+	HideGroundIndicator();
 	LockOnTarget.Reset();
+	bHasLockedCameraPitch = false;
 	SetComponentTickEnabled(false);
 	Super::EndPlay(EndPlayReason);
 }
@@ -112,8 +112,9 @@ void URequiemLockOnComponent::ClearLockOn()
 {
 	AActor* PreviousTarget = LockOnTarget.Get();
 	LockOnTarget.Reset();
+	bHasLockedCameraPitch = false;
 	SetComponentTickEnabled(false);
-	HideIndicator();
+	HideGroundIndicator();
 	if (PreviousTarget)
 	{
 		OnLockOnTargetChanged.Broadcast(PreviousTarget, nullptr);
@@ -233,6 +234,15 @@ void URequiemLockOnComponent::BeginLockOn(AActor* NewTarget)
 	AActor* PreviousTarget = LockOnTarget.Get();
 	LockOnTarget = NewTarget;
 	SetComponentTickEnabled(true);
+	if (const AController* Controller = Character->GetController())
+	{
+		LockedCameraPitch = FRotator::NormalizeAxis(Controller->GetControlRotation().Pitch);
+		bHasLockedCameraPitch = true;
+	}
+	else
+	{
+		bHasLockedCameraPitch = false;
+	}
 
 	if (URequiemCombatComponent* CombatComponent = Character->GetCombatComponent())
 	{
@@ -271,7 +281,7 @@ void URequiemLockOnComponent::BeginLockOn(AActor* NewTarget)
 		}
 	}
 
-	UpdateIndicator();
+	UpdateGroundIndicator();
 	OnLockOnTargetChanged.Broadcast(PreviousTarget, NewTarget);
 }
 
@@ -284,27 +294,19 @@ void URequiemLockOnComponent::UpdateCameraTracking(const float DeltaTime)
 		return;
 	}
 
-	FVector ViewLocation = Character->GetPawnViewLocation();
-	FRotator UnusedViewRotation = Controller->GetControlRotation();
-	if (const APlayerController* PlayerController = Cast<APlayerController>(Controller))
-	{
-		PlayerController->GetPlayerViewPoint(ViewLocation, UnusedViewRotation);
-	}
-
-	const FVector FocusLocation = GetLockOnFocusLocation();
 	const FVector TargetDirection =
-		(FocusLocation - Character->GetActorLocation()).GetSafeNormal2D();
+		(GetLockOnFocusLocation() - Character->GetActorLocation()).GetSafeNormal2D();
 	if (TargetDirection.IsNearlyZero())
 	{
 		return;
 	}
 
-	FRotator DesiredRotation = (FocusLocation - ViewLocation).Rotation();
+	FRotator DesiredRotation = Controller->GetControlRotation();
 	DesiredRotation.Yaw = TargetDirection.Rotation().Yaw;
-	DesiredRotation.Pitch = FMath::Clamp(
-		FRotator::NormalizeAxis(DesiredRotation.Pitch),
-		FMath::Min(MinimumCameraPitch, MaximumCameraPitch),
-		FMath::Max(MinimumCameraPitch, MaximumCameraPitch));
+	if (bHasLockedCameraPitch)
+	{
+		DesiredRotation.Pitch = LockedCameraPitch;
+	}
 	DesiredRotation.Roll = 0.0f;
 
 	const FRotator NewRotation = CameraTrackingInterpSpeed <= UE_KINDA_SMALL_NUMBER
@@ -317,33 +319,47 @@ void URequiemLockOnComponent::UpdateCameraTracking(const float DeltaTime)
 	Controller->SetControlRotation(NewRotation);
 }
 
-void URequiemLockOnComponent::UpdateIndicator()
+void URequiemLockOnComponent::UpdateGroundIndicator()
 {
 	ARequiemCharacter* Character = GetOwnerCharacter();
 	AActor* Target = LockOnTarget.Get();
-	UBillboardComponent* Indicator = Character
-		? Character->GetLockOnIndicator()
+	UDecalComponent* Indicator = Character
+		? Character->GetLockOnGroundIndicator()
 		: nullptr;
 	if (!Indicator || !IsTargetValid(Target))
 	{
-		HideIndicator();
+		HideGroundIndicator();
 		return;
 	}
 
 	FVector BoundsOrigin = GetLockOnFocusLocation();
 	FVector BoundsExtent = FVector::ZeroVector;
 	Target->GetActorBounds(false, BoundsOrigin, BoundsExtent);
-	Indicator->SetWorldLocation(
-		BoundsOrigin + FVector::UpVector * (BoundsExtent.Z + IndicatorHeightOffset));
+	const FVector DesiredDecalSize(
+		FMath::Max(IndicatorProjectionDepth, 0.1f),
+		FMath::Max(IndicatorRadius, 0.0f),
+		FMath::Max(IndicatorRadius, 0.0f));
+	if (!Indicator->DecalSize.Equals(DesiredDecalSize))
+	{
+		Indicator->DecalSize = DesiredDecalSize;
+		Indicator->MarkRenderStateDirty();
+	}
+	const FVector GroundLocation(
+		BoundsOrigin.X,
+		BoundsOrigin.Y,
+		BoundsOrigin.Z - BoundsExtent.Z + IndicatorGroundOffset);
+	Indicator->SetWorldLocationAndRotation(
+		GroundLocation,
+		FRotator(-90.0f, 0.0f, 0.0f));
 	Indicator->SetHiddenInGame(false, true);
 	Indicator->SetVisibility(true, true);
 }
 
-void URequiemLockOnComponent::HideIndicator()
+void URequiemLockOnComponent::HideGroundIndicator()
 {
 	ARequiemCharacter* Character = GetOwnerCharacter();
-	UBillboardComponent* Indicator = Character
-		? Character->GetLockOnIndicator()
+	UDecalComponent* Indicator = Character
+		? Character->GetLockOnGroundIndicator()
 		: nullptr;
 	if (Indicator)
 	{

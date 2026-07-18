@@ -9,7 +9,7 @@
 #include "Components/RequiemDodgeComponent.h"
 #include "Components/RequiemHealthComponent.h"
 #include "Components/RequiemLockOnComponent.h"
-#include "Components/BillboardComponent.h"
+#include "Components/DecalComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
@@ -25,6 +25,11 @@
 #include "InputMappingContext.h"
 #include "Kismet/GameplayStatics.h"
 #include "Math/RotationMatrix.h"
+#include "Materials/Material.h"
+#include "Materials/MaterialExpressionDecalColor.h"
+#include "Materials/MaterialExpressionSphereMask.h"
+#include "Materials/MaterialExpressionSubtract.h"
+#include "Materials/MaterialInterface.h"
 #include "Misc/AutomationTest.h"
 #include "Tests/AutomationCommon.h"
 #include "Tests/AutomationEditorCommon.h"
@@ -49,16 +54,23 @@ constexpr TCHAR CharacterClassPath[] =
 constexpr TCHAR DummyClassPath[] =
 	TEXT("/Game/ProjectRequiem/Combat/Blueprints/Targets/"
 		 "BP_PR_CombatDummy.BP_PR_CombatDummy_C");
+constexpr TCHAR GroundRingMaterialPath[] =
+	TEXT("/Game/ProjectRequiem/UI/HUD/Temporary/"
+		 "M_LockOnGroundRing.M_LockOnGroundRing");
 
 constexpr float FacingDotThreshold = 0.95f;
 constexpr float CameraTargetDotThreshold = 0.90f;
 constexpr float CameraCharacterDotThreshold = 0.70f;
 constexpr float MinimumFollowYawDegrees = 8.0f;
 constexpr float ReleasedCameraYawToleranceDegrees = 3.0f;
+constexpr float ExpectedLockedCameraPitch = -18.0f;
+constexpr float LockedCameraPitchToleranceDegrees = 1.0f;
 constexpr float IndicatorPlanarTolerance = 2.0f;
-constexpr float IndicatorHeightTolerance = 2.0f;
-constexpr float MaximumReasonableIndicatorHeight = 500.0f;
+constexpr float IndicatorGroundOffsetTolerance = 2.0f;
+constexpr float MaximumReasonableIndicatorGroundOffset = 10.0f;
+constexpr float IndicatorProjectionDotThreshold = 0.99f;
 constexpr double StableObservationSeconds = 0.15;
+constexpr double InputPulseSeconds = 0.05;
 const FName TemporaryCandidateTag(TEXT("ProjectRequiem.LockOnPIETemporaryCandidate"));
 
 struct FRunState
@@ -268,8 +280,8 @@ FVector GetLockOnFocusLocation(AActor* Target)
 
 bool IsIndicatorVisible(const FRuntimeRefs& Refs)
 {
-	const UBillboardComponent* Indicator = Refs.Character
-		? Refs.Character->GetLockOnIndicator()
+	const UDecalComponent* Indicator = Refs.Character
+		? Refs.Character->GetLockOnGroundIndicator()
 		: nullptr;
 	return Indicator && Indicator->IsVisible() && !Indicator->bHiddenInGame;
 }
@@ -278,10 +290,10 @@ bool ReadIndicatorPlacement(
 	const FRuntimeRefs& Refs,
 	AActor* Target,
 	FVector& OutIndicatorLocation,
-	float& OutHeightAboveBounds)
+	float& OutGroundOffsetAboveBase)
 {
-	const UBillboardComponent* Indicator = Refs.Character
-		? Refs.Character->GetLockOnIndicator()
+	const UDecalComponent* Indicator = Refs.Character
+		? Refs.Character->GetLockOnGroundIndicator()
 		: nullptr;
 	if (!Indicator || !Target || !IsIndicatorVisible(Refs))
 	{
@@ -292,31 +304,40 @@ bool ReadIndicatorPlacement(
 	FVector BoundsExtent = FVector::ZeroVector;
 	Target->GetActorBounds(false, BoundsOrigin, BoundsExtent);
 	OutIndicatorLocation = Indicator->GetComponentLocation();
-	OutHeightAboveBounds =
-		OutIndicatorLocation.Z - (BoundsOrigin.Z + BoundsExtent.Z);
+	OutGroundOffsetAboveBase =
+		OutIndicatorLocation.Z - (BoundsOrigin.Z - BoundsExtent.Z);
+	const FVector ProjectionDirection = Indicator->GetForwardVector().GetSafeNormal();
 	return !OutIndicatorLocation.ContainsNaN()
 		&& FVector::DistSquared2D(OutIndicatorLocation, BoundsOrigin)
 			<= FMath::Square(IndicatorPlanarTolerance)
-		&& OutHeightAboveBounds >= -IndicatorHeightTolerance
-		&& OutHeightAboveBounds <= MaximumReasonableIndicatorHeight;
+		&& OutGroundOffsetAboveBase >= -IndicatorGroundOffsetTolerance
+		&& OutGroundOffsetAboveBase <= MaximumReasonableIndicatorGroundOffset
+		&& FVector::DotProduct(ProjectionDirection, -FVector::UpVector)
+			>= IndicatorProjectionDotThreshold
+		&& Indicator->DecalSize.X > UE_KINDA_SMALL_NUMBER
+		&& Indicator->DecalSize.X < Indicator->DecalSize.Y
+		&& FMath::IsNearlyEqual(
+			Indicator->DecalSize.Y,
+			Indicator->DecalSize.Z,
+			UE_KINDA_SMALL_NUMBER);
 }
 
 bool IsIndicatorStillPlacedAtTarget(
 	const FRuntimeRefs& Refs,
 	AActor* Target,
-	const float ExpectedHeightAboveBounds,
+	const float ExpectedGroundOffsetAboveBase,
 	FVector& OutIndicatorLocation)
 {
-	float HeightAboveBounds = 0.0f;
+	float GroundOffsetAboveBase = 0.0f;
 	return ReadIndicatorPlacement(
 			Refs,
 			Target,
 			OutIndicatorLocation,
-			HeightAboveBounds)
+			GroundOffsetAboveBase)
 		&& FMath::IsNearlyEqual(
-			HeightAboveBounds,
-			ExpectedHeightAboveBounds,
-			IndicatorHeightTolerance);
+			GroundOffsetAboveBase,
+			ExpectedGroundOffsetAboveBase,
+			IndicatorGroundOffsetTolerance);
 }
 
 float GetPlanarFacingDot(const FRuntimeRefs& Refs)
@@ -333,7 +354,8 @@ bool ReadCameraGeometry(
 	const FRuntimeRefs& Refs,
 	float& OutTargetDot,
 	float& OutCharacterDot,
-	float& OutViewYaw)
+	float& OutViewYaw,
+	float& OutViewPitch)
 {
 	if (!Refs.PlayerController || !Refs.Character || !Refs.Dummy)
 	{
@@ -344,21 +366,23 @@ bool ReadCameraGeometry(
 	FRotator ViewRotation = FRotator::ZeroRotator;
 	Refs.PlayerController->GetPlayerViewPoint(ViewLocation, ViewRotation);
 	const FVector ViewDirection = ViewRotation.Vector().GetSafeNormal();
+	const FVector PlanarViewDirection = ViewDirection.GetSafeNormal2D();
 	const FVector ToTarget = (
-		GetLockOnFocusLocation(Refs.Dummy) - ViewLocation).GetSafeNormal();
+		GetLockOnFocusLocation(Refs.Dummy) - ViewLocation).GetSafeNormal2D();
 	const FVector CharacterFocus =
 		Refs.Character->GetActorLocation() + FVector(0.0f, 0.0f, 80.0f);
 	const FVector ToCharacter = (CharacterFocus - ViewLocation).GetSafeNormal();
-	if (ViewDirection.IsNearlyZero()
+	if (PlanarViewDirection.IsNearlyZero()
 		|| ToTarget.IsNearlyZero()
 		|| ToCharacter.IsNearlyZero())
 	{
 		return false;
 	}
 
-	OutTargetDot = FVector::DotProduct(ViewDirection, ToTarget);
+	OutTargetDot = FVector::DotProduct(PlanarViewDirection, ToTarget);
 	OutCharacterDot = FVector::DotProduct(ViewDirection, ToCharacter);
 	OutViewYaw = ViewRotation.Yaw;
+	OutViewPitch = FRotator::NormalizeAxis(ViewRotation.Pitch);
 	return true;
 }
 
@@ -381,7 +405,8 @@ void PlaceCharacterAndDummy(
 		false,
 		nullptr,
 		ETeleportType::TeleportPhysics);
-	Refs.PlayerController->SetControlRotation(FRotator::ZeroRotator);
+	Refs.PlayerController->SetControlRotation(
+		FRotator(ExpectedLockedCameraPitch, 0.0f, 0.0f));
 	const FVector DummyLocation(
 		DummyPlanarOffset.X,
 		DummyPlanarOffset.Y,
@@ -674,8 +699,13 @@ public:
 
 		if (PulsedActionPath)
 		{
+			if (FPlatformTime::Seconds() - PulseStartTimeSeconds < InputPulseSeconds)
+			{
+				return false;
+			}
 			StopContinuousAction(PulsedActionPath);
 			PulsedActionPath = nullptr;
+			PulseStartTimeSeconds = -1.0;
 			return false;
 		}
 
@@ -813,22 +843,32 @@ public:
 			float TargetDot = -1.0f;
 			float CharacterDot = -1.0f;
 			float ViewYaw = 0.0f;
+			float ViewPitch = 0.0f;
 			FVector IndicatorLocation = FVector::ZeroVector;
-			float IndicatorHeightAboveBounds = 0.0f;
+			float MeasuredIndicatorGroundOffset = 0.0f;
 			if (HasExpectedActiveLock(Refs)
 				&& GetPlanarFacingDot(Refs) >= FacingDotThreshold
-				&& ReadCameraGeometry(Refs, TargetDot, CharacterDot, ViewYaw)
+				&& ReadCameraGeometry(
+					Refs,
+					TargetDot,
+					CharacterDot,
+					ViewYaw,
+					ViewPitch)
 				&& TargetDot >= CameraTargetDotThreshold
 				&& CharacterDot >= CameraCharacterDotThreshold
+				&& FMath::Abs(FMath::FindDeltaAngleDegrees(
+					ExpectedLockedCameraPitch,
+					ViewPitch)) <= LockedCameraPitchToleranceDegrees
 				&& ReadIndicatorPlacement(
 					Refs,
 					Refs.Dummy,
 					IndicatorLocation,
-					IndicatorHeightAboveBounds))
+					MeasuredIndicatorGroundOffset))
 			{
 				InitialTrackingViewYaw = ViewYaw;
+				InitialTrackingViewPitch = ViewPitch;
 				InitialIndicatorLocation = IndicatorLocation;
-				IndicatorHeightOffsetAboveBounds = IndicatorHeightAboveBounds;
+				IndicatorGroundOffsetAboveBase = MeasuredIndicatorGroundOffset;
 				const float FollowDistance = FMath::Min(
 					AcquisitionDistance,
 					Refs.LockOn->GetBreakRange() * 0.4f);
@@ -840,7 +880,7 @@ public:
 					FVector(
 						CharacterLocation.X + FollowDirection.X * FollowDistance,
 						CharacterLocation.Y + FollowDirection.Y * FollowDistance,
-						112.0f),
+						260.0f),
 					false,
 					nullptr,
 					ETeleportType::TeleportPhysics);
@@ -855,27 +895,36 @@ public:
 			float TargetDot = -1.0f;
 			float CharacterDot = -1.0f;
 			float ViewYaw = 0.0f;
+			float ViewPitch = 0.0f;
 			FVector IndicatorLocation = FVector::ZeroVector;
 			const bool bFollowing =
 				HasExpectedActiveLock(Refs)
 				&& GetPlanarFacingDot(Refs) >= FacingDotThreshold
-				&& ReadCameraGeometry(Refs, TargetDot, CharacterDot, ViewYaw)
+				&& ReadCameraGeometry(
+					Refs,
+					TargetDot,
+					CharacterDot,
+					ViewYaw,
+					ViewPitch)
 				&& TargetDot >= CameraTargetDotThreshold
 				&& CharacterDot >= CameraCharacterDotThreshold
+				&& FMath::Abs(FMath::FindDeltaAngleDegrees(
+					InitialTrackingViewPitch,
+					ViewPitch)) <= LockedCameraPitchToleranceDegrees
 				&& FMath::Abs(FMath::FindDeltaAngleDegrees(
 					InitialTrackingViewYaw,
 					ViewYaw)) >= MinimumFollowYawDegrees
 				&& IsIndicatorStillPlacedAtTarget(
 					Refs,
 					Refs.Dummy,
-					IndicatorHeightOffsetAboveBounds,
+					IndicatorGroundOffsetAboveBase,
 					IndicatorLocation)
 				&& FVector::Dist2D(InitialIndicatorLocation, IndicatorLocation)
 					>= AcquisitionDistance * 0.25f;
 			if (WaitForStableCondition(bFollowing))
 			{
 				Test->AddInfo(TEXT(
-					"Lock-on selected the in-cone dummy, entered combat, oriented the player and tracked a moved target with the camera."));
+					"Lock-on selected the in-cone dummy, entered combat, kept a natural camera pitch, and tracked a moved target in yaw."));
 				AdvanceTo(EFlowStage::PulseManualUnlock);
 				return false;
 			}
@@ -892,11 +941,13 @@ public:
 			{
 				float TargetDot = 0.0f;
 				float CharacterDot = 0.0f;
+				float ViewPitch = 0.0f;
 				if (ReadCameraGeometry(
 					Refs,
 					TargetDot,
 					CharacterDot,
-					ReleasedCameraViewYaw))
+					ReleasedCameraViewYaw,
+					ViewPitch))
 				{
 					const FVector CharacterLocation = Refs.Character->GetActorLocation();
 					Refs.Dummy->SetActorLocation(
@@ -918,8 +969,14 @@ public:
 			float TargetDot = 0.0f;
 			float CharacterDot = 0.0f;
 			float ViewYaw = 0.0f;
+			float ViewPitch = 0.0f;
 			if (StageElapsedSeconds >= 0.25
-				&& ReadCameraGeometry(Refs, TargetDot, CharacterDot, ViewYaw))
+				&& ReadCameraGeometry(
+					Refs,
+					TargetDot,
+					CharacterDot,
+					ViewYaw,
+					ViewPitch))
 			{
 				if (FMath::Abs(FMath::FindDeltaAngleDegrees(
 					ReleasedCameraViewYaw,
@@ -1069,7 +1126,13 @@ public:
 				float TargetDot = -1.0f;
 				float CharacterDot = -1.0f;
 				float ViewYaw = 0.0f;
-				if (ReadCameraGeometry(Refs, TargetDot, CharacterDot, ViewYaw)
+				float ViewPitch = 0.0f;
+				if (ReadCameraGeometry(
+						Refs,
+						TargetDot,
+						CharacterDot,
+						ViewYaw,
+						ViewPitch)
 					&& TargetDot >= CameraTargetDotThreshold)
 				{
 					Test->AddInfo(TEXT(
@@ -1207,6 +1270,7 @@ private:
 			return false;
 		}
 		PulsedActionPath = ActionPath;
+		PulseStartTimeSeconds = FPlatformTime::Seconds();
 		AdvanceTo(NextStage);
 		return false;
 	}
@@ -1237,15 +1301,17 @@ private:
 
 	EFlowStage Stage = EFlowStage::PrepareNearestSelection;
 	const TCHAR* PulsedActionPath = nullptr;
+	double PulseStartTimeSeconds = -1.0;
 	double StageStartTimeSeconds = -1.0;
 	double ConditionStableSinceSeconds = -1.0;
 	TWeakObjectPtr<ARequiemCombatDummy> NearestCandidate;
 	TWeakObjectPtr<ARequiemCombatDummy> InvalidCandidate;
 	float AcquisitionDistance = 0.0f;
 	float InitialTrackingViewYaw = 0.0f;
+	float InitialTrackingViewPitch = 0.0f;
 	float ReleasedCameraViewYaw = 0.0f;
 	FVector InitialIndicatorLocation = FVector::ZeroVector;
-	float IndicatorHeightOffsetAboveBounds = 0.0f;
+	float IndicatorGroundOffsetAboveBase = 0.0f;
 	float DummyHealthBeforeAttack = 0.0f;
 	float ExpectedAttackDamage = 0.0f;
 	int32 DummyDamageSerialBeforeAttack = 0;
@@ -1363,15 +1429,96 @@ bool FRequiemLockOnPIETest::RunTest(const FString& Parameters)
 			static_cast<UObject*>(const_cast<UInputAction*>(LockOnAction)));
 		URequiemLockOnComponent* LockOnCDO = CharacterCDO->GetLockOnComponent();
 		TestNotNull(TEXT("BP_CH_Player owns RequiemLockOnComponent"), LockOnCDO);
-		UBillboardComponent* IndicatorCDO = CharacterCDO->GetLockOnIndicator();
-		TestNotNull(TEXT("BP_CH_Player owns its temporary lock-on indicator"), IndicatorCDO);
+		UDecalComponent* IndicatorCDO = CharacterCDO->GetLockOnGroundIndicator();
+		TestNotNull(TEXT("BP_CH_Player owns its lock-on ground indicator"), IndicatorCDO);
 		if (IndicatorCDO)
 		{
-			TestNotNull(
-				TEXT("BP_CH_Player assigns the temporary lock-on indicator sprite"),
-				IndicatorCDO->Sprite.Get());
+			UMaterialInterface* IndicatorMaterial = IndicatorCDO->GetDecalMaterial();
+			TestNotNull(TEXT("BP_CH_Player assigns the ground-ring decal material"), IndicatorMaterial);
+			if (IndicatorMaterial)
+			{
+				TestEqual(
+					TEXT("Ground indicator uses the ProjectRequiem ring material"),
+					IndicatorMaterial->GetPathName(),
+					FString(GroundRingMaterialPath));
+				UMaterial* BaseMaterial = IndicatorMaterial->GetMaterial();
+				TestNotNull(TEXT("Ground-ring decal resolves to a base material"), BaseMaterial);
+				if (BaseMaterial)
+				{
+					TestEqual(
+						TEXT("Ground-ring material uses the deferred decal domain"),
+						static_cast<EMaterialDomain>(BaseMaterial->MaterialDomain),
+						MD_DeferredDecal);
+
+					const FExpressionInput* BaseColorInput =
+						BaseMaterial->GetExpressionInputForProperty(MP_BaseColor);
+					TestNotNull(
+						TEXT("Ground-ring visible color comes from the decal component"),
+						Cast<UMaterialExpressionDecalColor>(
+							BaseColorInput ? BaseColorInput->Expression : nullptr));
+
+					const FExpressionInput* EmissiveInput =
+						BaseMaterial->GetExpressionInputForProperty(MP_EmissiveColor);
+					TestTrue(
+						TEXT("Ground-ring color is not doubled through emissive"),
+						!EmissiveInput || !EmissiveInput->Expression);
+
+					const FExpressionInput* OpacityInput =
+						BaseMaterial->GetExpressionInputForProperty(MP_Opacity);
+					const UMaterialExpressionSubtract* RingMask =
+						Cast<UMaterialExpressionSubtract>(
+							OpacityInput ? OpacityInput->Expression : nullptr);
+					TestNotNull(
+						TEXT("Ground-ring opacity subtracts its inner mask"),
+						RingMask);
+					if (RingMask)
+					{
+						const UMaterialExpressionSphereMask* OuterMask =
+							Cast<UMaterialExpressionSphereMask>(RingMask->A.Expression);
+						const UMaterialExpressionSphereMask* InnerMask =
+							Cast<UMaterialExpressionSphereMask>(RingMask->B.Expression);
+						TestNotNull(TEXT("Ground ring has an outer circle mask"), OuterMask);
+						TestNotNull(TEXT("Ground ring has an inner cutout mask"), InnerMask);
+						if (OuterMask && InnerMask)
+						{
+							const float RingThickness =
+								OuterMask->AttenuationRadius - InnerMask->AttenuationRadius;
+							TestTrue(
+								TEXT("Ground ring keeps a thin hollow border"),
+								InnerMask->AttenuationRadius >= 0.4f
+									&& OuterMask->AttenuationRadius <= 0.5f
+									&& RingThickness >= 0.015f
+									&& RingThickness <= 0.04f
+									&& InnerMask->HardnessPercent >= 95.0f
+									&& OuterMask->HardnessPercent >= 95.0f);
+						}
+					}
+				}
+				TestEqual(
+					TEXT("Ground-ring material uses translucent blending"),
+					IndicatorMaterial->GetBlendMode(),
+					BLEND_Translucent);
+			}
+			TestTrue(
+				TEXT("Ground indicator is a shallow circular decal"),
+				IndicatorCDO->DecalSize.X > UE_KINDA_SMALL_NUMBER
+					&& IndicatorCDO->DecalSize.X < IndicatorCDO->DecalSize.Y
+					&& FMath::IsNearlyEqual(
+						IndicatorCDO->DecalSize.Y,
+						IndicatorCDO->DecalSize.Z,
+						UE_KINDA_SMALL_NUMBER));
+			TestTrue(
+				TEXT("Ground indicator is yellow"),
+				IndicatorCDO->DecalColor.R >= 0.95f
+					&& IndicatorCDO->DecalColor.G >= 0.65f
+					&& IndicatorCDO->DecalColor.B <= 0.1f);
+			TestTrue(
+				TEXT("Ground indicator projects downward"),
+				FVector::DotProduct(
+					IndicatorCDO->GetRelativeRotation().Vector().GetSafeNormal(),
+					-FVector::UpVector) >= IndicatorProjectionDotThreshold);
 			TestFalse(
-				TEXT("Lock-on indicator CDO starts hidden"),
+				TEXT("Lock-on ground indicator CDO starts hidden"),
 				IndicatorCDO->IsVisible() && !IndicatorCDO->bHiddenInGame);
 		}
 		if (LockOnCDO)

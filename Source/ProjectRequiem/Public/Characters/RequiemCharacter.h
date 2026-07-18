@@ -8,7 +8,7 @@
 #include "RequiemCharacter.generated.h"
 
 class UCameraComponent;
-class UBillboardComponent;
+class UDecalComponent;
 class UInputAction;
 class URequiemCombatComponent;
 class URequiemDodgeComponent;
@@ -48,7 +48,7 @@ public:
 	URequiemLockOnComponent* GetLockOnComponent() const { return LockOnComponent; }
 
 	UFUNCTION(BlueprintPure, Category = "Combat|Lock On")
-	UBillboardComponent* GetLockOnIndicator() const { return LockOnIndicator; }
+	UDecalComponent* GetLockOnGroundIndicator() const { return LockOnGroundIndicator; }
 
 	/** Canonical explicit damage path for future hitboxes and enemies. */
 	UFUNCTION(BlueprintCallable, Category = "Damage")
@@ -112,9 +112,9 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|Lock On")
 	TObjectPtr<URequiemLockOnComponent> LockOnComponent;
 
-	/** Temporary presentation configured by BP_CH_Player; the lock-on component positions it. */
+	/** Ground-ring presentation configured by BP_CH_Player; the lock-on component positions it. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|Lock On")
-	TObjectPtr<UBillboardComponent> LockOnIndicator;
+	TObjectPtr<UDecalComponent> LockOnGroundIndicator;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
 	TObjectPtr<UInputAction> MoveAction;

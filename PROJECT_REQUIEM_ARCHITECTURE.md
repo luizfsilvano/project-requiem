@@ -302,18 +302,21 @@ libera o alvo; o lock termina somente por novo input, invalidação ou destruiç
 derrota do dummy ou ultrapassagem do alcance de manutenção. Não existe seleção cíclica,
 percepção contínua, lista de inimigos ou IA neste passe.
 
-O acompanhamento interpola a rotação do controller para o ponto de foco do alvo. O
-`CameraBoom` já observa essa rotação e o `CharacterMovement` já usa a rotação desejada do
-controller, portanto câmera e personagem acompanham o alvo sem transferir velocidade ou
-movimento ao sistema de lock-on. Durante `Roll`, a direção mundial capturada e a política
-temporária de rotação da esquiva têm prioridade: a câmera pode continuar acompanhando,
-mas o lock-on não sobrescreve a trajetória nem o yaw comprometido. Reação e morte também
-mantêm seus próprios locks e apresentação; a morte do jogador encerra o lock.
+O acompanhamento captura o pitch atual no início do lock e interpola somente o yaw do
+controller para o ponto de foco do alvo. O `CameraBoom` já observa essa rotação e o
+`CharacterMovement` já usa a rotação desejada do controller, portanto câmera e personagem
+acompanham o alvo sem transferir velocidade ou movimento ao sistema de lock-on e sem
+empurrar a câmera para um ângulo baixo conforme a altura do alvo. Durante `Roll`, a direção
+mundial capturada e a política temporária de rotação da esquiva têm prioridade: a câmera
+pode continuar acompanhando, mas o lock-on não sobrescreve a trajetória nem o yaw
+comprometido. Reação e morte também mantêm seus próprios locks e apresentação; a morte do
+jogador encerra o lock.
 
-O indicador deste passe é temporário: um billboard sem colisão acompanha os bounds do
-alvo e usa uma cópia própria do ícone `S_TargetPoint` em
-`/Game/ProjectRequiem/UI/HUD/Temporary`. A mudança de alvo também fica exposta para
-composição Blueprint futura, sem introduzir HUD elaborado.
+O indicador deste passe é um decal temporário sem colisão: o material procedural
+`M_LockOnGroundRing`, mantido em `/Game/ProjectRequiem/UI/HUD/Temporary`, desenha apenas
+uma borda circular fina e amarela, com centro transparente, na base dos bounds do alvo. A
+mudança de alvo também fica exposta para composição Blueprint futura, sem introduzir HUD
+elaborado.
 
 ## Convenções principais
 

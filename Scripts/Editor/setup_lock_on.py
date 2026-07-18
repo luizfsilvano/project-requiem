@@ -1,4 +1,4 @@
-"""Configure the basic Project Requiem lock-on input and temporary indicator."""
+"""Configure the basic Project Requiem lock-on input and ground-ring indicator."""
 
 from __future__ import annotations
 
@@ -14,9 +14,9 @@ MAPPING_CONTEXT = f"{INPUT_PATH}/IMC_Exploration"
 CHARACTER_BLUEPRINT = (
     f"{PROJECT_ROOT}/Characters/Player/Blueprints/BP_CH_Player.BP_CH_Player"
 )
-INDICATOR_SOURCE = "/Engine/EditorResources/S_TargetPoint.S_TargetPoint"
 INDICATOR_PATH = f"{PROJECT_ROOT}/UI/HUD/Temporary"
-INDICATOR_ASSET = f"{INDICATOR_PATH}/T_LockOnTarget.T_LockOnTarget"
+INDICATOR_ASSET = f"{INDICATOR_PATH}/M_LockOnGroundRing.M_LockOnGroundRing"
+LEGACY_INDICATOR_ASSET = f"{INDICATOR_PATH}/T_LockOnTarget.T_LockOnTarget"
 
 
 def require(value, message: str):
@@ -118,29 +118,117 @@ def configure_input(asset_tools, asset_subsystem):
     return action
 
 
-def duplicate_indicator(asset_tools, asset_subsystem):
+def create_ground_ring_material(asset_tools, asset_subsystem):
     indicator = load_existing(INDICATOR_ASSET)
     if indicator:
-        return indicator
+        require(
+            isinstance(indicator, unreal.Material),
+            f"Expected Material at {INDICATOR_ASSET}",
+        )
+    else:
+        if not asset_subsystem.does_directory_exist(INDICATOR_PATH):
+            asset_subsystem.make_directory(INDICATOR_PATH)
+        require(
+            asset_subsystem.does_directory_exist(INDICATOR_PATH),
+            f"Failed to create {INDICATOR_PATH}",
+        )
+        indicator = require(
+            asset_tools.create_asset(
+                "M_LockOnGroundRing",
+                INDICATOR_PATH,
+                unreal.Material,
+                unreal.MaterialFactoryNew(),
+            ),
+            f"Failed to create {INDICATOR_ASSET}",
+        )
 
-    source_indicator = require(
-        unreal.load_asset(INDICATOR_SOURCE),
-        f"Missing Engine icon {INDICATOR_SOURCE}",
+    indicator.modify()
+    indicator.set_editor_properties(
+        {
+            "material_domain": unreal.MaterialDomain.MD_DEFERRED_DECAL,
+            "blend_mode": unreal.BlendMode.BLEND_TRANSLUCENT,
+        }
     )
-    if not asset_subsystem.does_directory_exist(INDICATOR_PATH):
-        asset_subsystem.make_directory(INDICATOR_PATH)
-    require(
-        asset_subsystem.does_directory_exist(INDICATOR_PATH),
-        f"Failed to create {INDICATOR_PATH}",
+
+    material_library = unreal.MaterialEditingLibrary
+    material_library.delete_all_material_expressions(indicator)
+
+    texture_coordinates = material_library.create_material_expression(
+        indicator,
+        unreal.MaterialExpressionTextureCoordinate,
+        -600,
+        0,
     )
-    return require(
-        asset_tools.duplicate_asset(
-            "T_LockOnTarget",
-            INDICATOR_PATH,
-            source_indicator,
+    center = material_library.create_material_expression(
+        indicator,
+        unreal.MaterialExpressionConstant2Vector,
+        -600,
+        180,
+    )
+    center.set_editor_properties({"r": 0.5, "g": 0.5})
+
+    outer_mask = material_library.create_material_expression(
+        indicator,
+        unreal.MaterialExpressionSphereMask,
+        -300,
+        -60,
+    )
+    outer_mask.set_editor_properties(
+        {"attenuation_radius": 0.48, "hardness_percent": 98.0}
+    )
+    inner_mask = material_library.create_material_expression(
+        indicator,
+        unreal.MaterialExpressionSphereMask,
+        -300,
+        120,
+    )
+    inner_mask.set_editor_properties(
+        {"attenuation_radius": 0.455, "hardness_percent": 98.0}
+    )
+
+    ring_mask = material_library.create_material_expression(
+        indicator,
+        unreal.MaterialExpressionSubtract,
+        0,
+        20,
+    )
+    decal_color = material_library.create_material_expression(
+        indicator,
+        unreal.MaterialExpressionDecalColor,
+        0,
+        -180,
+    )
+
+    connections = [
+        material_library.connect_material_expressions(
+            texture_coordinates, "", outer_mask, "A"
         ),
-        f"Failed to duplicate {INDICATOR_SOURCE} to {INDICATOR_ASSET}",
+        material_library.connect_material_expressions(center, "", outer_mask, "B"),
+        material_library.connect_material_expressions(
+            texture_coordinates, "", inner_mask, "A"
+        ),
+        material_library.connect_material_expressions(center, "", inner_mask, "B"),
+        material_library.connect_material_expressions(outer_mask, "", ring_mask, "A"),
+        material_library.connect_material_expressions(inner_mask, "", ring_mask, "B"),
+        material_library.connect_material_property(
+            decal_color,
+            "",
+            unreal.MaterialProperty.MP_BASE_COLOR,
+        ),
+        material_library.connect_material_property(
+            ring_mask,
+            "",
+            unreal.MaterialProperty.MP_OPACITY,
+        ),
+    ]
+    require(all(connections), "Failed to connect the ground-ring material graph")
+    material_library.layout_material_expressions(indicator)
+    material_library.recompile_material(indicator)
+    require(
+        asset_subsystem.save_loaded_asset(indicator),
+        f"Failed to save {INDICATOR_ASSET}",
     )
+    return indicator
 
 
 def set_required_property(instance, property_name: str, value, description: str):
@@ -153,7 +241,7 @@ def set_required_property(instance, property_name: str, value, description: str)
         ) from exc
 
 
-def configure_character(asset_subsystem, action, indicator_texture):
+def configure_character(asset_subsystem, action, indicator_material):
     blueprint = require(
         load_existing(CHARACTER_BLUEPRINT),
         f"Missing {CHARACTER_BLUEPRINT}",
@@ -178,19 +266,25 @@ def configure_character(asset_subsystem, action, indicator_texture):
         "BP_CH_Player CDO",
     )
     try:
-        indicator_component = character_cdo.get_editor_property("lock_on_indicator")
+        indicator_component = character_cdo.get_editor_property(
+            "lock_on_ground_indicator"
+        )
     except Exception as exc:
         raise RuntimeError(
-            f"{LOG_PREFIX} BP_CH_Player is missing its native LockOnIndicator component; "
+            f"{LOG_PREFIX} BP_CH_Player is missing its native LockOnGroundIndicator "
+            "component; "
             "rebuild the Editor target and reopen Unreal"
         ) from exc
-    require(indicator_component, "BP_CH_Player LockOnIndicator component is null")
+    require(
+        isinstance(indicator_component, unreal.DecalComponent),
+        "BP_CH_Player LockOnGroundIndicator is not a DecalComponent",
+    )
     indicator_component.modify()
     set_required_property(
         indicator_component,
-        "sprite",
-        indicator_texture,
-        "BP_CH_Player LockOnIndicator",
+        "decal_material",
+        indicator_material,
+        "BP_CH_Player LockOnGroundIndicator",
     )
 
     require(
@@ -198,8 +292,25 @@ def configure_character(asset_subsystem, action, indicator_texture):
         "Failed to compile BP_CH_Player after lock-on setup",
     )
     require(
-        asset_subsystem.save_loaded_assets([blueprint, indicator_texture]),
+        asset_subsystem.save_loaded_assets([blueprint, indicator_material]),
         "Failed to save the lock-on character composition",
+    )
+
+
+def remove_legacy_indicator():
+    if not unreal.EditorAssetLibrary.does_asset_exist(LEGACY_INDICATOR_ASSET):
+        return
+    referencers = unreal.EditorAssetLibrary.find_package_referencers_for_asset(
+        LEGACY_INDICATOR_ASSET,
+        True,
+    )
+    require(
+        not referencers,
+        f"Cannot remove legacy indicator; still referenced by {referencers}",
+    )
+    require(
+        unreal.EditorAssetLibrary.delete_asset(LEGACY_INDICATOR_ASSET),
+        f"Failed to remove legacy indicator {LEGACY_INDICATOR_ASSET}",
     )
 
 
@@ -208,8 +319,9 @@ def main():
     asset_tools = unreal.AssetToolsHelpers.get_asset_tools()
     asset_subsystem = unreal.get_editor_subsystem(unreal.EditorAssetSubsystem)
     action = configure_input(asset_tools, asset_subsystem)
-    indicator_texture = duplicate_indicator(asset_tools, asset_subsystem)
-    configure_character(asset_subsystem, action, indicator_texture)
+    indicator_material = create_ground_ring_material(asset_tools, asset_subsystem)
+    configure_character(asset_subsystem, action, indicator_material)
+    remove_legacy_indicator()
     unreal.log(
         f"{LOG_PREFIX} Configured {LOCK_ON_ACTION}, MiddleMouseButton and {INDICATOR_ASSET}"
     )

@@ -148,11 +148,12 @@ liberam o alvo; a trajetória e a orientação capturadas pelo `Roll` continuam 
 até o fim da esquiva. Derrota, destruição, invalidação ou distância excessiva encerram o
 lock sem forçar a saída de `CombatUnarmed`.
 
-A câmera acompanha o ponto de foco do alvo pela rotação do controller, e o personagem
-retoma a orientação para esse ponto pelo `CharacterMovement` assim que nenhuma ação com
-prioridade própria estiver controlando o yaw. Enquanto o lock estiver ativo, o look livre
-do mouse fica suspenso para não disputar com o acompanhamento. Um billboard temporário
-marca o alvo; não há retículo, troca de alvo ou HUD elaborado neste passe.
+A câmera captura o pitch atual quando o lock começa e acompanha o ponto de foco do alvo
+somente pelo yaw do controller. O personagem retoma a orientação para esse ponto pelo
+`CharacterMovement` assim que nenhuma ação com prioridade própria estiver controlando o
+yaw. Enquanto o lock estiver ativo, o look livre do mouse fica suspenso para não disputar
+com o acompanhamento. Um decal circular amarelo fino, sem preenchimento, marca a base do
+alvo; não há retículo, troca de alvo ou HUD elaborado neste passe.
 
 Todas as animações deste passe usam as fontes UAL1/UAL2 sem root motion. O modo de combate e o combo não alteram os parâmetros globais de velocidade, aceleração ou desaceleração; o deslocamento continua pertencendo ao `CharacterMovement`. Em `CombatUnarmed`, o idle de combate aparece parado e a locomoção direcional existente permanece ativa enquanto nenhum golpe está comprometido. Um LMB aceito entra em `CombatUnarmed` e executa diretamente `Punch_Cross`, mesmo que `PunchKick_Enter` esteja tocando; o lock físico aplicado é o do próprio golpe. Durante cada `Attack`, esse lock termina em `0.60`; o restante do clipe continua comprometido visualmente e para o combo, mas já aceita locomoção. Cada golpe real substitui brevemente a velocidade planar por um avanço frontal de referência de `350 uu/s`, resolvido pelo próprio `CharacterMovement` com colisão, aceleração e frenagem; recuperações não criam um novo avanço nem relock de movimento. Para o alvo simples de validação, cada clipe de ataque consome uma única consulta ofensiva ao cruzar `0.40` do próprio relógio normalizado. Esse ponto não altera a janela de input, o handoff ou o unlock físico.
 

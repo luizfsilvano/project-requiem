@@ -4,7 +4,7 @@
 
 #include "Camera/CameraComponent.h"
 #include "Combat/RequiemCombatDummy.h"
-#include "Components/BillboardComponent.h"
+#include "Components/DecalComponent.h"
 #include "Components/RequiemCombatComponent.h"
 #include "Components/RequiemDodgeComponent.h"
 #include "Components/RequiemHealthComponent.h"
@@ -82,14 +82,17 @@ ARequiemCharacter::ARequiemCharacter()
 	FollowCamera->SetupAttachment(CameraBoom, USpringArmComponent::SocketName);
 	FollowCamera->bUsePawnControlRotation = false;
 
-	LockOnIndicator = CreateDefaultSubobject<UBillboardComponent>(TEXT("LockOnIndicator"));
-	LockOnIndicator->SetupAttachment(RootComponent);
-	LockOnIndicator->SetAbsolute(true, true, true);
-	LockOnIndicator->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	LockOnIndicator->SetGenerateOverlapEvents(false);
-	LockOnIndicator->SetCanEverAffectNavigation(false);
-	LockOnIndicator->SetHiddenInGame(true);
-	LockOnIndicator->SetVisibility(false);
+	LockOnGroundIndicator = CreateDefaultSubobject<UDecalComponent>(TEXT("LockOnGroundIndicator"));
+	LockOnGroundIndicator->SetupAttachment(RootComponent);
+	LockOnGroundIndicator->SetAbsolute(true, true, true);
+	LockOnGroundIndicator->SetRelativeRotation(FRotator(-90.0f, 0.0f, 0.0f));
+	LockOnGroundIndicator->DecalSize = FVector(8.0f, 90.0f, 90.0f);
+	LockOnGroundIndicator->SetDecalColor(FLinearColor(1.0f, 0.8f, 0.0f, 1.0f));
+	LockOnGroundIndicator->SetFadeScreenSize(0.001f);
+	LockOnGroundIndicator->SetSortOrder(100);
+	LockOnGroundIndicator->SetCanEverAffectNavigation(false);
+	LockOnGroundIndicator->SetHiddenInGame(true);
+	LockOnGroundIndicator->SetVisibility(false);
 }
 
 void ARequiemCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
