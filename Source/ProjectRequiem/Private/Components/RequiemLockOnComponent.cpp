@@ -55,9 +55,9 @@ void URequiemLockOnComponent::TickComponent(
 	}
 	const URequiemCombatComponent* CombatComponent = Character->GetCombatComponent();
 	if (CombatComponent
-		&& (CombatComponent->IsUnarmedAttackActive()
-			|| CombatComponent->IsUnarmedAttackMovementLocked()
-			|| CombatComponent->HasPendingInitialUnarmedAttackRequest()))
+		&& (CombatComponent->IsAnyAttackActive()
+			|| CombatComponent->IsAnyAttackMovementLocked()
+			|| CombatComponent->HasPendingInitialAttackRequest()))
 	{
 		// A strike already in progress keeps its authored facing and lunge commitment.
 		return;
@@ -246,7 +246,7 @@ void URequiemLockOnComponent::BeginLockOn(AActor* NewTarget)
 
 	if (URequiemCombatComponent* CombatComponent = Character->GetCombatComponent())
 	{
-		CombatComponent->EnterUnarmedCombat(ERequiemCombatEntryReason::LockOn);
+		CombatComponent->EnterCurrentCombat(ERequiemCombatEntryReason::LockOn);
 	}
 
 	const FVector TargetDirection =
@@ -260,9 +260,9 @@ void URequiemLockOnComponent::BeginLockOn(AActor* NewTarget)
 		const bool bDamageOwnsRotation = HealthComponent
 			&& (HealthComponent->IsDamageReactionActive() || HealthComponent->IsDead());
 		const bool bAttackOwnsRotation = CombatComponent
-			&& (CombatComponent->IsUnarmedAttackActive()
-				|| CombatComponent->IsUnarmedAttackMovementLocked()
-				|| CombatComponent->HasPendingInitialUnarmedAttackRequest());
+			&& (CombatComponent->IsAnyAttackActive()
+				|| CombatComponent->IsAnyAttackMovementLocked()
+				|| CombatComponent->HasPendingInitialAttackRequest());
 		if (!bAttackOwnsRotation)
 		{
 			if (AController* Controller = Character->GetController())

@@ -50,7 +50,7 @@ bool URequiemDodgeComponent::RequestDodge(const FVector& Direction)
 	UCharacterMovementComponent* MovementComponent = Character
 		? Character->GetCharacterMovement()
 		: nullptr;
-	const URequiemCombatComponent* CombatComponent = Character
+	URequiemCombatComponent* CombatComponent = Character
 		? Character->FindComponentByClass<URequiemCombatComponent>()
 		: nullptr;
 	const URequiemHealthComponent* HealthComponent = Character
@@ -65,11 +65,17 @@ bool URequiemDodgeComponent::RequestDodge(const FVector& Direction)
 		|| MovementComponent->IsFalling()
 		|| !MovementComponent->IsMovingOnGround()
 		|| (CombatComponent
-			&& (CombatComponent->IsUnarmedAttackActive()
-				|| CombatComponent->IsUnarmedAttackMovementLocked()
-				|| CombatComponent->HasPendingInitialUnarmedAttackRequest())))
+			&& (CombatComponent->IsAnyAttackActive()
+				|| CombatComponent->IsAnyAttackMovementLocked()
+				|| CombatComponent->HasPendingInitialAttackRequest())))
 	{
 		return false;
+	}
+
+	if (CombatComponent)
+	{
+		// A held sword input owns no committed action. The accepted dodge wins and clears it.
+		CombatComponent->CancelSwordCharge();
 	}
 
 	FVector CapturedDirection = Direction.GetSafeNormal2D();

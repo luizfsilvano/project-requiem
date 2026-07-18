@@ -9,6 +9,7 @@
 #include "Components/RequiemDodgeComponent.h"
 #include "Components/RequiemHealthComponent.h"
 #include "Components/RequiemLockOnComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "Engine/DamageEvents.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedPlayerInput.h"
@@ -72,6 +73,13 @@ ARequiemCharacter::ARequiemCharacter()
 	DodgeComponent = CreateDefaultSubobject<URequiemDodgeComponent>(TEXT("DodgeComponent"));
 	HealthComponent = CreateDefaultSubobject<URequiemHealthComponent>(TEXT("HealthComponent"));
 	LockOnComponent = CreateDefaultSubobject<URequiemLockOnComponent>(TEXT("LockOnComponent"));
+	SwordMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("SwordMesh"));
+	SwordMesh->SetupAttachment(GetMesh(), TEXT("hand_r"));
+	SwordMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	SwordMesh->SetGenerateOverlapEvents(false);
+	SwordMesh->SetCanEverAffectNavigation(false);
+	SwordMesh->SetHiddenInGame(true, true);
+	SwordMesh->SetVisibility(false, true);
 
 	CameraBoom = CreateDefaultSubobject<USpringArmComponent>(TEXT("CameraBoom"));
 	CameraBoom->SetupAttachment(RootComponent);
@@ -146,7 +154,7 @@ void ARequiemCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 			ToggleCombatAction,
 			ETriggerEvent::Started,
 			this,
-			&ARequiemCharacter::ToggleCombat);
+			&ARequiemCharacter::ToggleSwordCombat);
 	}
 
 	if (PrimaryAttackAction)
@@ -155,7 +163,17 @@ void ARequiemCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCo
 			PrimaryAttackAction,
 			ETriggerEvent::Started,
 			this,
-			&ARequiemCharacter::PrimaryAttack);
+			&ARequiemCharacter::BeginPrimaryAttack);
+		EnhancedInputComponent->BindAction(
+			PrimaryAttackAction,
+			ETriggerEvent::Completed,
+			this,
+			&ARequiemCharacter::ReleasePrimaryAttack);
+		EnhancedInputComponent->BindAction(
+			PrimaryAttackAction,
+			ETriggerEvent::Canceled,
+			this,
+			&ARequiemCharacter::ReleasePrimaryAttack);
 	}
 
 	if (LockOnAction)
@@ -221,17 +239,32 @@ ERequiemDamageOutcome ARequiemCharacter::ApplyRequiemDamage(
 
 bool ARequiemCharacter::CanCrouch() const
 {
-	return !AreDamageActionsLocked() && Super::CanCrouch();
+	return !AreDamageActionsLocked()
+		&& (!CombatComponent || !CombatComponent->IsSwordHeavyAttackCommitted())
+		&& Super::CanCrouch();
 }
 
 bool ARequiemCharacter::CanJumpInternal_Implementation() const
 {
-	return !AreDamageActionsLocked() && Super::CanJumpInternal_Implementation();
+	return !AreDamageActionsLocked()
+		&& (!CombatComponent || !CombatComponent->IsSwordHeavyAttackCommitted())
+		&& Super::CanJumpInternal_Implementation();
 }
 
 bool ARequiemCharacter::IsDodgeInvulnerable() const
 {
 	return DodgeComponent && DodgeComponent->IsDodgeInvulnerable();
+}
+
+void ARequiemCharacter::SetSwordVisualVisible(const bool bVisible)
+{
+	if (!SwordMesh)
+	{
+		return;
+	}
+
+	SwordMesh->SetHiddenInGame(!bVisible, true);
+	SwordMesh->SetVisibility(bVisible, true);
 }
 
 void ARequiemCharacter::OnStartCrouch(const float HalfHeightAdjust, const float ScaledHalfHeightAdjust)
@@ -268,7 +301,7 @@ void ARequiemCharacter::Move(const FInputActionValue& Value)
 		ForwardDirection * MovementVector.Y
 		+ RightDirection * MovementVector.X).GetSafeNormal2D();
 
-	if ((CombatComponent && CombatComponent->IsUnarmedAttackMovementLocked())
+	if ((CombatComponent && CombatComponent->IsAnyAttackMovementLocked())
 		|| (DodgeComponent && DodgeComponent->IsDodgeMovementLocked()))
 	{
 		return;
@@ -298,6 +331,7 @@ void ARequiemCharacter::Look(const FInputActionValue& Value)
 void ARequiemCharacter::StartJump()
 {
 	if (!AreDamageActionsLocked()
+		&& (!CombatComponent || !CombatComponent->IsSwordHeavyAttackCommitted())
 		&& (!DodgeComponent || !DodgeComponent->AreDodgeRestrictedActionsLocked()))
 	{
 		Jump();
@@ -312,6 +346,7 @@ void ARequiemCharacter::StopJump()
 void ARequiemCharacter::StartCrouch()
 {
 	if (!AreDamageActionsLocked()
+		&& (!CombatComponent || !CombatComponent->IsSwordHeavyAttackCommitted())
 		&& (!DodgeComponent || !DodgeComponent->AreDodgeRestrictedActionsLocked()))
 	{
 		Crouch();
@@ -320,7 +355,8 @@ void ARequiemCharacter::StartCrouch()
 
 void ARequiemCharacter::StopCrouch()
 {
-	if (!AreDamageActionsLocked())
+	if (!AreDamageActionsLocked()
+		&& (!CombatComponent || !CombatComponent->IsSwordHeavyAttackCommitted()))
 	{
 		UnCrouch();
 	}
@@ -376,24 +412,41 @@ FVector ARequiemCharacter::GetCurrentDodgeInputDirection() const
 		.GetSafeNormal2D();
 }
 
-void ARequiemCharacter::ToggleCombat()
+void ARequiemCharacter::ToggleSwordCombat()
 {
 	if (CombatComponent
-		&& (!LockOnComponent || !LockOnComponent->IsLockOnActive())
 		&& !AreDamageActionsLocked()
 		&& (!DodgeComponent || !DodgeComponent->AreDodgeRestrictedActionsLocked()))
 	{
-		CombatComponent->ToggleUnarmedCombat();
+		CombatComponent->ToggleSwordCombat();
 	}
 }
 
-void ARequiemCharacter::PrimaryAttack()
+void ARequiemCharacter::BeginPrimaryAttack()
 {
 	if (CombatComponent
 		&& !AreDamageActionsLocked()
+		&& !CombatComponent->IsSwordHeavyAttackCommitted()
 		&& (!DodgeComponent || !DodgeComponent->AreDodgeRestrictedActionsLocked()))
 	{
-		CombatComponent->RequestUnarmedAttack();
+		if (CombatComponent->IsSwordEquipped())
+		{
+			CombatComponent->BeginSwordCharge();
+		}
+		else
+		{
+			// Preserve the validated unarmed contract: the press itself requests the strike.
+			CombatComponent->RequestUnarmedAttack();
+		}
+	}
+}
+
+void ARequiemCharacter::ReleasePrimaryAttack()
+{
+	if (CombatComponent)
+	{
+		// This is deliberately a no-op when no sword charge was started.
+		CombatComponent->ReleaseSwordCharge();
 	}
 }
 

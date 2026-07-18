@@ -181,7 +181,7 @@ Componentes como interação e combate serão criados somente nas etapas em que 
 
 ### Primeiro passe de combate desarmado
 
-O primeiro uso concreto de composição de combate é `URequiemCombatComponent`, anexado a `ARequiemCharacter`. O componente é a fonte de verdade dos estados `Normal` e `CombatUnarmed`, recebe pedidos de entrada e ataque e aceita `ReceivedDamage` e `LockOn` como razões externas de entrada. Para o combo desarmado, ele aceita somente um pedido inicial e um único follow-up por janela; cliques excedentes são descartados, nunca acumulados como uma fila de golpes futuros. Ele não implementa armas, vida, inimigos completos ou bloqueio. O passe posterior do alvo de validação acrescenta somente uma consulta ofensiva curta por golpe, sem transformar o componente em um sistema geral de hitboxes.
+O primeiro uso concreto de composição de combate é `URequiemCombatComponent`, anexado a `ARequiemCharacter`. O passe desarmado estabeleceu os estados `Normal` e `CombatUnarmed`, os pedidos de entrada e ataque e as razões externas `ReceivedDamage` e `LockOn`; o lote de espada descrito adiante acrescenta `CombatSword` sem substituir esse contrato. Para o combo desarmado, o componente aceita somente um pedido inicial e um único follow-up por janela; cliques excedentes são descartados, nunca acumulados como uma fila de golpes futuros. Nesse passe ele não implementava armas, vida, inimigos completos ou bloqueio. O passe posterior do alvo de validação acrescenta somente uma consulta ofensiva curta por golpe, sem transformar o componente em um sistema geral de hitboxes.
 
 `ARequiemCharacter` encaminha `IA_ToggleCombat` e `IA_PrimaryAttack` ao componente e ignora `IA_Move` durante os `60%` iniciais de cada golpe. O componente separa esse lock físico do ataque ativo e da janela de combo: o movimento pode retornar durante o follow-through sem cancelar a animação nem o follow-up, e cada golpe seguinte reaplica seu próprio lock. Um ataque que também entra em `CombatUnarmed` começa diretamente em `Punch_Cross`; `PunchKick_Enter` nunca atrasa o primeiro golpe. Movimento, colisão, velocidade, aceleração e frenagem continuam pertencendo ao `CharacterMovement`; o pequeno avanço de cada golpe é aplicado pelo componente como uma substituição curta da velocidade planar, sem root motion e sem alterar os parâmetros globais de locomoção.
 
@@ -192,7 +192,7 @@ O componente mantém apenas a consulta de elegibilidade para uma futura saída a
 ### Primeiro passe de esquiva
 
 `URequiemDodgeComponent`, anexado a `ARequiemCharacter`, é a fonte de verdade da
-esquiva e permanece ortogonal a `Normal` e `CombatUnarmed`. Ele aceita apenas uma
+esquiva e permanece ortogonal a `Normal`, `CombatUnarmed` e `CombatSword`. Ele aceita apenas uma
 esquiva aterrissada e não agachada, captura uma direção mundial imutável, mantém o
 relógio normalizado da ação e expõe os locks, recovery e i-frames. O componente não
 implementa stamina, hitboxes, inimigos nem a vida do personagem.
@@ -234,8 +234,9 @@ prioridade sobre qualquer alteração de vida, entrada em combate ou reação. D
 letal recebido fora dos i-frames durante `Roll` reduz a vida e fica pendente até a
 esquiva terminar, preservando o relógio e a trajetória validados. Dano letal fora da
 janela é a única exceção que encerra a esquiva imediatamente. Todo dano aceito cancela
-o pedido/step atual do combo por uma API externa explícita e entra em
-`CombatUnarmed` com `ReceivedDamage`, sem alterar o fluxo normal do combo.
+o pedido/step atual do combo por uma API externa explícita e chama
+`EnterCurrentCombat(ReceivedDamage)`: `CombatSword` é preservado quando já equipado;
+nos demais casos a entrada continua em `CombatUnarmed`, sem alterar o fluxo normal do combo.
 
 `URequiemPlayerAnimInstance` observa os serials do componente e escolhe `Hit_Head`,
 `Hit_Chest`, `Hit_Stomach`, `Hit_Shoulder_L` ou `Hit_Shoulder_R` conforme a região.
@@ -290,7 +291,8 @@ temporários `RequiemTestDummyAttack` e `RequiemTestDummyReset` servem somente a
 `URequiemLockOnComponent`, anexado a `ARequiemCharacter`, é responsável somente por
 aquisição, manutenção e liberação do alvo atual. `URequiemCombatComponent` continua
 responsável pelo estado de combate: uma aquisição bem-sucedida chama
-`EnterUnarmedCombat(LockOn)`, mas perder ou soltar o alvo não força `ExitCombat` e não
+`EnterCurrentCombat(LockOn)`, preservando `CombatSword` quando já equipado; perder ou
+soltar o alvo não força `ExitCombat` e não
 interrompe um ataque. `IA_LockOn`, mapeada no botão do meio do mouse, alterna entre tentar
 adquirir e liberar o lock atual.
 
@@ -317,6 +319,38 @@ O indicador deste passe é um decal temporário sem colisão: o material procedu
 uma borda circular fina e amarela, com centro transparente, na base dos bounds do alvo. A
 mudança de alvo também fica exposta para composição Blueprint futura, sem introduzir HUD
 elaborado.
+
+### Primeiro passe de combate com espada
+
+`ERequiemCombatState` agora inclui `CombatSword`. `IA_ToggleCombat` permanece mapeada em
+`Z`, mas o binding atual alterna somente o estilo equipado: qualquer estado sem espada
+entra em `CombatSword`; pressionar `Z` novamente volta a `CombatUnarmed`, sem sair do
+combate. `EnterCurrentCombat` mantém a espada quando dano aceito ou lock-on pedem entrada.
+Isso não é um sistema de equipamento: não há inventário, slots, troca de item ou contrato
+geral de armas.
+
+Em `CombatSword`, pressionar LMB inicia uma carga e soltar resolve o ataque. Abaixo de
+`0.65s` começa o combo leve `Sword_Regular_A → Sword_Regular_A_Rec → Sword_Regular_B →
+Sword_Regular_B_Rec → Sword_Regular_C`; cada janela `0.30–0.85` aceita no máximo um
+follow-up. A e B entregam automaticamente às recuperações em `0.90`, e uma recuperação
+com follow-up entrega ao próximo golpe em `0.55`. Golpes e recuperações usam `1.0x`; o
+lock de movimento leve termina em `0.60` e o avanço de `350 uu/s` continua sendo aplicado
+pelo `CharacterMovement`. Cada golpe faz uma única consulta em `0.40`, com dano `35`,
+alcance `180`, raio `55` e altura `70`.
+
+Com hold de pelo menos `0.65s`, LMB dispara `Sword_Attack_RM` de `UAL1_RM` em `0.5x`.
+Esse ataque pesado é comprometido, usa `RootMotionFromMontagesOnly`, consulta o hit em
+`0.50` e causa dano `60`; não aceita follow-up leve nem troca de estilo até terminar.
+Fora desse compromisso, esquiva e lock-on preservam `CombatSword`, e todo o combo
+desarmado mantém seus clipes, janelas e tuning anteriores.
+
+`SwordMesh` é somente apresentação: fica anexado a `hand_r`, sem colisão e oculto fora
+de `CombatSword`; os golpes continuam usando as consultas do componente, nunca a malha.
+O visual próprio usa
+`/Game/ProjectRequiem/Combat/Styles/Sword/Weapons/SM_Sword_Bronze`, com
+`M_Sword_Bronze` e as texturas `T_Sword_Bronze_BaseColor`, `T_Sword_Bronze_Normal` e
+`T_Sword_Bronze_ORM`. As animações ficam em
+`/Game/ProjectRequiem/Characters/Player/Animations/Combat/Sword/{UAL1,UAL2,UAL1_RM}`.
 
 ## Convenções principais
 

@@ -56,13 +56,24 @@ URequiemCombatComponent::URequiemCombatComponent()
 
 FName URequiemCombatComponent::GetCombatStateName() const
 {
-	return CombatState == ERequiemCombatState::CombatUnarmed
-		? FName(TEXT("CombatUnarmed"))
-		: FName(TEXT("Normal"));
+	switch (CombatState)
+	{
+	case ERequiemCombatState::CombatUnarmed:
+		return FName(TEXT("CombatUnarmed"));
+	case ERequiemCombatState::CombatSword:
+		return FName(TEXT("CombatSword"));
+	default:
+		return FName(TEXT("Normal"));
+	}
 }
 
 void URequiemCombatComponent::ToggleUnarmedCombat()
 {
+	if (IsSwordHeavyAttackCommitted())
+	{
+		return;
+	}
+
 	if (const URequiemHealthComponent* HealthComponent =
 		GetOwner() ? GetOwner()->FindComponentByClass<URequiemHealthComponent>() : nullptr;
 		HealthComponent && HealthComponent->AreActionsLocked())
@@ -86,8 +97,50 @@ void URequiemCombatComponent::ToggleUnarmedCombat()
 	EnterUnarmedCombat(ERequiemCombatEntryReason::Manual);
 }
 
+bool URequiemCombatComponent::ToggleSwordCombat()
+{
+	if (const URequiemHealthComponent* HealthComponent =
+		GetOwner() ? GetOwner()->FindComponentByClass<URequiemHealthComponent>() : nullptr;
+		HealthComponent && HealthComponent->AreActionsLocked())
+	{
+		return false;
+	}
+
+	if (const URequiemDodgeComponent* DodgeComponent =
+		GetOwner() ? GetOwner()->FindComponentByClass<URequiemDodgeComponent>() : nullptr;
+		DodgeComponent && DodgeComponent->AreDodgeRestrictedActionsLocked())
+	{
+		return false;
+	}
+
+	if (IsSwordHeavyAttackCommitted())
+	{
+		return false;
+	}
+
+	CancelActiveAttackForExternalReaction();
+	if (CombatState == ERequiemCombatState::CombatSword)
+	{
+		EnterUnarmedCombat(ERequiemCombatEntryReason::Manual);
+	}
+	else
+	{
+		EnterSwordCombat(ERequiemCombatEntryReason::Manual);
+	}
+
+	SwordToggleSerial = AdvanceSerial(SwordToggleSerial);
+	return true;
+}
+
 ERequiemUnarmedAttackRequestResult URequiemCombatComponent::RequestUnarmedAttack()
 {
+	// The equipped style owns primary attack. Blueprint callers must not bypass
+	// the Character input routing and silently replace it with the unarmed style.
+	if (CombatState == ERequiemCombatState::CombatSword)
+	{
+		return ERequiemUnarmedAttackRequestResult::Rejected;
+	}
+
 	if (const URequiemHealthComponent* HealthComponent =
 		GetOwner() ? GetOwner()->FindComponentByClass<URequiemHealthComponent>() : nullptr;
 		HealthComponent && HealthComponent->AreActionsLocked())
@@ -158,6 +211,15 @@ ERequiemUnarmedAttackRequestResult URequiemCombatComponent::RequestUnarmedAttack
 
 void URequiemCombatComponent::EnterUnarmedCombat(const ERequiemCombatEntryReason EntryReason)
 {
+	// A committed heavy attack is never canceled by a public style-change call.
+	if (IsSwordHeavyAttackCommitted())
+	{
+		return;
+	}
+
+	// Keep the Blueprint-callable contract coherent even when callers skip the
+	// normal toggle path. No pending sword request or movement lock may survive.
+	CancelSwordAttack();
 	if (CombatState == ERequiemCombatState::CombatUnarmed)
 	{
 		return;
@@ -171,19 +233,56 @@ void URequiemCombatComponent::EnterUnarmedCombat(const ERequiemCombatEntryReason
 	(void)EntryReason;
 }
 
+void URequiemCombatComponent::EnterSwordCombat(const ERequiemCombatEntryReason EntryReason)
+{
+	// The sword style supersedes every unarmed request/step, including calls made
+	// directly from Blueprint instead of through ToggleSwordCombat.
+	CancelUnarmedAttackForExternalReaction();
+	if (CombatState == ERequiemCombatState::CombatSword)
+	{
+		return;
+	}
+
+	CombatState = ERequiemCombatState::CombatSword;
+	MarkCombatActivity();
+	(void)EntryReason;
+}
+
+void URequiemCombatComponent::EnterCurrentCombat(const ERequiemCombatEntryReason EntryReason)
+{
+	if (CombatState == ERequiemCombatState::CombatSword)
+	{
+		MarkCombatActivity();
+		return;
+	}
+
+	EnterUnarmedCombat(EntryReason);
+}
+
 void URequiemCombatComponent::ExitCombat()
 {
 	const bool bCancelPendingInitialAttack =
 		bInitialUnarmedAttackRequested && !bUnarmedAttackActive;
+	const bool bCancelPendingSwordAttack =
+		PendingSwordAttackType != ERequiemSwordAttackType::None
+		&& !bSwordAttackActive;
 	CombatState = ERequiemCombatState::Normal;
 	bInitialUnarmedAttackRequested = false;
 	bUnarmedAttackInputWindowOpen = false;
 	bQueuedUnarmedFollowUp = false;
+	CancelSwordCharge();
+	PendingSwordAttackType = ERequiemSwordAttackType::None;
+	bSwordAttackInputWindowOpen = false;
+	bQueuedSwordLightFollowUp = false;
 	if (bCancelPendingInitialAttack)
 	{
 		// No authored strike committed yet, so release only the input lock and let
 		// CharacterMovement preserve its current braking velocity.
 		bUnarmedAttackMovementLocked = false;
+	}
+	if (bCancelPendingSwordAttack)
+	{
+		bSwordAttackMovementLocked = false;
 	}
 }
 
@@ -328,9 +427,325 @@ void URequiemCombatComponent::CancelUnarmedAttackForExternalReaction()
 	EndUnarmedAttackSequence();
 }
 
+bool URequiemCombatComponent::BeginSwordCharge()
+{
+	if (CombatState != ERequiemCombatState::CombatSword
+		|| bSwordChargeActive
+		|| IsSwordHeavyAttackCommitted()
+		|| PendingSwordAttackType != ERequiemSwordAttackType::None
+		|| bQueuedSwordLightFollowUp
+		|| bUnarmedAttackActive
+		|| bInitialUnarmedAttackRequested
+		|| (bSwordAttackActive && !IsSwordAttackInputWindowOpen()))
+	{
+		return false;
+	}
+
+	ACharacter* Character = Cast<ACharacter>(GetOwner());
+	UCharacterMovementComponent* MovementComponent = Character
+		? Character->GetCharacterMovement()
+		: nullptr;
+	if (!Character
+		|| !MovementComponent
+		|| Character->IsCrouched()
+		|| MovementComponent->IsFalling()
+		|| !MovementComponent->IsMovingOnGround())
+	{
+		return false;
+	}
+
+	if (const URequiemHealthComponent* HealthComponent =
+		GetOwner() ? GetOwner()->FindComponentByClass<URequiemHealthComponent>() : nullptr;
+		HealthComponent && HealthComponent->AreActionsLocked())
+	{
+		return false;
+	}
+
+	if (const URequiemDodgeComponent* DodgeComponent =
+		GetOwner() ? GetOwner()->FindComponentByClass<URequiemDodgeComponent>() : nullptr;
+		DodgeComponent && DodgeComponent->AreDodgeRestrictedActionsLocked())
+	{
+		return false;
+	}
+
+	bSwordChargeActive = true;
+	SwordChargeStartTimeSeconds = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0f;
+	SwordChargeRequestSerial = AdvanceSerial(SwordChargeRequestSerial);
+	return true;
+}
+
+ERequiemSwordAttackRequestResult URequiemCombatComponent::ReleaseSwordCharge()
+{
+	if (!bSwordChargeActive)
+	{
+		return ERequiemSwordAttackRequestResult::Rejected;
+	}
+
+	const float HeldDurationSeconds = GetSwordChargeElapsedSeconds();
+	bSwordChargeActive = false;
+	SwordChargeStartTimeSeconds = -1.0f;
+	const ERequiemSwordAttackType RequestedType =
+		HeldDurationSeconds >= FMath::Max(SwordChargeThresholdSeconds, 0.05f)
+		? ERequiemSwordAttackType::Heavy
+		: ERequiemSwordAttackType::Light;
+	return RequestSwordAttack(RequestedType);
+}
+
+void URequiemCombatComponent::CancelSwordCharge()
+{
+	bSwordChargeActive = false;
+	SwordChargeStartTimeSeconds = -1.0f;
+}
+
+float URequiemCombatComponent::GetSwordChargeElapsedSeconds() const
+{
+	if (!bSwordChargeActive)
+	{
+		return 0.0f;
+	}
+
+	const UWorld* World = GetWorld();
+	return World
+		? FMath::Max(0.0f, World->GetTimeSeconds() - SwordChargeStartTimeSeconds)
+		: 0.0f;
+}
+
+ERequiemSwordAttackRequestResult URequiemCombatComponent::RequestSwordAttack(
+	const ERequiemSwordAttackType AttackType)
+{
+	if (AttackType == ERequiemSwordAttackType::None
+		|| CombatState != ERequiemCombatState::CombatSword)
+	{
+		return ERequiemSwordAttackRequestResult::Rejected;
+	}
+
+	if (const URequiemHealthComponent* HealthComponent =
+		GetOwner() ? GetOwner()->FindComponentByClass<URequiemHealthComponent>() : nullptr;
+		HealthComponent && HealthComponent->AreActionsLocked())
+	{
+		return ERequiemSwordAttackRequestResult::Rejected;
+	}
+
+	if (const URequiemDodgeComponent* DodgeComponent =
+		GetOwner() ? GetOwner()->FindComponentByClass<URequiemDodgeComponent>() : nullptr;
+		DodgeComponent && DodgeComponent->AreDodgeRestrictedActionsLocked())
+	{
+		return ERequiemSwordAttackRequestResult::Rejected;
+	}
+
+	ACharacter* Character = Cast<ACharacter>(GetOwner());
+	UCharacterMovementComponent* MovementComponent = Character
+		? Character->GetCharacterMovement()
+		: nullptr;
+	if (!Character
+		|| !MovementComponent
+		|| Character->IsCrouched()
+		|| MovementComponent->IsFalling()
+		|| !MovementComponent->IsMovingOnGround())
+	{
+		return ERequiemSwordAttackRequestResult::Rejected;
+	}
+
+	AttackRequestSerial = AdvanceSerial(AttackRequestSerial);
+	if (!bSwordAttackActive)
+	{
+		if (PendingSwordAttackType != ERequiemSwordAttackType::None)
+		{
+			return ERequiemSwordAttackRequestResult::Rejected;
+		}
+
+		PendingSwordAttackType = AttackType;
+		bSwordAttackMovementLocked = true;
+		Character->ConsumeMovementInputVector();
+		MarkCombatActivity();
+		if (AttackType == ERequiemSwordAttackType::Heavy)
+		{
+			SwordHeavyRequestSerial = AdvanceSerial(SwordHeavyRequestSerial);
+			return ERequiemSwordAttackRequestResult::InitialHeavyAccepted;
+		}
+
+		SwordLightRequestSerial = AdvanceSerial(SwordLightRequestSerial);
+		return ERequiemSwordAttackRequestResult::InitialLightAccepted;
+	}
+
+	if (AttackType == ERequiemSwordAttackType::Light
+		&& ActiveSwordAttackType == ERequiemSwordAttackType::Light
+		&& IsSwordAttackInputWindowOpen())
+	{
+		bQueuedSwordLightFollowUp = true;
+		SwordLightRequestSerial = AdvanceSerial(SwordLightRequestSerial);
+		MarkCombatActivity();
+		return ERequiemSwordAttackRequestResult::FollowUpBuffered;
+	}
+
+	return ERequiemSwordAttackRequestResult::Rejected;
+}
+
+ERequiemSwordAttackType URequiemCombatComponent::ConsumeInitialSwordAttackRequest()
+{
+	if (const URequiemHealthComponent* HealthComponent =
+		GetOwner() ? GetOwner()->FindComponentByClass<URequiemHealthComponent>() : nullptr;
+		HealthComponent && HealthComponent->AreActionsLocked())
+	{
+		PendingSwordAttackType = ERequiemSwordAttackType::None;
+		bSwordAttackMovementLocked = false;
+		return ERequiemSwordAttackType::None;
+	}
+
+	if (CombatState != ERequiemCombatState::CombatSword)
+	{
+		CancelSwordAttack();
+		return ERequiemSwordAttackType::None;
+	}
+
+	const ERequiemSwordAttackType Result = PendingSwordAttackType;
+	PendingSwordAttackType = ERequiemSwordAttackType::None;
+	return Result;
+}
+
+void URequiemCombatComponent::BeginSwordAttackStep(
+	const ERequiemSwordAttackType AttackType,
+	const bool bApplyForwardLunge,
+	const int32 ComboAnimationIndex)
+{
+	if (AttackType == ERequiemSwordAttackType::None
+		|| CombatState != ERequiemCombatState::CombatSword)
+	{
+		CancelSwordAttack();
+		return;
+	}
+
+	if (const URequiemHealthComponent* HealthComponent =
+		GetOwner() ? GetOwner()->FindComponentByClass<URequiemHealthComponent>() : nullptr;
+		HealthComponent && HealthComponent->AreActionsLocked())
+	{
+		CancelSwordAttack();
+		return;
+	}
+
+	bSwordAttackActive = true;
+	bSwordAttackMovementLocked = true;
+	bSwordAttackInputWindowOpen = false;
+	bQueuedSwordLightFollowUp = false;
+	bSwordHitAttempted = false;
+	ActiveSwordAttackType = AttackType;
+	ActiveSwordAttackIndex = ComboAnimationIndex;
+	LastSwordHitActor.Reset();
+
+	ACharacter* Character = Cast<ACharacter>(GetOwner());
+	UCharacterMovementComponent* MovementComponent = Character
+		? Character->GetCharacterMovement()
+		: nullptr;
+	if (!Character || !MovementComponent)
+	{
+		return;
+	}
+
+	Character->ConsumeMovementInputVector();
+	if (AttackType == ERequiemSwordAttackType::Heavy
+		|| !bApplyForwardLunge
+		|| SwordLightAttackLungeSpeed <= UE_KINDA_SMALL_NUMBER)
+	{
+		// Heavy displacement is supplied only by its authored root-motion presentation.
+		SetPlanarVelocity(MovementComponent, FVector::ZeroVector);
+		return;
+	}
+
+	const FVector ForwardDirection = Character->GetActorForwardVector().GetSafeNormal2D();
+	SetPlanarVelocity(MovementComponent, ForwardDirection * SwordLightAttackLungeSpeed);
+}
+
+void URequiemCombatComponent::UpdateSwordAttackHit(const float NormalizedTime)
+{
+	if (!bSwordAttackActive
+		|| bSwordHitAttempted
+		|| ActiveSwordAttackType == ERequiemSwordAttackType::None
+		|| ActiveSwordAttackIndex == INDEX_NONE)
+	{
+		return;
+	}
+
+	const float HitMoment = ActiveSwordAttackType == ERequiemSwordAttackType::Heavy
+		? SwordHeavyHitMomentNormalized
+		: SwordLightHitMomentNormalized;
+	if (NormalizedTime < FMath::Clamp(HitMoment, 0.0f, 1.0f))
+	{
+		return;
+	}
+
+	bSwordHitAttempted = true;
+	SwordHitAttemptSerial = AdvanceSerial(SwordHitAttemptSerial);
+	ResolveSwordAttackHit();
+}
+
+void URequiemCombatComponent::SetSwordAttackInputWindowOpen(const bool bOpen)
+{
+	bSwordAttackInputWindowOpen = bOpen
+		&& bSwordAttackActive
+		&& ActiveSwordAttackType == ERequiemSwordAttackType::Light
+		&& CombatState == ERequiemCombatState::CombatSword;
+}
+
+bool URequiemCombatComponent::ConsumeQueuedSwordLightFollowUp()
+{
+	if (!bQueuedSwordLightFollowUp)
+	{
+		return false;
+	}
+
+	bQueuedSwordLightFollowUp = false;
+	bSwordAttackInputWindowOpen = false;
+	return true;
+}
+
+void URequiemCombatComponent::ReleaseSwordAttackMovementLock()
+{
+	if (!bSwordAttackMovementLocked
+		|| ActiveSwordAttackType == ERequiemSwordAttackType::Heavy)
+	{
+		return;
+	}
+
+	bSwordAttackMovementLocked = false;
+}
+
+void URequiemCombatComponent::EndSwordAttackSequence()
+{
+	const bool bWasMovementLocked = bSwordAttackMovementLocked;
+	bSwordAttackMovementLocked = false;
+	bSwordAttackActive = false;
+	bSwordAttackInputWindowOpen = false;
+	bQueuedSwordLightFollowUp = false;
+	bSwordHitAttempted = false;
+	ActiveSwordAttackType = ERequiemSwordAttackType::None;
+	ActiveSwordAttackIndex = INDEX_NONE;
+
+	ACharacter* Character = Cast<ACharacter>(GetOwner());
+	UCharacterMovementComponent* MovementComponent = Character
+		? Character->GetCharacterMovement()
+		: nullptr;
+	if (bWasMovementLocked && MovementComponent)
+	{
+		SetPlanarVelocity(MovementComponent, FVector::ZeroVector);
+	}
+}
+
+void URequiemCombatComponent::CancelSwordAttack()
+{
+	CancelSwordCharge();
+	PendingSwordAttackType = ERequiemSwordAttackType::None;
+	EndSwordAttackSequence();
+}
+
+void URequiemCombatComponent::CancelActiveAttackForExternalReaction()
+{
+	CancelUnarmedAttackForExternalReaction();
+	CancelSwordAttack();
+}
+
 bool URequiemCombatComponent::CanAutoExit(const bool bEnemyNearby) const
 {
-	if (CombatState != ERequiemCombatState::CombatUnarmed
+	if (CombatState == ERequiemCombatState::Normal
 		|| bEnemyNearby
 		|| LastCombatActivityTimeSeconds < 0.0f)
 	{
@@ -348,6 +763,11 @@ void URequiemCombatComponent::MarkCombatActivity()
 	{
 		LastCombatActivityTimeSeconds = World->GetTimeSeconds();
 	}
+}
+
+int32 URequiemCombatComponent::AdvanceSerial(const int32 Serial)
+{
+	return Serial == MAX_int32 ? 1 : Serial + 1;
 }
 
 void URequiemCombatComponent::ResolveUnarmedAttackHit()
@@ -422,6 +842,85 @@ void URequiemCombatComponent::ResolveUnarmedAttackHit()
 			UnarmedHitConfirmSerial = UnarmedHitConfirmSerial == MAX_int32
 				? 1
 				: UnarmedHitConfirmSerial + 1;
+			MarkCombatActivity();
+		}
+		break;
+	}
+}
+
+void URequiemCombatComponent::ResolveSwordAttackHit()
+{
+	ACharacter* Character = Cast<ACharacter>(GetOwner());
+	UWorld* World = GetWorld();
+	const float HitDamage = ActiveSwordAttackType == ERequiemSwordAttackType::Heavy
+		? SwordHeavyHitDamage
+		: SwordLightHitDamage;
+	if (!Character
+		|| !World
+		|| HitDamage <= UE_KINDA_SMALL_NUMBER
+		|| SwordHitRadius <= UE_KINDA_SMALL_NUMBER)
+	{
+		return;
+	}
+
+	const FVector ForwardDirection = Character->GetActorForwardVector().GetSafeNormal2D();
+	if (ForwardDirection.IsNearlyZero())
+	{
+		return;
+	}
+
+	const FVector TraceStart = Character->GetActorLocation() + FVector::UpVector * SwordHitHeight;
+	const FVector TraceEnd = TraceStart + ForwardDirection * FMath::Max(0.0f, SwordHitRange);
+	FCollisionObjectQueryParams ObjectQueryParams;
+	ObjectQueryParams.AddObjectTypesToQuery(ECC_Pawn);
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(RequiemSwordHit), false, Character);
+	TArray<FHitResult> HitResults;
+	if (!World->SweepMultiByObjectType(
+		HitResults,
+		TraceStart,
+		TraceEnd,
+		FQuat::Identity,
+		ObjectQueryParams,
+		FCollisionShape::MakeSphere(SwordHitRadius),
+		QueryParams))
+	{
+		return;
+	}
+
+	HitResults.Sort([](const FHitResult& Left, const FHitResult& Right)
+	{
+		return Left.Time < Right.Time;
+	});
+
+	for (const FHitResult& HitResult : HitResults)
+	{
+		AActor* HitActor = HitResult.GetActor();
+		if (!HitActor || HitActor == Character || !HitActor->CanBeDamaged())
+		{
+			continue;
+		}
+		if (!HasClearDamagePath(
+			World,
+			TraceStart,
+			HitResult.ImpactPoint,
+			Character,
+			HitActor))
+		{
+			break;
+		}
+
+		const float AppliedDamage = UGameplayStatics::ApplyPointDamage(
+			HitActor,
+			HitDamage,
+			ForwardDirection,
+			HitResult,
+			Character->GetController(),
+			Character,
+			nullptr);
+		if (AppliedDamage > UE_KINDA_SMALL_NUMBER)
+		{
+			LastSwordHitActor = HitActor;
+			SwordHitConfirmSerial = AdvanceSerial(SwordHitConfirmSerial);
 			MarkCombatActivity();
 		}
 		break;

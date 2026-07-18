@@ -77,7 +77,7 @@ Não há, neste momento, uma animação específica de queda. `Jump_Loop` cobre 
   o `Roll` conclui normalmente. Ataque, pulo, agachamento, outra esquiva e a orientação
   capturada continuam bloqueados até o fim do relógio da ação, independentemente do
   clipe que estiver ocupando o slot visual.
-- A esquiva funciona sem alterar os estados `Normal` e `CombatUnarmed`; ao terminar,
+- A esquiva funciona sem alterar os estados `Normal`, `CombatUnarmed` e `CombatSword`; ao terminar,
   a apresentação retorna ao estado de locomoção/postura compatível com o modo preservado.
 
 ### Agachamento
@@ -98,14 +98,17 @@ Não há, neste momento, uma animação específica de queda. `Jump_Loop` cobre 
 
 ## Combate sem armas — primeira etapa
 
-O jogador começa em postura normal. O modo de batalha pode ser ativado por:
+O jogador começa em postura normal. O passe desarmado pode ser ativado por:
 
 - ataque com o botão esquerdo;
 - lock-on pelo botão do meio do mouse;
-- tecla `Z`;
 - recebimento de dano.
 
-Os estados de gameplay são `Normal` e `CombatUnarmed`. `Z` alterna entre eles quando não existe alvo travado, o botão esquerdo entra automaticamente em `CombatUnarmed` antes do primeiro golpe, dano aceito usa o mesmo ponto de entrada com a razão `ReceivedDamage` e uma aquisição de lock-on usa a razão `LockOn`.
+O passe desarmado estabeleceu `Normal` e `CombatUnarmed`; o lote de espada acrescenta
+`CombatSword`, descrito abaixo. `Z` agora alterna entre o estilo com espada e o desarmado,
+sem sair do combate. Sem espada equipada, o botão esquerdo entra automaticamente em
+`CombatUnarmed` antes do primeiro golpe; dano aceito e lock-on preservam `CombatSword`
+quando ele já está ativo e, nos demais casos, usam a entrada desarmada validada.
 
 Fluxo de entrada:
 
@@ -133,7 +136,7 @@ O combo recebe no máximo cinco comandos de ataque. `Melee_Knee_Rec` e `Melee_Ho
 
 Para tornar a cadeia mais dinâmica sem editar os assets, golpes usam play rate inicial de `1.25x` e recuperações `1.35x`, ambos ajustáveis. O lock de movimento termina em `0.60` de cada golpe, sem encerrar o ataque ativo, sua janela ou o follow-up já aceito; recuperações permanecem livres para locomoção e o próximo golpe volta a aplicar seu próprio lock e avanço. Quando existe um follow-up confirmado, `Punch_Cross` e `Punch_Jab` podem fazer handoff a partir de `0.72` do clipe; as recuperações podem entregar o próximo golpe a partir de `0.55`. `Melee_Knee` e `Melee_Hook` entram nas respectivas recuperações a partir de `0.90`. Sem follow-up, a sequência termina na postura de combate, e `Melee_Uppercut` nunca reinicia automaticamente o combo.
 
-Saída manual:
+Saída do contrato desarmado, atualmente sem binding manual dedicado:
 
 ```text
 Combat → PunchKick_Exit → Normal
@@ -156,6 +159,51 @@ com o acompanhamento. Um decal circular amarelo fino, sem preenchimento, marca a
 alvo; não há retículo, troca de alvo ou HUD elaborado neste passe.
 
 Todas as animações deste passe usam as fontes UAL1/UAL2 sem root motion. O modo de combate e o combo não alteram os parâmetros globais de velocidade, aceleração ou desaceleração; o deslocamento continua pertencendo ao `CharacterMovement`. Em `CombatUnarmed`, o idle de combate aparece parado e a locomoção direcional existente permanece ativa enquanto nenhum golpe está comprometido. Um LMB aceito entra em `CombatUnarmed` e executa diretamente `Punch_Cross`, mesmo que `PunchKick_Enter` esteja tocando; o lock físico aplicado é o do próprio golpe. Durante cada `Attack`, esse lock termina em `0.60`; o restante do clipe continua comprometido visualmente e para o combo, mas já aceita locomoção. Cada golpe real substitui brevemente a velocidade planar por um avanço frontal de referência de `350 uu/s`, resolvido pelo próprio `CharacterMovement` com colisão, aceleração e frenagem; recuperações não criam um novo avanço nem relock de movimento. Para o alvo simples de validação, cada clipe de ataque consome uma única consulta ofensiva ao cruzar `0.40` do próprio relógio normalizado. Esse ponto não altera a janela de input, o handoff ou o unlock físico.
+
+## Combate com espada — primeiro passe
+
+`CombatSword` é o terceiro estado de gameplay. `IA_ToggleCombat` continua em `Z`: de
+`Normal` ou `CombatUnarmed` equipa a espada e entra em `CombatSword`; de `CombatSword`
+retorna a `CombatUnarmed`. A seleção é temporária e não representa inventário, slot ou
+sistema de equipamento. Dano e lock-on preservam o estilo com espada já ativo, e o
+`Roll` mantém esse estado durante e depois da esquiva.
+
+As transições paradas usam `Sword_Enter`, `Sword_Idle` e `Sword_Exit` de
+`/Game/ProjectRequiem/Characters/Player/Animations/Combat/Sword/UAL1`. Assim como no
+desarmado, entrada e saída são opcionais: movimento ou outra apresentação prioritária
+as descarta, e um ataque aceito pula `Sword_Enter` e começa diretamente no golpe.
+
+Fluxo leve, importado de `.../Combat/Sword/UAL2`:
+
+```text
+Sword_Regular_A
+→ Sword_Regular_A_Rec
+→ Sword_Regular_B
+→ Sword_Regular_B_Rec
+→ Sword_Regular_C
+```
+
+LMB inicia a carga no press e resolve no release/cancel. Um hold menor que `0.65s`
+solicita ataque leve; A, A_Rec, B e B_Rec abrem uma janela `0.30–0.85` com um único slot
+de follow-up. A e B passam automaticamente às recuperações em `0.90`; com follow-up,
+as recuperações entregam o próximo golpe a partir de `0.55`. Golpes e recuperações usam
+`1.0x`. O lock de movimento de cada golpe termina em `0.60`, com avanço de `350 uu/s`
+pelo `CharacterMovement`; recuperações ficam livres. A consulta ofensiva única ocorre
+em `0.40`, com dano `35`, alcance `180`, raio `55` e altura `70`.
+
+Um hold de pelo menos `0.65s` dispara
+`/Game/ProjectRequiem/Characters/Player/Animations/Combat/Sword/UAL1_RM/Sword_Attack_RM`
+em `0.5x`. O asset usa root motion com `Anim First Frame`, sem force root lock e com
+escala normalizada. Durante o one-shot comprometido, o AnimInstance usa
+`RootMotionFromMontagesOnly`; movimento, novo ataque, pulo, agachamento, esquiva e troca
+de estilo permanecem bloqueados. O hit único ocorre em `0.50`, causa dano `60` e não
+aceita follow-up leve.
+
+O visual usa `SM_Sword_Bronze` em
+`/Game/ProjectRequiem/Combat/Styles/Sword/Weapons`, anexado ao socket `hand_r`. A malha
+não possui colisão e não participa das consultas de hit; sua visibilidade acompanha
+`CombatSword`. O mesmo diretório contém `M_Sword_Bronze` e as três texturas próprias.
+Lock-on, esquiva e o combo desarmado preservam seus contratos já validados.
 
 ## Reações de dano e morte — primeiro passe
 
@@ -234,15 +282,17 @@ reação, i-frames, morte e reset no PIE sem adicionar um inimigo completo.
 ## Regras técnicas
 
 - Usar animações sem root motion para locomoção, corrida, agachamento e pulo comum.
-- Reservar root motion para ações pontuais que precisam deslocar o personagem pela própria animação, como esquiva e knockback.
+- Reservar root motion para ações pontuais que precisam deslocar o personagem pela própria animação, como esquiva, knockback e o ataque pesado de espada.
 - Durante o trecho de deslocamento comprometido de `Roll`, até `0.62`, o AnimInstance
   usa `RootMotionFromMontagesOnly`; depois retorna a `IgnoreRootMotion`. Se houver input,
   o slot já apresenta o `Jog` direcional sem root motion enquanto o relógio e os locks
   restantes da esquiva continuam independentes até `1.0`. `Hit_Knockback` também usa
-  `RootMotionFromMontagesOnly` somente durante seu one-shot. Fora dessas duas ações,
-  permanece preservado o controle do `CharacterMovement` e o combo sem root motion.
+  `RootMotionFromMontagesOnly` somente durante seu one-shot. `Sword_Attack_RM` faz o
+  mesmo durante o ataque pesado comprometido. Fora dessas três ações, permanece
+  preservado o controle do `CharacterMovement`; os combos desarmado e leve de espada
+  continuam sem root motion.
 - A velocidade real deve continuar sob responsabilidade do `CharacterMovement`.
 - O Animation Blueprint deve reagir ao estado do personagem; não deve definir sozinho a velocidade de movimento.
 - Implementar primeiro locomoção e estados gerais.
 - Implementar combate, dano e interações em etapas separadas.
-- As animações de espada não fazem parte deste plano inicial e devem ser avaliadas quando o sistema de armas for planejado.
+- O primeiro passe de espada é um estilo fechado de validação; não existe sistema de equipamento ou arquitetura geral de armas.

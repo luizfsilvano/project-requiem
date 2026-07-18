@@ -10,7 +10,8 @@ UENUM(BlueprintType)
 enum class ERequiemCombatState : uint8
 {
 	Normal,
-	CombatUnarmed
+	CombatUnarmed,
+	CombatSword
 };
 
 /** Source that requested combat mode. Damage and lock-on reuse the same entry contract. */
@@ -27,6 +28,23 @@ UENUM(BlueprintType)
 enum class ERequiemUnarmedAttackRequestResult : uint8
 {
 	InitialAccepted,
+	FollowUpBuffered,
+	Rejected
+};
+
+UENUM(BlueprintType)
+enum class ERequiemSwordAttackType : uint8
+{
+	None,
+	Light,
+	Heavy
+};
+
+UENUM(BlueprintType)
+enum class ERequiemSwordAttackRequestResult : uint8
+{
+	InitialLightAccepted,
+	InitialHeavyAccepted,
 	FollowUpBuffered,
 	Rejected
 };
@@ -52,12 +70,23 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Combat")
 	void ToggleUnarmedCombat();
 
+	/** Equips or unequips the sword without leaving combat. Heavy attacks cannot be interrupted. */
+	UFUNCTION(BlueprintCallable, Category = "Combat|Sword")
+	bool ToggleSwordCombat();
+
 	UFUNCTION(BlueprintCallable, Category = "Combat")
 	ERequiemUnarmedAttackRequestResult RequestUnarmedAttack();
 
 	/** Shared entry point for manual input, lock-on and accepted damage. */
 	UFUNCTION(BlueprintCallable, Category = "Combat")
 	void EnterUnarmedCombat(ERequiemCombatEntryReason EntryReason);
+
+	UFUNCTION(BlueprintCallable, Category = "Combat|Sword")
+	void EnterSwordCombat(ERequiemCombatEntryReason EntryReason);
+
+	/** Keeps the equipped sword style when damage or lock-on requests combat entry. */
+	UFUNCTION(BlueprintCallable, Category = "Combat")
+	void EnterCurrentCombat(ERequiemCombatEntryReason EntryReason);
 
 	UFUNCTION(BlueprintCallable, Category = "Combat")
 	void ExitCombat();
@@ -89,6 +118,64 @@ public:
 
 	/** Explicit damage/death interruption that also clears an unconsumed initial request. */
 	void CancelUnarmedAttackForExternalReaction();
+
+	/** Starts a sword charge. No attack is requested until ReleaseSwordCharge. */
+	UFUNCTION(BlueprintCallable, Category = "Combat|Sword")
+	bool BeginSwordCharge();
+
+	/** Resolves the held duration into a light or heavy initial request. */
+	UFUNCTION(BlueprintCallable, Category = "Combat|Sword")
+	ERequiemSwordAttackRequestResult ReleaseSwordCharge();
+
+	/** Clears a held input without creating an attack request. */
+	UFUNCTION(BlueprintCallable, Category = "Combat|Sword")
+	void CancelSwordCharge();
+
+	/** Consumes the one pending sword request used to start a light or heavy attack. */
+	ERequiemSwordAttackType ConsumeInitialSwordAttackRequest();
+
+	/** Starts one authored sword strike. Heavy movement is left entirely to presentation root motion. */
+	void BeginSwordAttackStep(
+		ERequiemSwordAttackType AttackType,
+		bool bApplyForwardLunge,
+		int32 ComboAnimationIndex);
+
+	/** Presentation publishes the authored strike phase; gameplay resolves at most one hit. */
+	void UpdateSwordAttackHit(float NormalizedTime);
+
+	/** Publishes the single light-combo follow-up window. Heavy attacks never open it. */
+	void SetSwordAttackInputWindowOpen(bool bOpen);
+
+	/** Consumes the only buffered continuation for the current light-combo step. */
+	bool ConsumeQueuedSwordLightFollowUp();
+
+	/** Returns light-attack movement to CharacterMovement without ending the sequence. */
+	void ReleaseSwordAttackMovementLock();
+
+	/** Clears all runtime state for the current sword attack sequence. */
+	void EndSwordAttackSequence();
+
+	/** Cancels held input, pending requests and either active attack style. */
+	void CancelActiveAttackForExternalReaction();
+
+	UFUNCTION(BlueprintPure, Category = "Combat")
+	bool IsAnyAttackActive() const
+	{
+		return bUnarmedAttackActive || bSwordAttackActive;
+	}
+
+	UFUNCTION(BlueprintPure, Category = "Combat")
+	bool IsAnyAttackMovementLocked() const
+	{
+		return bUnarmedAttackMovementLocked || bSwordAttackMovementLocked;
+	}
+
+	UFUNCTION(BlueprintPure, Category = "Combat")
+	bool HasPendingInitialAttackRequest() const
+	{
+		return bInitialUnarmedAttackRequested
+			|| PendingSwordAttackType != ERequiemSwordAttackType::None;
+	}
 
 	UFUNCTION(BlueprintPure, Category = "Combat|Unarmed")
 	bool IsUnarmedAttackActive() const { return bUnarmedAttackActive; }
@@ -124,6 +211,89 @@ public:
 	{
 		return bInitialUnarmedAttackRequested;
 	}
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
+	bool IsSwordEquipped() const
+	{
+		return CombatState == ERequiemCombatState::CombatSword;
+	}
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
+	bool IsSwordChargeActive() const { return bSwordChargeActive; }
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
+	float GetSwordChargeElapsedSeconds() const;
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Sword|Tuning")
+	float GetSwordChargeThresholdSeconds() const { return SwordChargeThresholdSeconds; }
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
+	bool IsSwordAttackActive() const { return bSwordAttackActive; }
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
+	bool IsSwordHeavyAttackCommitted() const
+	{
+		return (bSwordAttackActive
+				&& ActiveSwordAttackType == ERequiemSwordAttackType::Heavy)
+			|| PendingSwordAttackType == ERequiemSwordAttackType::Heavy;
+	}
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
+	ERequiemSwordAttackType GetActiveSwordAttackType() const
+	{
+		return ActiveSwordAttackType;
+	}
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
+	ERequiemSwordAttackType GetPendingSwordAttackType() const
+	{
+		return PendingSwordAttackType;
+	}
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
+	int32 GetActiveSwordAttackIndex() const { return ActiveSwordAttackIndex; }
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
+	bool IsSwordAttackInputWindowOpen() const
+	{
+		return bSwordAttackActive
+			&& ActiveSwordAttackType == ERequiemSwordAttackType::Light
+			&& bSwordAttackInputWindowOpen
+			&& !bQueuedSwordLightFollowUp;
+	}
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
+	bool HasQueuedSwordLightFollowUp() const { return bQueuedSwordLightFollowUp; }
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
+	bool IsSwordAttackMovementLocked() const { return bSwordAttackMovementLocked; }
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
+	int32 GetSwordToggleSerial() const { return SwordToggleSerial; }
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
+	int32 GetSwordChargeRequestSerial() const { return SwordChargeRequestSerial; }
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
+	int32 GetSwordLightRequestSerial() const { return SwordLightRequestSerial; }
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
+	int32 GetSwordHeavyRequestSerial() const { return SwordHeavyRequestSerial; }
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
+	int32 GetSwordHitAttemptSerial() const { return SwordHitAttemptSerial; }
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
+	int32 GetSwordHitConfirmSerial() const { return SwordHitConfirmSerial; }
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
+	float GetSwordLightHitDamage() const { return SwordLightHitDamage; }
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
+	float GetSwordHeavyHitDamage() const { return SwordHeavyHitDamage; }
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
+	AActor* GetLastSwordHitActor() const { return LastSwordHitActor.Get(); }
 
 	/** Unarmed combat has no blocking capability in this stage. */
 	UFUNCTION(BlueprintPure, Category = "Combat")
@@ -178,9 +348,59 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Combat|Unarmed|Runtime")
 	bool bUnarmedAttackMovementLocked = false;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Tuning", meta = (ClampMin = "0.05"))
+	float SwordChargeThresholdSeconds = 0.65f;
+
+	/** Target planar speed for light strikes. Heavy displacement comes only from root motion. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Tuning", meta = (ClampMin = "0.0"))
+	float SwordLightAttackLungeSpeed = 350.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Hit", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float SwordLightHitMomentNormalized = 0.4f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Hit", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float SwordHeavyHitMomentNormalized = 0.5f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Hit", meta = (ClampMin = "0.0"))
+	float SwordLightHitDamage = 35.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Hit", meta = (ClampMin = "0.0"))
+	float SwordHeavyHitDamage = 60.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Hit", meta = (ClampMin = "0.0"))
+	float SwordHitRange = 180.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Hit", meta = (ClampMin = "0.0"))
+	float SwordHitRadius = 55.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Hit")
+	float SwordHitHeight = 70.0f;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Combat|Sword|Runtime")
+	bool bSwordChargeActive = false;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Combat|Sword|Runtime")
+	bool bSwordAttackActive = false;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Combat|Sword|Runtime")
+	bool bSwordAttackInputWindowOpen = false;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Combat|Sword|Runtime")
+	bool bQueuedSwordLightFollowUp = false;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Combat|Sword|Runtime")
+	bool bSwordAttackMovementLocked = false;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Combat|Sword|Runtime")
+	ERequiemSwordAttackType ActiveSwordAttackType = ERequiemSwordAttackType::None;
+
 private:
 	void MarkCombatActivity();
 	void ResolveUnarmedAttackHit();
+	void ResolveSwordAttackHit();
+	ERequiemSwordAttackRequestResult RequestSwordAttack(ERequiemSwordAttackType AttackType);
+	void CancelSwordAttack();
+	static int32 AdvanceSerial(int32 Serial);
 
 	int32 AttackRequestSerial = 0;
 	int32 ActiveUnarmedAttackIndex = INDEX_NONE;
@@ -190,4 +410,16 @@ private:
 	bool bInitialUnarmedAttackRequested = false;
 	bool bUnarmedHitAttempted = false;
 	TWeakObjectPtr<AActor> LastUnarmedHitActor;
+
+	ERequiemSwordAttackType PendingSwordAttackType = ERequiemSwordAttackType::None;
+	int32 ActiveSwordAttackIndex = INDEX_NONE;
+	int32 SwordToggleSerial = 0;
+	int32 SwordChargeRequestSerial = 0;
+	int32 SwordLightRequestSerial = 0;
+	int32 SwordHeavyRequestSerial = 0;
+	int32 SwordHitAttemptSerial = 0;
+	int32 SwordHitConfirmSerial = 0;
+	float SwordChargeStartTimeSeconds = -1.0f;
+	bool bSwordHitAttempted = false;
+	TWeakObjectPtr<AActor> LastSwordHitActor;
 };

@@ -15,6 +15,7 @@ class URequiemDodgeComponent;
 class URequiemHealthComponent;
 class URequiemLockOnComponent;
 class USpringArmComponent;
+class UStaticMeshComponent;
 struct FInputActionValue;
 
 /**
@@ -49,6 +50,12 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Combat|Lock On")
 	UDecalComponent* GetLockOnGroundIndicator() const { return LockOnGroundIndicator; }
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
+	UStaticMeshComponent* GetSwordMesh() const { return SwordMesh; }
+
+	UFUNCTION(BlueprintCallable, Category = "Combat|Sword")
+	void SetSwordVisualVisible(bool bVisible);
 
 	/** Canonical explicit damage path for future hitboxes and enemies. */
 	UFUNCTION(BlueprintCallable, Category = "Damage")
@@ -116,6 +123,10 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|Lock On")
 	TObjectPtr<UDecalComponent> LockOnGroundIndicator;
 
+	/** Presentation-only sword attached to the player hand; gameplay never traces from this mesh. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|Sword")
+	TObjectPtr<UStaticMeshComponent> SwordMesh;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
 	TObjectPtr<UInputAction> MoveAction;
 
@@ -152,8 +163,9 @@ private:
 	void StopCrouch();
 	void StartDodge();
 	FVector GetCurrentDodgeInputDirection() const;
-	void ToggleCombat();
-	void PrimaryAttack();
+	void ToggleSwordCombat();
+	void BeginPrimaryAttack();
+	void ReleasePrimaryAttack();
 	void ToggleLockOn();
 	bool AreDamageActionsLocked() const;
 

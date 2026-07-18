@@ -99,8 +99,8 @@ ERequiemDamageOutcome URequiemHealthComponent::ApplyDamage(
 		: nullptr;
 	if (CombatComponent)
 	{
-		CombatComponent->CancelUnarmedAttackForExternalReaction();
-		CombatComponent->EnterUnarmedCombat(ERequiemCombatEntryReason::ReceivedDamage);
+		CombatComponent->CancelActiveAttackForExternalReaction();
+		CombatComponent->EnterCurrentCombat(ERequiemCombatEntryReason::ReceivedDamage);
 	}
 
 	LastHitRegion = Request.HitRegion;
@@ -251,7 +251,7 @@ void URequiemHealthComponent::ResetForTesting()
 
 	if (CombatComponent)
 	{
-		CombatComponent->CancelUnarmedAttackForExternalReaction();
+		CombatComponent->CancelActiveAttackForExternalReaction();
 		CombatComponent->ExitCombat();
 	}
 

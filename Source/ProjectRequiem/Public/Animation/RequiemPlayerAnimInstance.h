@@ -57,6 +57,19 @@ enum class ERequiemCombatAnimationState : uint8
 	Exit
 };
 
+/** Presentation phase for the sword style. Unarmed presentation remains independent. */
+UENUM(BlueprintType)
+enum class ERequiemSwordAnimationState : uint8
+{
+	Inactive,
+	Enter,
+	Idle,
+	Attack,
+	Recovery,
+	HeavyAttack,
+	Exit
+};
+
 UENUM(BlueprintType)
 enum class ERequiemDamageAnimationState : uint8
 {
@@ -119,6 +132,24 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Combat")
 	float GetCombatAnimationNormalizedTime() const;
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
+	ERequiemSwordAnimationState GetSwordAnimationState() const
+	{
+		return SwordAnimationState;
+	}
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
+	FName GetSwordAnimationStateName() const;
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
+	int32 GetActiveSwordComboAnimationIndex() const
+	{
+		return ActiveSwordComboAnimationIndex;
+	}
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
+	float GetSwordAnimationNormalizedTime() const;
 
 	UFUNCTION(BlueprintPure, Category = "Dodge")
 	bool IsDodgePresentationActive() const { return bDodgePresentationActive; }
@@ -249,6 +280,34 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed|Combo")
 	TObjectPtr<UAnimSequenceBase> MeleeUppercutAnimation;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword")
+	TObjectPtr<UAnimSequenceBase> SwordEnterAnimation;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword")
+	TObjectPtr<UAnimSequenceBase> SwordIdleAnimation;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword")
+	TObjectPtr<UAnimSequenceBase> SwordExitAnimation;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Combo")
+	TObjectPtr<UAnimSequenceBase> SwordRegularAAnimation;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Combo")
+	TObjectPtr<UAnimSequenceBase> SwordRegularARecoveryAnimation;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Combo")
+	TObjectPtr<UAnimSequenceBase> SwordRegularBAnimation;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Combo")
+	TObjectPtr<UAnimSequenceBase> SwordRegularBRecoveryAnimation;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Combo")
+	TObjectPtr<UAnimSequenceBase> SwordRegularCAnimation;
+
+	/** UAL1_RM Sword_Attack imported under an explicit variant name. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Heavy")
+	TObjectPtr<UAnimSequenceBase> SwordHeavyAttackAnimation;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Damage|Hit Reaction")
 	TObjectPtr<UAnimSequenceBase> HitHeadAnimation;
 
@@ -304,6 +363,31 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Unarmed|Tuning", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float UnarmedMovementUnlockNormalized = 0.60f;
 
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Tuning", meta = (ClampMin = "0.1"))
+	float SwordLightAttackPlayRate = 1.0f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Tuning", meta = (ClampMin = "0.1"))
+	float SwordLightRecoveryPlayRate = 1.0f;
+
+	/** Half-speed playback for the committed root-motion heavy attack. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Tuning", meta = (ClampMin = "0.1"))
+	float SwordHeavyAttackPlayRate = 0.5f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Tuning", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float SwordInputWindowStartNormalized = 0.30f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Tuning", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float SwordInputWindowEndNormalized = 0.85f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Tuning", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float SwordAutomaticRecoveryHandoffNormalized = 0.90f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Tuning", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float SwordQueuedRecoveryHandoffNormalized = 0.55f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Tuning", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float SwordMovementUnlockNormalized = 0.60f;
+
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Locomotion|Tuning", meta = (ClampMin = "0.0"))
 	float JogAuthoredSpeed = 500.0f;
 
@@ -345,6 +429,13 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Combat|Runtime")
 	int32 ActiveComboAnimationIndex = INDEX_NONE;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Combat|Sword|Runtime")
+	ERequiemSwordAnimationState SwordAnimationState =
+		ERequiemSwordAnimationState::Inactive;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Combat|Sword|Runtime")
+	int32 ActiveSwordComboAnimationIndex = INDEX_NONE;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Damage|Runtime")
 	ERequiemDamageAnimationState DamageAnimationState =
@@ -398,6 +489,30 @@ private:
 	bool CanQueueFollowUpFromComboIndex(int32 ComboIndex) const;
 	float GetCombatPlayRate(ERequiemCombatAnimationState State) const;
 	UAnimSequenceBase* GetComboAnimation(int32 ComboIndex) const;
+	void UpdateSwordPresentation();
+	void StartSwordEnter();
+	void StartSwordIdle();
+	void StartSwordExit();
+	void StartSwordComboClip(int32 ComboIndex);
+	void StartSwordHeavyAttack();
+	bool TryStartInitialSwordAttack();
+	bool TryStartQueuedSwordFollowUp(int32 ComboIndex);
+	void UpdateSwordInputWindow();
+	void UpdateSwordMovementRecovery();
+	void HandleFinishedSwordOneShot();
+	void ResumeFromSwordPresentation(bool bHideSwordVisual = false);
+	void PlaySwordAnimation(
+		ERequiemSwordAnimationState NewState,
+		UAnimSequenceBase* NewAnimation,
+		bool bLooping,
+		int32 ComboIndex = INDEX_NONE,
+		bool bUsesRootMotion = false);
+	bool ShouldUseSwordIdle() const;
+	bool CanStartSwordAttack() const;
+	bool ShouldAdvanceSwordOneShot() const;
+	bool HasSwordOneShotFinished() const;
+	float GetSwordPlayRate(ERequiemSwordAnimationState State) const;
+	UAnimSequenceBase* GetSwordComboAnimation(int32 ComboIndex) const;
 	void UpdateLocomotionState(float DeltaSeconds);
 	void UpdateGroundedState(float DeltaSeconds);
 	void UpdateAirborneState();
@@ -443,6 +558,7 @@ private:
 
 	float StateElapsedSeconds = 0.0f;
 	float CombatAnimationElapsedSeconds = 0.0f;
+	float SwordAnimationElapsedSeconds = 0.0f;
 	float DamageAnimationElapsedSeconds = 0.0f;
 	float ActiveAnimationPlayRate = 1.0f;
 	float LookAroundCountdown = 0.0f;
@@ -451,6 +567,8 @@ private:
 	bool bExitQueued = false;
 	bool bCombatStanceEstablished = false;
 	bool bCombatAssetsInvalid = false;
+	bool bSwordStanceEstablished = false;
+	bool bSwordAssetsInvalid = false;
 	bool bDodgePresentationActive = false;
 	bool bDodgeLocomotionRecoveryPresentationActive = false;
 	bool bDeathPoseHeld = false;
