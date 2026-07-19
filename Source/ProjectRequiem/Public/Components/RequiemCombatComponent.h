@@ -70,7 +70,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Combat")
 	void ToggleUnarmedCombat();
 
-	/** Equips or unequips the sword without leaving combat. Heavy attacks cannot be interrupted. */
+	/** Equips or unequips the sword without leaving combat. A committed sword attack cannot be interrupted. */
 	UFUNCTION(BlueprintCallable, Category = "Combat|Sword")
 	bool ToggleSwordCombat();
 
@@ -151,6 +151,13 @@ public:
 
 	/** Returns light-attack movement to CharacterMovement without ending the sequence. */
 	void ReleaseSwordAttackMovementLock();
+
+	/**
+	 * Completes the authored recovery handoff without zeroing the planar velocity that
+	 * CharacterMovement must carry into locomotion. Heavy attacks may use this only
+	 * after their non-cancelable recovery blend has completed.
+	 */
+	void CompleteSwordAttackRecovery();
 
 	/** Clears all runtime state for the current sword attack sequence. */
 	void EndSwordAttackSequence();

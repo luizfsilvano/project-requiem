@@ -333,20 +333,50 @@ Em `CombatSword`, pressionar LMB inicia uma carga e soltar resolve o ataque. Aba
 `0.65s` começa o combo leve `Sword_Regular_A → Sword_Regular_A_Rec → Sword_Regular_B →
 Sword_Regular_B_Rec → Sword_Regular_C`; cada janela `0.30–0.85` aceita no máximo um
 follow-up. A e B entregam automaticamente às recuperações em `0.90`, e uma recuperação
-com follow-up entrega ao próximo golpe em `0.55`. Golpes e recuperações usam `1.0x`; o
-lock de movimento leve termina em `0.60` e o avanço de `350 uu/s` continua sendo aplicado
-pelo `CharacterMovement`. Cada golpe faz uma única consulta em `0.40`, com dano `35`,
-alcance `180`, raio `55` e altura `70`.
+com follow-up entrega ao próximo golpe em `0.55`. Todos os clipes permanecem full-body;
+golpes e recuperações continuam em `1.0x`, sem acelerar os assets, e o avanço de
+`350 uu/s` continua sendo aplicado pelo `CharacterMovement`. Cada golpe faz uma única
+consulta em `0.40`, com dano `35`, alcance `180`, raio `55` e altura `70`.
+
+O movimento fica comprometido durante o início e o impacto. A e B preservam esse lock ao
+entregar a `Sword_Regular_A_Rec` e `Sword_Regular_B_Rec`. Havendo intenção de locomoção
+durante uma recuperação, ou durante o recovery terminal de C, a apresentação inicia um
+blend curto para o `Jog` direcional. `SwordRecoveryBlendTime` usa `0.15s` por padrão e
+permanece ajustável, com faixa recomendada de `0.10–0.20s`. O início não é um ponto
+normalizado fixo: ele é calculado a partir da duração do clipe e de seu play rate para o
+blend terminar em `0.75`; somente então o lock físico é liberado e o controle do
+`CharacterMovement` retorna. Nas recuperações intermediárias, o relógio autoral e a janela
+continuam independentes do slot visual, preservando inclusive o follow-up tardio entre
+`0.75–0.85`; um follow-up aceito volta ao próximo ataque full-body. C encerra a sequência
+somente depois da conclusão do blend. Sem intenção de movimento, o one-shot conclui
+normalmente, sem cancelamento abrupto. A troca de estilo também é rejeitada enquanto o
+lock dessa fase comprometida estiver ativo.
 
 Com hold de pelo menos `0.65s`, LMB dispara `Sword_Attack_RM` de `UAL1_RM` em `0.5x`.
 Esse ataque pesado é comprometido, usa `RootMotionFromMontagesOnly`, consulta o hit em
 `0.50` e causa dano `60`; não aceita follow-up leve nem troca de estilo até terminar.
+Durante sua recuperação, aplica o mesmo blend ajustável calculado para terminar em
+`0.75`, mantendo o root motion ativo e o compromisso da ação durante todo o blend. Como
+a UE deixa de considerar um montage em blend-out como o montage exclusivo de root motion,
+essa janela usa temporariamente `RootMotionFromEverything`; o `Jog` de entrada não contém
+root motion, portanto somente o deslocamento ponderado do pesado é extraído. Ao concluir,
+o modo retorna a `IgnoreRootMotion`. A sequência pesada e seus locks terminam apenas
+quando o blend conclui.
 Fora desse compromisso, esquiva e lock-on preservam `CombatSword`, e todo o combo
 desarmado mantém seus clipes, janelas e tuning anteriores.
 
-`SwordMesh` é somente apresentação: fica anexado a `hand_r`, sem colisão e oculto fora
-de `CombatSword`; os golpes continuam usando as consultas do componente, nunca a malha.
-O visual próprio usa
+`SwordMesh` é somente apresentação e permanece visível nos dois estados. Guardado, usa o
+socket mesh-only `Socket_Weapon_Back` em `spine_03`; equipado, usa o socket de Skeleton
+`Socket_Weapon_Hand_R` em `hand_r`, cujo transform continua definido no asset e não é
+recriado pelo código. `Sword_Enter` começa com a malha nas costas e troca para a mão no
+frame autoral `21/39` (`0.53846` normalizado), quando a mão termina de segurar o cabo.
+`Sword_Exit` começa com a malha na mão e a prende às costas no frame `15/39` (`0.38462`),
+quando o movimento alcança o socket; o restante do clipe termina sem carregar novamente
+a espada na mão. Os dois pontos ficam expostos no Animation Blueprint para ajuste fino.
+Ataque, movimento ou outra apresentação que descarte uma transição resolve o attachment
+imediatamente de acordo com o estilo ativo. A troca usa snap de posição e rotação do
+socket, sem colisão, e os golpes continuam usando as
+consultas do componente, nunca a malha. O visual próprio usa
 `/Game/ProjectRequiem/Combat/Styles/Sword/Weapons/SM_Sword_Bronze`, com
 `M_Sword_Bronze` e as texturas `T_Sword_Bronze_BaseColor`, `T_Sword_Bronze_Normal` e
 `T_Sword_Bronze_ORM`. As animações ficam em

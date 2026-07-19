@@ -104,6 +104,12 @@ void URequiemPlayerAnimInstance::NativeInitializeAnimation()
 
 	SetRootMotionMode(ERootMotionMode::IgnoreRootMotion);
 	CacheCharacterReferences();
+	if (OwningCharacter)
+	{
+		OwningCharacter->SetSwordEquippedPresentation(
+			CombatComponent
+			&& CombatComponent->GetCombatState() == ERequiemCombatState::CombatSword);
+	}
 
 	LocomotionState = ERequiemLocomotionState::Idle;
 	MovementDirection = ERequiemMovementDirection::None;
@@ -116,11 +122,15 @@ void URequiemPlayerAnimInstance::NativeInitializeAnimation()
 	ActiveLocomotionMontage = nullptr;
 	ActiveAnimation = nullptr;
 	ActiveLocomotionAnimation = nullptr;
+	ActiveSwordAnimation = nullptr;
+	ActiveSwordMontage = nullptr;
 	StateElapsedSeconds = 0.0f;
 	CombatAnimationElapsedSeconds = 0.0f;
 	SwordAnimationElapsedSeconds = 0.0f;
 	DamageAnimationElapsedSeconds = 0.0f;
 	ActiveAnimationPlayRate = 1.0f;
+	ActiveSwordAnimationPlayRate = 1.0f;
+	SwordLocomotionRecoveryBlendStartSeconds = 0.0f;
 	bNeedsInitialState = true;
 	bEnterQueued = false;
 	bExitQueued = false;
@@ -130,6 +140,8 @@ void URequiemPlayerAnimInstance::NativeInitializeAnimation()
 	bSwordAssetsInvalid = false;
 	bDodgePresentationActive = false;
 	bDodgeLocomotionRecoveryPresentationActive = false;
+	bSwordLocomotionRecoveryPresentationActive = false;
+	bSwordLocomotionRecoveryBlendActive = false;
 	bDeathPoseHeld = false;
 	bDamageAssetsInvalid = false;
 	LastObservedDamageRequestSerial =
@@ -324,6 +336,8 @@ void URequiemPlayerAnimInstance::HandleDamageReset()
 	ActiveAnimation = nullptr;
 	ActiveLocomotionAnimation = nullptr;
 	ActiveLocomotionMontage = nullptr;
+	ActiveSwordAnimation = nullptr;
+	ActiveSwordMontage = nullptr;
 	DamageAnimationElapsedSeconds = 0.0f;
 	CombatAnimationElapsedSeconds = 0.0f;
 	SwordAnimationElapsedSeconds = 0.0f;
@@ -331,6 +345,10 @@ void URequiemPlayerAnimInstance::HandleDamageReset()
 	bDeathPoseHeld = false;
 	bDodgePresentationActive = false;
 	bDodgeLocomotionRecoveryPresentationActive = false;
+	bSwordLocomotionRecoveryPresentationActive = false;
+	bSwordLocomotionRecoveryBlendActive = false;
+	ActiveSwordAnimationPlayRate = 1.0f;
+	SwordLocomotionRecoveryBlendStartSeconds = 0.0f;
 	bDamageAssetsInvalid = false;
 	bEnterQueued = false;
 	bExitQueued = false;
@@ -344,7 +362,7 @@ void URequiemPlayerAnimInstance::HandleDamageReset()
 	MovementDirection = ERequiemMovementDirection::None;
 	if (OwningCharacter)
 	{
-		OwningCharacter->SetSwordVisualVisible(
+		OwningCharacter->SetSwordEquippedPresentation(
 			ObservedCombatState == ERequiemCombatState::CombatSword);
 	}
 	TransitionTo(ERequiemLocomotionState::Idle, true);
@@ -483,6 +501,12 @@ void URequiemPlayerAnimInstance::PlayDamageAnimation(
 
 	CombatAnimationState = ERequiemCombatAnimationState::Inactive;
 	SwordAnimationState = ERequiemSwordAnimationState::Inactive;
+	bSwordLocomotionRecoveryPresentationActive = false;
+	bSwordLocomotionRecoveryBlendActive = false;
+	ActiveSwordAnimation = nullptr;
+	ActiveSwordMontage = nullptr;
+	ActiveSwordAnimationPlayRate = 1.0f;
+	SwordLocomotionRecoveryBlendStartSeconds = 0.0f;
 	ActiveComboAnimationIndex = INDEX_NONE;
 	ActiveSwordComboAnimationIndex = INDEX_NONE;
 	CombatAnimationElapsedSeconds = 0.0f;
@@ -492,6 +516,14 @@ void URequiemPlayerAnimInstance::PlayDamageAnimation(
 	// combat-state change after the reaction finishes.
 	bEnterQueued = false;
 	bExitQueued = false;
+	if (OwningCharacter)
+	{
+		// Damage discards any stance transition. Resolve the sword attachment from
+		// the authoritative style so an interrupted Sword_Exit cannot strand it in hand.
+		OwningCharacter->SetSwordEquippedPresentation(
+			CombatComponent
+			&& CombatComponent->GetCombatState() == ERequiemCombatState::CombatSword);
+	}
 	DamageAnimationState = NewState;
 	DamageAnimationElapsedSeconds = 0.0f;
 	bDeathPoseHeld = false;
@@ -756,7 +788,7 @@ void URequiemPlayerAnimInstance::StartDodgePresentation()
 	SwordAnimationElapsedSeconds = 0.0f;
 	if (OwningCharacter)
 	{
-		OwningCharacter->SetSwordVisualVisible(
+		OwningCharacter->SetSwordEquippedPresentation(
 			ObservedCombatState == ERequiemCombatState::CombatSword);
 	}
 	bDodgeLocomotionRecoveryPresentationActive = false;
@@ -991,11 +1023,6 @@ void URequiemPlayerAnimInstance::HandleCombatStateChange()
 		ActiveLocomotionAnimation = nullptr;
 		ActiveLocomotionMontage = nullptr;
 		SetRootMotionMode(ERootMotionMode::IgnoreRootMotion);
-		if (OwningCharacter)
-		{
-			OwningCharacter->SetSwordVisualVisible(true);
-		}
-
 		SwordAnimationState = ERequiemSwordAnimationState::Inactive;
 		ActiveSwordComboAnimationIndex = INDEX_NONE;
 		SwordAnimationElapsedSeconds = 0.0f;
@@ -1782,10 +1809,7 @@ void URequiemPlayerAnimInstance::UpdateSwordPresentation()
 		return;
 	}
 
-	if (ObservedCombatState == ERequiemCombatState::CombatSword && OwningCharacter)
-	{
-		OwningCharacter->SetSwordVisualVisible(true);
-	}
+	UpdateSwordAttachmentPresentation();
 
 	if (ObservedCombatState != ERequiemCombatState::CombatSword)
 	{
@@ -1819,6 +1843,12 @@ void URequiemPlayerAnimInstance::UpdateSwordPresentation()
 		return;
 	}
 
+	if (bSwordLocomotionRecoveryPresentationActive)
+	{
+		UpdateSwordLocomotionRecoveryBlend();
+		return;
+	}
+
 	if ((SwordAnimationState == ERequiemSwordAnimationState::Enter
 			|| SwordAnimationState == ERequiemSwordAnimationState::Idle)
 		&& !CanPlayCombatAnimation())
@@ -1829,6 +1859,10 @@ void URequiemPlayerAnimInstance::UpdateSwordPresentation()
 
 	UpdateSwordInputWindow();
 	UpdateSwordMovementRecovery();
+	if (bSwordLocomotionRecoveryPresentationActive)
+	{
+		return;
+	}
 	if ((SwordAnimationState == ERequiemSwordAnimationState::Attack
 			|| SwordAnimationState == ERequiemSwordAnimationState::HeavyAttack)
 		&& CombatComponent)
@@ -1896,6 +1930,42 @@ void URequiemPlayerAnimInstance::UpdateSwordPresentation()
 	}
 }
 
+void URequiemPlayerAnimInstance::UpdateSwordAttachmentPresentation()
+{
+	if (!OwningCharacter)
+	{
+		return;
+	}
+
+	bool bAttachToHand =
+		ObservedCombatState == ERequiemCombatState::CombatSword;
+	const float NormalizedTime = GetSwordAnimationNormalizedTime();
+	switch (SwordAnimationState)
+	{
+	case ERequiemSwordAnimationState::Enter:
+		bAttachToHand = NormalizedTime
+			>= FMath::Clamp(SwordEnterHandAttachmentNormalized, 0.0f, 1.0f);
+		break;
+
+	case ERequiemSwordAnimationState::Exit:
+		bAttachToHand = NormalizedTime
+			< FMath::Clamp(SwordExitBackAttachmentNormalized, 0.0f, 1.0f);
+		break;
+
+	case ERequiemSwordAnimationState::Idle:
+	case ERequiemSwordAnimationState::Attack:
+	case ERequiemSwordAnimationState::Recovery:
+	case ERequiemSwordAnimationState::HeavyAttack:
+		bAttachToHand = true;
+		break;
+
+	default:
+		break;
+	}
+
+	OwningCharacter->SetSwordEquippedPresentation(bAttachToHand);
+}
+
 void URequiemPlayerAnimInstance::StartSwordEnter()
 {
 	PlaySwordAnimation(
@@ -1934,11 +2004,7 @@ void URequiemPlayerAnimInstance::StartSwordComboClip(const int32 ComboIndex)
 	if (CombatComponent)
 	{
 		CombatComponent->SetSwordAttackInputWindowOpen(false);
-		if (bRecovery)
-		{
-			CombatComponent->ReleaseSwordAttackMovementLock();
-		}
-		else
+		if (!bRecovery)
 		{
 			CombatComponent->BeginSwordAttackStep(
 				ERequiemSwordAttackType::Light,
@@ -2033,15 +2099,198 @@ void URequiemPlayerAnimInstance::UpdateSwordInputWindow()
 void URequiemPlayerAnimInstance::UpdateSwordMovementRecovery()
 {
 	if (!CombatComponent
-		|| SwordAnimationState != ERequiemSwordAnimationState::Attack
-		|| !CombatComponent->IsSwordAttackMovementLocked())
+		|| !OwningCharacter
+		|| bSwordLocomotionRecoveryPresentationActive
+		|| !CombatComponent->IsSwordAttackMovementLocked()
+		|| !OwningCharacter->HasCurrentMovementInput())
 	{
 		return;
 	}
 
-	if (GetSwordAnimationNormalizedTime() >= SwordMovementUnlockNormalized)
+	const bool bTerminalLightAttack =
+		SwordAnimationState == ERequiemSwordAnimationState::Attack
+		&& ActiveSwordComboAnimationIndex == 4;
+	const bool bUnqueuedIntermediateRecovery =
+		SwordAnimationState == ERequiemSwordAnimationState::Recovery
+		&& (ActiveSwordComboAnimationIndex == 1
+			|| ActiveSwordComboAnimationIndex == 3)
+		&& !CombatComponent->HasQueuedSwordLightFollowUp();
+	const bool bHeavyAttack =
+		SwordAnimationState == ERequiemSwordAnimationState::HeavyAttack;
+	if (!bTerminalLightAttack
+		&& !bUnqueuedIntermediateRecovery
+		&& !bHeavyAttack)
 	{
-		CombatComponent->ReleaseSwordAttackMovementLock();
+		return;
+	}
+
+	if (GetSwordAnimationNormalizedTime() >= GetSwordRecoveryBlendStartNormalized())
+	{
+		StartSwordLocomotionRecoveryBlend();
+	}
+}
+
+float URequiemPlayerAnimInstance::GetSwordRecoveryBlendStartNormalized() const
+{
+	const float UnlockNormalized = FMath::Clamp(
+		SwordMovementUnlockNormalized,
+		0.0f,
+		1.0f);
+	if (!ActiveSwordAnimation)
+	{
+		return UnlockNormalized;
+	}
+
+	const float AnimationLength = ActiveSwordAnimation->GetPlayLength();
+	const float PlayRate = FMath::Max(ActiveSwordAnimationPlayRate, 0.1f);
+	const float EffectiveDuration = AnimationLength / PlayRate;
+	if (EffectiveDuration <= UE_KINDA_SMALL_NUMBER)
+	{
+		return UnlockNormalized;
+	}
+
+	const float BlendTime = FMath::Clamp(SwordRecoveryBlendTime, 0.10f, 0.20f);
+	return FMath::Clamp(
+		UnlockNormalized - BlendTime / EffectiveDuration,
+		0.0f,
+		UnlockNormalized);
+}
+
+void URequiemPlayerAnimInstance::UpdateSwordRecoveryMovementDirection()
+{
+	if (!OwningCharacter)
+	{
+		return;
+	}
+
+	const FVector RawMovementDirection =
+		OwningCharacter->GetCurrentMovementInputDirection().GetSafeNormal2D();
+	if (RawMovementDirection.IsNearlyZero())
+	{
+		return;
+	}
+
+	const FVector LocalDirection = OwningCharacter->GetActorTransform()
+		.InverseTransformVectorNoScale(RawMovementDirection);
+	ObservedDirectionDegrees = FMath::RadiansToDegrees(
+		FMath::Atan2(LocalDirection.Y, LocalDirection.X));
+	MovementDirection = QuantizeDirection(ObservedDirectionDegrees, true);
+}
+
+void URequiemPlayerAnimInstance::StartSwordLocomotionRecoveryBlend()
+{
+	if (bSwordLocomotionRecoveryPresentationActive
+		|| !CombatComponent
+		|| !OwningCharacter
+		|| !OwningCharacter->HasCurrentMovementInput())
+	{
+		return;
+	}
+
+	bSwordLocomotionRecoveryPresentationActive = true;
+	bSwordLocomotionRecoveryBlendActive = true;
+	SwordLocomotionRecoveryBlendStartSeconds = SwordAnimationElapsedSeconds;
+	const float BlendTime = FMath::Clamp(SwordRecoveryBlendTime, 0.10f, 0.20f);
+	if (SwordAnimationState == ERequiemSwordAnimationState::HeavyAttack)
+	{
+		// Montage_Stop immediately clears UE's single RootMotionMontageInstance even
+		// while its pose is still blending out. The incoming Jog clips have no root
+		// motion, so blended extraction preserves only the heavy's fading displacement.
+		SetRootMotionMode(ERootMotionMode::RootMotionFromEverything);
+	}
+	if (ActiveSwordMontage)
+	{
+		Montage_Stop(BlendTime, ActiveSwordMontage);
+	}
+
+	UpdateSwordRecoveryMovementDirection();
+	LocomotionState = ERequiemLocomotionState::Jog;
+	StateElapsedSeconds = 0.0f;
+	ActiveAnimationPlayRate = JogAuthoredSpeed > UE_KINDA_SMALL_NUMBER
+		? FMath::Clamp(
+			ObservedGroundSpeed / JogAuthoredSpeed,
+			MinimumLoopPlayRate,
+			MaximumLoopPlayRate)
+		: 1.0f;
+	PlayStateAnimation();
+	UpdateJogPlayRate();
+}
+
+void URequiemPlayerAnimInstance::UpdateSwordLocomotionRecoveryBlend()
+{
+	if (!bSwordLocomotionRecoveryPresentationActive || !CombatComponent)
+	{
+		return;
+	}
+
+	UpdateSwordAttachmentPresentation();
+	UpdateSwordRecoveryMovementDirection();
+	if (LocomotionState != ERequiemLocomotionState::Jog)
+	{
+		LocomotionState = ERequiemLocomotionState::Jog;
+		StateElapsedSeconds = 0.0f;
+		PlayStateAnimation();
+	}
+	else
+	{
+		RefreshDirectionalLoop();
+	}
+	UpdateJogPlayRate();
+
+	UpdateSwordInputWindow();
+	if (SwordAnimationState == ERequiemSwordAnimationState::Recovery
+		&& CombatComponent->HasQueuedSwordLightFollowUp()
+		&& ShouldAdvanceSwordOneShot())
+	{
+		HandleFinishedSwordOneShot();
+		return;
+	}
+
+	if (bSwordLocomotionRecoveryBlendActive)
+	{
+		const float BlendElapsedSeconds = FMath::Max(
+			0.0f,
+			SwordAnimationElapsedSeconds
+				- SwordLocomotionRecoveryBlendStartSeconds);
+		if (BlendElapsedSeconds < FMath::Clamp(SwordRecoveryBlendTime, 0.10f, 0.20f))
+		{
+			return;
+		}
+
+		bSwordLocomotionRecoveryBlendActive = false;
+		if (SwordAnimationState == ERequiemSwordAnimationState::Recovery)
+		{
+			// Preserve the late 0.75-0.85 combo window after locomotion owns the
+			// full-body slot. A late follow-up relocks movement and starts B/C.
+			CombatComponent->ReleaseSwordAttackMovementLock();
+			return;
+		}
+
+		CombatComponent->CompleteSwordAttackRecovery();
+		bSwordLocomotionRecoveryPresentationActive = false;
+		SetRootMotionMode(ERootMotionMode::IgnoreRootMotion);
+		SwordAnimationState = ERequiemSwordAnimationState::Inactive;
+		ActiveSwordComboAnimationIndex = INDEX_NONE;
+		SwordAnimationElapsedSeconds = 0.0f;
+		ActiveSwordAnimation = nullptr;
+		ActiveSwordMontage = nullptr;
+		ActiveSwordAnimationPlayRate = 1.0f;
+		SwordLocomotionRecoveryBlendStartSeconds = 0.0f;
+		return;
+	}
+
+	if (SwordAnimationState == ERequiemSwordAnimationState::Recovery
+		&& ShouldAdvanceSwordOneShot())
+	{
+		CombatComponent->EndSwordAttackSequence();
+		bSwordLocomotionRecoveryPresentationActive = false;
+		SwordAnimationState = ERequiemSwordAnimationState::Inactive;
+		ActiveSwordComboAnimationIndex = INDEX_NONE;
+		SwordAnimationElapsedSeconds = 0.0f;
+		ActiveSwordAnimation = nullptr;
+		ActiveSwordMontage = nullptr;
+		ActiveSwordAnimationPlayRate = 1.0f;
+		SwordLocomotionRecoveryBlendStartSeconds = 0.0f;
 	}
 }
 
@@ -2119,7 +2368,7 @@ void URequiemPlayerAnimInstance::HandleFinishedSwordOneShot()
 	}
 }
 
-void URequiemPlayerAnimInstance::ResumeFromSwordPresentation(const bool bHideSwordVisual)
+void URequiemPlayerAnimInstance::ResumeFromSwordPresentation(const bool bStoreSwordOnBack)
 {
 	if (CombatComponent)
 	{
@@ -2140,17 +2389,25 @@ void URequiemPlayerAnimInstance::ResumeFromSwordPresentation(const bool bHideSwo
 	SwordAnimationState = ERequiemSwordAnimationState::Inactive;
 	ActiveSwordComboAnimationIndex = INDEX_NONE;
 	SwordAnimationElapsedSeconds = 0.0f;
+	bSwordLocomotionRecoveryPresentationActive = false;
+	bSwordLocomotionRecoveryBlendActive = false;
+	SwordLocomotionRecoveryBlendStartSeconds = 0.0f;
+	ActiveSwordAnimationPlayRate = 1.0f;
+	ActiveSwordAnimation = nullptr;
+	ActiveSwordMontage = nullptr;
 	ActiveAnimation = nullptr;
 	ActiveLocomotionAnimation = nullptr;
 	ActiveLocomotionMontage = nullptr;
-	if (bHideSwordVisual && OwningCharacter)
+	if (OwningCharacter)
 	{
-		OwningCharacter->SetSwordVisualVisible(false);
+		OwningCharacter->SetSwordEquippedPresentation(
+			!bStoreSwordOnBack
+			&& ObservedCombatState == ERequiemCombatState::CombatSword);
 	}
 
 	// Sword_Exit already authored the complete stance handoff. Returning to the
 	// unarmed style therefore uses its idle directly instead of playing a second enter.
-	if (bHideSwordVisual
+	if (bStoreSwordOnBack
 		&& ObservedCombatState == ERequiemCombatState::CombatUnarmed
 		&& !bCombatAssetsInvalid
 		&& ShouldUseCombatIdle())
@@ -2170,10 +2427,16 @@ void URequiemPlayerAnimInstance::PlaySwordAnimation(
 	const int32 ComboIndex,
 	const bool bUsesRootMotion)
 {
+	bSwordLocomotionRecoveryPresentationActive = false;
+	bSwordLocomotionRecoveryBlendActive = false;
+	SwordLocomotionRecoveryBlendStartSeconds = 0.0f;
 	SwordAnimationState = NewState;
 	ActiveSwordComboAnimationIndex = ComboIndex;
 	SwordAnimationElapsedSeconds = 0.0f;
-	ActiveAnimationPlayRate = GetSwordPlayRate(NewState);
+	ActiveSwordAnimationPlayRate = GetSwordPlayRate(NewState);
+	ActiveAnimationPlayRate = ActiveSwordAnimationPlayRate;
+	ActiveSwordAnimation = NewAnimation;
+	ActiveSwordMontage = nullptr;
 
 	const UAnimSequence* AnimationSequence = Cast<UAnimSequence>(NewAnimation);
 	const bool bAssetUsesRootMotion =
@@ -2229,6 +2492,13 @@ void URequiemPlayerAnimInstance::PlaySwordAnimation(
 		ActiveAnimationPlayRate,
 		bLooping ? LoopingMontageCount : 1,
 		bLooping ? -1.0f : 0.0f);
+	ActiveSwordMontage = ActiveLocomotionMontage;
+	if (ActiveLocomotionMontage)
+	{
+		// Enter starts with the weapon on the back; Exit starts with it in hand.
+		// Subsequent ticks move it exactly at each clip's authored contact frame.
+		UpdateSwordAttachmentPresentation();
+	}
 	if (!ActiveLocomotionMontage)
 	{
 		UE_LOG(
@@ -2282,12 +2552,12 @@ bool URequiemPlayerAnimInstance::ShouldAdvanceSwordOneShot() const
 
 bool URequiemPlayerAnimInstance::HasSwordOneShotFinished() const
 {
-	if (!ActiveAnimation)
+	if (!ActiveSwordAnimation)
 	{
 		return true;
 	}
 
-	const float Duration = ActiveAnimation->GetPlayLength();
+	const float Duration = ActiveSwordAnimation->GetPlayLength();
 	if (Duration <= UE_KINDA_SMALL_NUMBER)
 	{
 		return true;
@@ -2301,25 +2571,28 @@ bool URequiemPlayerAnimInstance::HasSwordOneShotFinished() const
 
 float URequiemPlayerAnimInstance::GetSwordAnimationNormalizedTime() const
 {
-	if (!ActiveAnimation)
+	if (SwordAnimationState == ERequiemSwordAnimationState::Inactive
+		|| !ActiveSwordAnimation)
 	{
 		return 0.0f;
 	}
 
-	const float Duration = ActiveAnimation->GetPlayLength();
+	const float Duration = ActiveSwordAnimation->GetPlayLength();
 	if (Duration <= UE_KINDA_SMALL_NUMBER)
 	{
 		return 1.0f;
 	}
-	if (ActiveLocomotionMontage && Montage_IsPlaying(ActiveLocomotionMontage))
+	if (!bSwordLocomotionRecoveryPresentationActive
+		&& ActiveSwordMontage
+		&& Montage_IsPlaying(ActiveSwordMontage))
 	{
 		return FMath::Clamp(
-			Montage_GetPosition(ActiveLocomotionMontage) / Duration,
+			Montage_GetPosition(ActiveSwordMontage) / Duration,
 			0.0f,
 			1.0f);
 	}
 	return FMath::Clamp(
-		SwordAnimationElapsedSeconds * ActiveAnimationPlayRate / Duration,
+		SwordAnimationElapsedSeconds * ActiveSwordAnimationPlayRate / Duration,
 		0.0f,
 		1.0f);
 }
@@ -2673,9 +2946,15 @@ float URequiemPlayerAnimInstance::GetStateBlendTime(const ERequiemLocomotionStat
 	switch (State)
 	{
 	case ERequiemLocomotionState::Jog:
-		return bDodgeLocomotionRecoveryPresentationActive
-			? FMath::Max(0.0f, DodgeJogHandoffBlendTime)
-			: 0.12f;
+		if (bDodgeLocomotionRecoveryPresentationActive)
+		{
+			return FMath::Max(0.0f, DodgeJogHandoffBlendTime);
+		}
+		if (bSwordLocomotionRecoveryBlendActive)
+		{
+			return FMath::Clamp(SwordRecoveryBlendTime, 0.10f, 0.20f);
+		}
+		return 0.12f;
 	case ERequiemLocomotionState::JumpStart:
 	case ERequiemLocomotionState::JumpLoop:
 	case ERequiemLocomotionState::JumpLand:

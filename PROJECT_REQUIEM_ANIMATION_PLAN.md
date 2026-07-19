@@ -186,10 +186,23 @@ Sword_Regular_A
 LMB inicia a carga no press e resolve no release/cancel. Um hold menor que `0.65s`
 solicita ataque leve; A, A_Rec, B e B_Rec abrem uma janela `0.30–0.85` com um único slot
 de follow-up. A e B passam automaticamente às recuperações em `0.90`; com follow-up,
-as recuperações entregam o próximo golpe a partir de `0.55`. Golpes e recuperações usam
-`1.0x`. O lock de movimento de cada golpe termina em `0.60`, com avanço de `350 uu/s`
-pelo `CharacterMovement`; recuperações ficam livres. A consulta ofensiva única ocorre
-em `0.40`, com dano `35`, alcance `180`, raio `55` e altura `70`.
+as recuperações entregam o próximo golpe a partir de `0.55`. Golpes e recuperações
+permanecem full-body em `1.0x`, sem acelerar os assets. O avanço de `350 uu/s` continua
+sob o `CharacterMovement`, e a consulta ofensiva única ocorre em `0.40`, com dano `35`,
+alcance `180`, raio `55` e altura `70`.
+
+O lock de movimento cobre o início e o impacto do golpe; A e B o preservam ao entregar
+a `Sword_Regular_A_Rec` e `Sword_Regular_B_Rec`. Quando existe intenção de movimento
+durante A_Rec, B_Rec ou a recuperação terminal de C, o full-body cruza gradualmente para
+o `Jog` direcional em vez de ser cortado. `SwordRecoveryBlendTime` usa `0.15s` por padrão,
+fica exposto para ajuste e recomenda a faixa de `0.10–0.20s`. Para respeitar as durações
+distintas dos assets, o início do blend é calculado pela duração e pelo play rate do
+clipe, de modo que sua conclusão e a liberação do controle ocorram em `0.75` normalizado.
+Nas recuperações intermediárias, o relógio do combo continua ativo mesmo depois de o
+`Jog` ocupar o slot: a janela tardia `0.75–0.85` permanece válida e um follow-up aceito
+entra no próximo golpe full-body. C encerra a sequência depois do blend. A troca de estilo
+é rejeitada enquanto o lock comprometido permanece ativo. Sem input de movimento, a
+animação conclui normalmente, sem cancelamento abrupto.
 
 Um hold de pelo menos `0.65s` dispara
 `/Game/ProjectRequiem/Characters/Player/Animations/Combat/Sword/UAL1_RM/Sword_Attack_RM`
@@ -197,13 +210,28 @@ em `0.5x`. O asset usa root motion com `Anim First Frame`, sem force root lock e
 escala normalizada. Durante o one-shot comprometido, o AnimInstance usa
 `RootMotionFromMontagesOnly`; movimento, novo ataque, pulo, agachamento, esquiva e troca
 de estilo permanecem bloqueados. O hit único ocorre em `0.50`, causa dano `60` e não
-aceita follow-up leve.
+aceita follow-up leve. Havendo intenção de locomoção na recuperação, o pesado usa o
+mesmo blend ajustável calculado para concluir em `0.75`; o root motion permanece ativo e
+o ataque continua comprometido durante o blend. Internamente, essa janela troca de
+`RootMotionFromMontagesOnly` para `RootMotionFromEverything`, porque a UE remove o montage
+em blend-out do ponteiro exclusivo de root motion; como o `Jog` não possui root motion,
+somente o deslocamento ponderado do pesado continua sendo extraído. Ao fim, volta a
+`IgnoreRootMotion`, encerra a sequência e devolve o controle.
 
 O visual usa `SM_Sword_Bronze` em
-`/Game/ProjectRequiem/Combat/Styles/Sword/Weapons`, anexado ao socket `hand_r`. A malha
-não possui colisão e não participa das consultas de hit; sua visibilidade acompanha
-`CombatSword`. O mesmo diretório contém `M_Sword_Bronze` e as três texturas próprias.
-Lock-on, esquiva e o combo desarmado preservam seus contratos já validados.
+`/Game/ProjectRequiem/Combat/Styles/Sword/Weapons`. Fora de `CombatSword`, a espada fica
+visível em `Socket_Weapon_Back`, um socket mesh-only de `spine_03`; equipada, usa o socket
+ajustado manualmente `Socket_Weapon_Hand_R` de `hand_r`. Os dois clipes de transição têm
+`40` keys a `30 fps` e duração de `1.3s`. `Sword_Enter` mantém a espada nas costas até o
+frame `21` (`0.700s`, `0.53846` normalizado) e só então a anexa à mão. `Sword_Exit`
+mantém a espada na mão até o frame `15` (`0.500s`, `0.38462` normalizado), prende-a às
+costas nesse contato e conclui o restante da animação já sem a arma na mão. Esses pontos
+ficam expostos em `Combat > Sword > Presentation`. Se uma transição opcional for pulada
+ou interrompida por uma reação externa, o attachment coerente com o estado de combate é
+aplicado imediatamente.
+A malha não possui colisão nem participa das consultas de hit. O mesmo diretório contém
+`M_Sword_Bronze` e as três texturas próprias. Lock-on, esquiva e o combo desarmado
+preservam seus contratos já validados.
 
 ## Reações de dano e morte — primeiro passe
 
@@ -288,7 +316,9 @@ reação, i-frames, morte e reset no PIE sem adicionar um inimigo completo.
   o slot já apresenta o `Jog` direcional sem root motion enquanto o relógio e os locks
   restantes da esquiva continuam independentes até `1.0`. `Hit_Knockback` também usa
   `RootMotionFromMontagesOnly` somente durante seu one-shot. `Sword_Attack_RM` faz o
-  mesmo durante o ataque pesado comprometido. Fora dessas três ações, permanece
+  mesmo durante o ataque pesado comprometido; seu blend curto usa temporariamente
+  `RootMotionFromEverything` para preservar apenas a contribuição ponderada do pesado.
+  Fora dessas três ações, permanece
   preservado o controle do `CharacterMovement`; os combos desarmado e leve de espada
   continuam sem root motion.
 - A velocidade real deve continuar sob responsabilidade do `CharacterMovement`.

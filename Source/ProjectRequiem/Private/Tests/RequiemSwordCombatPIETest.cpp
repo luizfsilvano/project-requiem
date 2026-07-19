@@ -13,18 +13,29 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/Engine.h"
+#include "Engine/LocalPlayer.h"
+#include "Engine/SkeletalMesh.h"
+#include "Engine/SkeletalMeshSocket.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "EnhancedActionKeyMapping.h"
 #include "EnhancedInputComponent.h"
+#include "EnhancedInputSubsystems.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
+#include "HAL/FileManager.h"
 #include "InputAction.h"
+#include "InputActionValue.h"
 #include "InputCoreTypes.h"
 #include "InputMappingContext.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/CommandLine.h"
+#include "Misc/DateTime.h"
+#include "Misc/Parse.h"
+#include "Misc/Paths.h"
 #include "Tests/AutomationCommon.h"
 #include "Tests/AutomationEditorCommon.h"
+#include "UnrealClient.h"
 #include "UObject/UnrealType.h"
 
 namespace RequiemSwordCombatPIETest
@@ -37,6 +48,8 @@ constexpr TCHAR ToggleCombatActionPath[] =
 	TEXT("/Game/ProjectRequiem/Core/Input/Actions/IA_ToggleCombat.IA_ToggleCombat");
 constexpr TCHAR PrimaryAttackActionPath[] =
 	TEXT("/Game/ProjectRequiem/Core/Input/Actions/IA_PrimaryAttack.IA_PrimaryAttack");
+constexpr TCHAR MoveActionPath[] =
+	TEXT("/Game/ProjectRequiem/Core/Input/Actions/IA_Move.IA_Move");
 constexpr TCHAR CharacterClassPath[] =
 	TEXT("/Game/ProjectRequiem/Characters/Player/Blueprints/BP_CH_Player.BP_CH_Player_C");
 constexpr TCHAR AnimInstanceClassPath[] =
@@ -45,6 +58,11 @@ constexpr TCHAR AnimInstanceClassPath[] =
 constexpr TCHAR DummyClassPath[] =
 	TEXT("/Game/ProjectRequiem/Combat/Blueprints/Targets/"
 		 "BP_PR_CombatDummy.BP_PR_CombatDummy_C");
+const FName SwordHandSocketName(TEXT("Socket_Weapon_Hand_R"));
+const FName SwordBackSocketName(TEXT("Socket_Weapon_Back"));
+const FName SwordHandBoneName(TEXT("hand_r"));
+const FName SwordBackBoneName(TEXT("spine_03"));
+constexpr TCHAR CaptureAttachmentsFlag[] = TEXT("RequiemCaptureSwordAttachments");
 
 constexpr float ExpectedChargeThresholdSeconds = 0.65f;
 constexpr float ExpectedLightDamage = 35.0f;
@@ -53,7 +71,14 @@ constexpr float ExpectedLightPlayRate = 1.0f;
 constexpr float ExpectedHeavyPlayRate = 0.5f;
 constexpr float ExpectedInputWindowStart = 0.30f;
 constexpr float ExpectedInputWindowEnd = 0.85f;
-constexpr float ExpectedMovementUnlock = 0.60f;
+constexpr float ExpectedMovementUnlock = 0.75f;
+constexpr float ExpectedRecoveryBlendTime = 0.15f;
+constexpr float MinimumRecoveryBlendTime = 0.10f;
+constexpr float MaximumRecoveryBlendTime = 0.20f;
+constexpr float ExpectedSwordTransitionDuration = 1.30f;
+constexpr float ExpectedEnterHandAttachment = 21.0f / 39.0f;
+constexpr float ExpectedExitBackAttachment = 15.0f / 39.0f;
+constexpr int32 ExpectedSwordTransitionSampledKeys = 40;
 constexpr int32 ExpectedSwordClipCount = 9;
 
 const TCHAR* SwordAnimationPropertyNames[ExpectedSwordClipCount] = {
@@ -154,9 +179,112 @@ FRuntimeRefs FindRuntimeRefs()
 	return Refs;
 }
 
+UEnhancedInputLocalPlayerSubsystem* FindEnhancedInputSubsystem()
+{
+	const FRuntimeRefs Refs = FindRuntimeRefs();
+	ULocalPlayer* LocalPlayer = Refs.PlayerController
+		? Refs.PlayerController->GetLocalPlayer()
+		: nullptr;
+	return LocalPlayer
+		? LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>()
+		: nullptr;
+}
+
+bool SetContinuousAction(const TCHAR* ActionPath, const FInputActionValue& Value)
+{
+	UEnhancedInputLocalPlayerSubsystem* InputSubsystem = FindEnhancedInputSubsystem();
+	const UInputAction* Action = LoadObject<UInputAction>(nullptr, ActionPath);
+	if (!InputSubsystem || !Action)
+	{
+		return false;
+	}
+
+	if (InputSubsystem->HasContinuousInputInjectionForAction(Action))
+	{
+		InputSubsystem->UpdateValueOfContinuousInputInjectionForAction(Action, Value);
+	}
+	else
+	{
+		InputSubsystem->StartContinuousInputInjectionForAction(Action, Value, {}, {});
+	}
+	return true;
+}
+
+void StopContinuousAction(const TCHAR* ActionPath)
+{
+	UEnhancedInputLocalPlayerSubsystem* InputSubsystem = FindEnhancedInputSubsystem();
+	const UInputAction* Action = LoadObject<UInputAction>(nullptr, ActionPath);
+	if (InputSubsystem
+		&& Action
+		&& InputSubsystem->HasContinuousInputInjectionForAction(Action))
+	{
+		InputSubsystem->StopContinuousInputInjectionForAction(Action);
+	}
+}
+
+void ReleaseAllTestInput()
+{
+	StopContinuousAction(MoveActionPath);
+}
+
 bool IsSwordVisible(const UStaticMeshComponent* SwordMesh)
 {
 	return SwordMesh && SwordMesh->IsVisible() && !SwordMesh->bHiddenInGame;
+}
+
+bool IsSwordAttachedToSocket(
+	const UStaticMeshComponent* SwordMesh,
+	const USkeletalMeshComponent* CharacterMesh,
+	const FName SocketName)
+{
+	return IsSwordVisible(SwordMesh)
+		&& CharacterMesh
+		&& SwordMesh->GetAttachParent() == CharacterMesh
+		&& SwordMesh->GetAttachSocketName() == SocketName;
+}
+
+bool IsSwordStoredOnBack(const FRuntimeRefs& Refs)
+{
+	return IsSwordAttachedToSocket(
+		Refs.SwordMesh,
+		Refs.Character ? Refs.Character->GetMesh() : nullptr,
+		SwordBackSocketName);
+}
+
+bool IsSwordInHand(const FRuntimeRefs& Refs)
+{
+	return IsSwordAttachedToSocket(
+		Refs.SwordMesh,
+		Refs.Character ? Refs.Character->GetMesh() : nullptr,
+		SwordHandSocketName);
+}
+
+bool ShouldCaptureAttachmentScreenshots()
+{
+	return FParse::Param(FCommandLine::Get(), CaptureAttachmentsFlag);
+}
+
+FString RequestAttachmentScreenshot(const TCHAR* Label)
+{
+	const FString ScreenshotDirectory = FPaths::Combine(
+		FPaths::ProjectSavedDir(),
+		TEXT("Screenshots"),
+		TEXT("SwordAttachmentValidation"));
+	IFileManager::Get().MakeDirectory(*ScreenshotDirectory, true);
+	const FString ScreenshotPath = FPaths::Combine(
+		ScreenshotDirectory,
+		FString::Printf(
+			TEXT("%s_%lld.png"),
+			Label,
+			FDateTime::UtcNow().GetTicks()));
+	FScreenshotRequest::RequestScreenshot(
+		ScreenshotPath,
+		false,
+		false,
+		false,
+		FIntRect(),
+		true);
+	return ScreenshotPath;
 }
 
 void PositionCombatFixture(const FRuntimeRefs& Refs, const float DummyDistance = 145.0f)
@@ -318,6 +446,7 @@ public:
 	{
 		if (ShouldSkip())
 		{
+			ReleaseAllTestInput();
 			return true;
 		}
 
@@ -375,9 +504,26 @@ public:
 			if (Refs.Health->GetHealthState() == ERequiemHealthState::Alive
 				&& Refs.Dummy->GetDummyState() == ERequiemCombatDummyState::Alive
 				&& Refs.Combat->GetCombatState() == ERequiemCombatState::Normal
-				&& !IsSwordVisible(Refs.SwordMesh))
+				&& IsSwordStoredOnBack(Refs))
 			{
-				Test->AddInfo(TEXT("L_Dev_Foundation started with one live dummy and the sword stored."));
+				if (ShouldCaptureAttachmentScreenshots())
+				{
+					if (StoredScreenshotPath.IsEmpty())
+					{
+						StoredScreenshotPath = RequestAttachmentScreenshot(TEXT("SwordStoredBack"));
+						return false;
+					}
+					if (!FPaths::FileExists(StoredScreenshotPath))
+					{
+						return AbortIfTimedOut(
+							ElapsedSeconds,
+							TEXT("waiting for the stored sword screenshot"));
+					}
+					Test->AddInfo(FString::Printf(
+						TEXT("Stored sword screenshot: %s"),
+						*StoredScreenshotPath));
+				}
+				Test->AddInfo(TEXT("L_Dev_Foundation started with one live dummy and the sword visible on its back socket."));
 				return true;
 			}
 		}
@@ -393,6 +539,7 @@ private:
 	TWeakObjectPtr<UWorld> StableWorld;
 	TWeakObjectPtr<ARequiemCharacter> StableCharacter;
 	double StableSinceSeconds = 0.0;
+	FString StoredScreenshotPath;
 };
 
 class FValidateEquipVisibilityCommand final : public FTimedCommand
@@ -422,9 +569,9 @@ public:
 		if (Phase == 0)
 		{
 			PositionCombatFixture(Refs);
-			if (IsSwordVisible(Refs.SwordMesh))
+			if (!IsSwordStoredOnBack(Refs))
 			{
-				return AbortWithError(TEXT("Sword was visible before equip."));
+				return AbortWithError(TEXT("Sword was not visible on its back socket before equip."));
 			}
 			ToggleSerialBefore = Refs.Combat->GetSwordToggleSerial();
 			if (!Refs.Combat->ToggleSwordCombat()
@@ -439,24 +586,65 @@ public:
 
 		if (Phase == 1)
 		{
-			bSawEnter |= Refs.AnimInstance->GetSwordAnimationState()
-				== ERequiemSwordAnimationState::Enter;
+			if (Refs.AnimInstance->GetSwordAnimationState()
+				== ERequiemSwordAnimationState::Enter)
+			{
+				bSawEnter = true;
+				const float NormalizedTime =
+					Refs.AnimInstance->GetSwordAnimationNormalizedTime();
+				if (NormalizedTime < ExpectedEnterHandAttachment)
+				{
+					bSawEnterBeforeHandoff = true;
+					if (!IsSwordStoredOnBack(Refs))
+					{
+						return AbortWithError(TEXT("Sword_Enter left the back socket before frame 21."));
+					}
+				}
+				else
+				{
+					bSawEnterAfterHandoff = true;
+					if (!IsSwordInHand(Refs))
+					{
+						return AbortWithError(TEXT("Sword_Enter did not attach to the hand at frame 21."));
+					}
+				}
+			}
 			const bool bEquipReady = RunState->bPresentationConfigured
 				? Refs.AnimInstance->GetSwordAnimationState()
 						== ERequiemSwordAnimationState::Idle
-					&& IsSwordVisible(Refs.SwordMesh)
+					&& IsSwordInHand(Refs)
 				: ElapsedSeconds >= 0.75;
 			if (!bEquipReady)
 			{
 				return AbortIfTimedOut(ElapsedSeconds, TEXT("waiting for sword equip presentation"));
 			}
-			if (RunState->bPresentationConfigured && !bSawEnter)
+			if (RunState->bPresentationConfigured
+				&& (!bSawEnter
+					|| !bSawEnterBeforeHandoff
+					|| !bSawEnterAfterHandoff))
 			{
-				return AbortWithError(TEXT("Configured sword equip skipped its stationary enter clip."));
+				return AbortWithError(TEXT("Sword_Enter did not prove both sides of its frame-21 attachment handoff."));
 			}
 			if (Refs.Combat->GetCombatState() != ERequiemCombatState::CombatSword)
 			{
 				return AbortWithError(TEXT("Sword equip did not remain in CombatSword."));
+			}
+			if (RunState->bPresentationConfigured && ShouldCaptureAttachmentScreenshots())
+			{
+				if (HandScreenshotPath.IsEmpty())
+				{
+					HandScreenshotPath = RequestAttachmentScreenshot(TEXT("SwordEquippedHand"));
+					return false;
+				}
+				if (!FPaths::FileExists(HandScreenshotPath))
+				{
+					return AbortIfTimedOut(
+						ElapsedSeconds,
+						TEXT("waiting for the equipped sword screenshot"));
+				}
+				Test->AddInfo(FString::Printf(
+					TEXT("Equipped sword screenshot: %s"),
+					*HandScreenshotPath));
 			}
 			if (Refs.Combat->RequestUnarmedAttack()
 					!= ERequiemUnarmedAttackRequestResult::Rejected
@@ -477,20 +665,44 @@ public:
 
 		if (Phase == 2)
 		{
-			bSawExit |= Refs.AnimInstance->GetSwordAnimationState()
-				== ERequiemSwordAnimationState::Exit;
+			if (Refs.AnimInstance->GetSwordAnimationState()
+				== ERequiemSwordAnimationState::Exit)
+			{
+				bSawExit = true;
+				const float NormalizedTime =
+					Refs.AnimInstance->GetSwordAnimationNormalizedTime();
+				if (NormalizedTime < ExpectedExitBackAttachment)
+				{
+					bSawExitBeforeHandoff = true;
+					if (!IsSwordInHand(Refs))
+					{
+						return AbortWithError(TEXT("Sword_Exit left the hand before frame 15."));
+					}
+				}
+				else
+				{
+					bSawExitAfterHandoff = true;
+					if (!IsSwordStoredOnBack(Refs))
+					{
+						return AbortWithError(TEXT("Sword_Exit did not attach to the back at frame 15."));
+					}
+				}
+			}
 			const bool bStored = RunState->bPresentationConfigured
 				? Refs.AnimInstance->GetSwordAnimationState()
 						== ERequiemSwordAnimationState::Inactive
-					&& !IsSwordVisible(Refs.SwordMesh)
+					&& IsSwordStoredOnBack(Refs)
 				: ElapsedSeconds >= 1.25;
 			if (!bStored)
 			{
 				return AbortIfTimedOut(ElapsedSeconds, TEXT("waiting for sword store presentation"));
 			}
-			if (RunState->bPresentationConfigured && !bSawExit)
+			if (RunState->bPresentationConfigured
+				&& (!bSawExit
+					|| !bSawExitBeforeHandoff
+					|| !bSawExitAfterHandoff))
 			{
-				return AbortWithError(TEXT("Configured sword store skipped its stationary exit clip."));
+				return AbortWithError(TEXT("Sword_Exit did not prove both sides of its frame-15 attachment handoff."));
 			}
 			if (!Refs.Combat->ToggleSwordCombat()
 				|| Refs.Combat->GetSwordToggleSerial() != ToggleSerialBefore + 3)
@@ -501,13 +713,53 @@ public:
 			return false;
 		}
 
+		if (RunState->bPresentationConfigured && !bRequestedAttackDuringEnter)
+		{
+			if (Refs.AnimInstance->GetSwordAnimationState()
+				!= ERequiemSwordAnimationState::Enter)
+			{
+				return AbortIfTimedOut(
+					ElapsedSeconds,
+					TEXT("waiting for the re-equip enter before its handoff"));
+			}
+			if (Refs.AnimInstance->GetSwordAnimationNormalizedTime()
+				>= ExpectedEnterHandAttachment)
+			{
+				return AbortWithError(TEXT("Re-equip passed frame 21 before the attack-skip probe."));
+			}
+			if (!IsSwordStoredOnBack(Refs)
+				|| !Refs.Combat->BeginSwordCharge()
+				|| Refs.Combat->ReleaseSwordCharge()
+					!= ERequiemSwordAttackRequestResult::InitialLightAccepted)
+			{
+				return AbortWithError(TEXT("Attack could not skip Sword_Enter before the attachment handoff."));
+			}
+			bRequestedAttackDuringEnter = true;
+			return false;
+		}
+
+		if (RunState->bPresentationConfigured
+			&& (Refs.AnimInstance->GetSwordAnimationState()
+					== ERequiemSwordAnimationState::Attack
+				|| Refs.AnimInstance->GetSwordAnimationState()
+					== ERequiemSwordAnimationState::Recovery))
+		{
+			bSawAttackSkipEnter = true;
+			if (!IsSwordInHand(Refs))
+			{
+				return AbortWithError(TEXT("Attack skipped Sword_Enter without moving the sword to the hand."));
+			}
+		}
+
 		const bool bReadyForCombat = RunState->bPresentationConfigured
-			? Refs.AnimInstance->GetSwordAnimationState() == ERequiemSwordAnimationState::Idle
-				&& IsSwordVisible(Refs.SwordMesh)
+			? bSawAttackSkipEnter
+				&& Refs.AnimInstance->GetSwordAnimationState()
+					== ERequiemSwordAnimationState::Idle
+				&& IsSwordInHand(Refs)
 			: Refs.Combat->GetCombatState() == ERequiemCombatState::CombatSword;
 		if (bReadyForCombat)
 		{
-			Test->AddInfo(TEXT("Sword equip/store state, serials and configured visibility are coherent."));
+			Test->AddInfo(TEXT("Sword attachment changed at Enter frame 21 and Exit frame 15; attack still skipped Enter directly to the hand."));
 			return true;
 		}
 		return AbortIfTimedOut(ElapsedSeconds, TEXT("waiting for the re-equipped sword"));
@@ -518,6 +770,420 @@ private:
 	int32 ToggleSerialBefore = 0;
 	bool bSawEnter = false;
 	bool bSawExit = false;
+	bool bSawEnterBeforeHandoff = false;
+	bool bSawEnterAfterHandoff = false;
+	bool bSawExitBeforeHandoff = false;
+	bool bSawExitAfterHandoff = false;
+	bool bRequestedAttackDuringEnter = false;
+	bool bSawAttackSkipEnter = false;
+	FString HandScreenshotPath;
+};
+
+class FValidateExitDamageAttachmentCommand final : public FTimedCommand
+{
+public:
+	FValidateExitDamageAttachmentCommand(
+		FAutomationTestBase* InTest,
+		TSharedRef<FRunState> InRunState)
+		: FTimedCommand(InTest, MoveTemp(InRunState), 12.0)
+	{
+	}
+
+	virtual bool Update() override
+	{
+		if (ShouldSkip())
+		{
+			return true;
+		}
+
+		const double ElapsedSeconds = GetElapsedSeconds();
+		const FRuntimeRefs Refs = FindRuntimeRefs();
+		if (!Refs.IsValid())
+		{
+			return AbortIfTimedOut(ElapsedSeconds, TEXT("runtime references disappeared"));
+		}
+		if (!RunState->bPresentationConfigured)
+		{
+			Test->AddInfo(TEXT("Sword presentation is not configured; exit interruption attachment validation was skipped."));
+			return true;
+		}
+
+		if (Phase == 0)
+		{
+			if (Refs.Combat->GetCombatState() != ERequiemCombatState::CombatSword
+				|| Refs.AnimInstance->GetSwordAnimationState() != ERequiemSwordAnimationState::Idle
+				|| !IsSwordInHand(Refs))
+			{
+				return AbortIfTimedOut(ElapsedSeconds, TEXT("waiting for the equipped sword before exit interruption"));
+			}
+			if (!Refs.Combat->ToggleSwordCombat()
+				|| Refs.Combat->GetCombatState() != ERequiemCombatState::CombatUnarmed)
+			{
+				return AbortWithError(TEXT("Could not start Sword_Exit for damage interruption validation."));
+			}
+			Phase = 1;
+			return false;
+		}
+
+		if (Phase == 1)
+		{
+			if (Refs.AnimInstance->GetSwordAnimationState() != ERequiemSwordAnimationState::Exit)
+			{
+				return AbortIfTimedOut(ElapsedSeconds, TEXT("waiting for Sword_Exit before applying damage"));
+			}
+			if (Refs.AnimInstance->GetSwordAnimationNormalizedTime()
+				>= ExpectedExitBackAttachment)
+			{
+				return AbortWithError(TEXT("Damage probe reached Sword_Exit after its frame-15 storage handoff."));
+			}
+			if (!IsSwordInHand(Refs))
+			{
+				return AbortWithError(TEXT("Sword_Exit did not keep the sword in hand before frame 15."));
+			}
+
+			HealthBeforeDamage = Refs.Health->GetCurrentHealth();
+			DamageSerialBefore = Refs.Health->GetDamageRequestSerial();
+			FRequiemDamageRequest Request;
+			Request.DamageAmount = 10.0f;
+			Request.HitRegion = ERequiemHitRegion::Chest;
+			Request.Strength = ERequiemDamageStrength::Light;
+			const ERequiemDamageOutcome Outcome = Refs.Character->ApplyRequiemDamage(Request);
+			if (Outcome != ERequiemDamageOutcome::Applied
+				|| Refs.Combat->GetCombatState() != ERequiemCombatState::CombatUnarmed
+				|| Refs.Health->GetDamageRequestSerial() != DamageSerialBefore + 1
+				|| !FMath::IsNearlyEqual(
+					Refs.Health->GetCurrentHealth(), HealthBeforeDamage - 10.0f, 0.01f))
+			{
+				return AbortWithError(TEXT("Damage did not interrupt Sword_Exit through the existing health contract."));
+			}
+			Phase = 2;
+			return false;
+		}
+
+		if (Phase == 2)
+		{
+			if (Refs.AnimInstance->GetDamageAnimationState()
+				!= ERequiemDamageAnimationState::Inactive)
+			{
+				bSawDamageReaction = true;
+				if (!IsSwordStoredOnBack(Refs))
+				{
+					return AbortWithError(TEXT("Damage during Sword_Exit left the sword attached to the hand."));
+				}
+			}
+
+			if (Refs.Health->IsDamageReactionActive()
+				|| Refs.AnimInstance->GetDamageAnimationState()
+					!= ERequiemDamageAnimationState::Inactive)
+			{
+				return AbortIfTimedOut(ElapsedSeconds, TEXT("waiting for the interrupted exit damage reaction"));
+			}
+			if (!bSawDamageReaction
+				|| Refs.Combat->GetCombatState() != ERequiemCombatState::CombatUnarmed
+				|| !IsSwordStoredOnBack(Refs))
+			{
+				return AbortWithError(TEXT("Interrupted Sword_Exit did not finish with the sword stored on its back."));
+			}
+			if (!Refs.Combat->ToggleSwordCombat())
+			{
+				return AbortWithError(TEXT("Sword could not be re-equipped after the interrupted exit reaction."));
+			}
+			Phase = 3;
+			return false;
+		}
+
+		if (Refs.Combat->GetCombatState() == ERequiemCombatState::CombatSword
+			&& Refs.AnimInstance->GetSwordAnimationState() == ERequiemSwordAnimationState::Idle
+			&& IsSwordInHand(Refs))
+		{
+			Test->AddInfo(TEXT("Damage interrupted Sword_Exit, stored the sword on the back, and allowed a clean re-equip."));
+			return true;
+		}
+		return AbortIfTimedOut(ElapsedSeconds, TEXT("waiting for re-equip after exit interruption"));
+	}
+
+private:
+	int32 Phase = 0;
+	int32 DamageSerialBefore = 0;
+	float HealthBeforeDamage = 0.0f;
+	bool bSawDamageReaction = false;
+};
+
+class FValidateLightRecoveryBlendCommand final : public FTimedCommand
+{
+public:
+	FValidateLightRecoveryBlendCommand(
+		FAutomationTestBase* InTest,
+		TSharedRef<FRunState> InRunState)
+		: FTimedCommand(InTest, MoveTemp(InRunState), 12.0)
+	{
+	}
+
+	virtual bool Update() override
+	{
+		if (ShouldSkip())
+		{
+			ReleaseAllTestInput();
+			return true;
+		}
+
+		const double ElapsedSeconds = GetElapsedSeconds();
+		const FRuntimeRefs Refs = FindRuntimeRefs();
+		if (!Refs.IsValid())
+		{
+			return AbortTimedOutWithInputCleanup(
+				ElapsedSeconds,
+				TEXT("runtime references disappeared"));
+		}
+
+		if (!RunState->bPresentationConfigured)
+		{
+			ReleaseAllTestInput();
+			Test->AddInfo(TEXT("Sword recovery blend playback check skipped because presentation assets are not configured."));
+			return true;
+		}
+
+		if (Phase == 0)
+		{
+			ReleaseAllTestInput();
+			PositionCombatFixture(Refs, 500.0f);
+			Refs.Combat->CancelActiveAttackForExternalReaction();
+			Refs.Combat->EnterSwordCombat(ERequiemCombatEntryReason::Manual);
+			ToggleSerialBefore = Refs.Combat->GetSwordToggleSerial();
+			if (!Refs.Combat->BeginSwordCharge()
+				|| Refs.Combat->ReleaseSwordCharge()
+					!= ERequiemSwordAttackRequestResult::InitialLightAccepted)
+			{
+				return AbortWithInputCleanup(
+					TEXT("Could not start the isolated light recovery attack."));
+			}
+			Phase = 1;
+			return false;
+		}
+
+		if (Phase == 1)
+		{
+			const ERequiemSwordAnimationState SwordState =
+				Refs.AnimInstance->GetSwordAnimationState();
+			if (SwordState == ERequiemSwordAnimationState::Attack
+				&& Refs.AnimInstance->GetActiveSwordComboAnimationIndex() == 0)
+			{
+				bSawInitialAttack = true;
+				if (!Refs.Combat->IsSwordAttackActive()
+					|| !Refs.Combat->IsSwordAttackMovementLocked())
+				{
+					return AbortWithInputCleanup(
+						TEXT("Sword_Regular_A was not movement-committed."));
+				}
+			}
+
+			if (SwordState == ERequiemSwordAnimationState::Recovery
+				&& Refs.AnimInstance->GetActiveSwordComboAnimationIndex() == 1)
+			{
+				if (!bSawInitialAttack
+					|| !Refs.Combat->IsSwordAttackActive()
+					|| !Refs.Combat->IsSwordAttackMovementLocked()
+					|| Refs.Combat->HasQueuedSwordLightFollowUp())
+				{
+					return AbortWithInputCleanup(
+						TEXT("Sword_Regular_A_Rec did not preserve the unqueued attack commitment."));
+				}
+				if (!SetContinuousAction(
+						MoveActionPath,
+						FInputActionValue(FVector2D(0.0f, 1.0f))))
+				{
+					return AbortWithInputCleanup(
+						TEXT("Could not inject IA_Move during light recovery."));
+				}
+				Phase = 2;
+				return false;
+			}
+		}
+		else if (Phase == 2)
+		{
+			if (!SetContinuousAction(
+					MoveActionPath,
+					FInputActionValue(FVector2D(0.0f, 1.0f))))
+			{
+				return AbortWithInputCleanup(
+					TEXT("IA_Move continuous injection disappeared during light recovery."));
+			}
+
+			const bool bHasRawMovementIntent =
+				Refs.Character->HasCurrentMovementInput()
+				&& !Refs.Character->GetCurrentMovementInputDirection().IsNearlyZero();
+			const bool bBlendActive =
+				Refs.AnimInstance->IsSwordLocomotionRecoveryBlendActive();
+			if (bHasRawMovementIntent && !bBlendActive && !bSawBlend)
+			{
+				bSawLockedMovementIntentBeforeBlend = true;
+				if (!Refs.Combat->IsSwordAttackActive()
+					|| !Refs.Combat->IsSwordAttackMovementLocked()
+					|| Refs.Movement->GetCurrentAcceleration().Size2D() > 1.0f)
+				{
+					return AbortWithInputCleanup(
+						TEXT("Movement input escaped before the light recovery blend began."));
+				}
+			}
+
+			if (bBlendActive)
+			{
+				if (!bSawBlend)
+				{
+					bSawBlend = true;
+					BlendFirstObservedSeconds = FPlatformTime::Seconds();
+				}
+				if (!bSawLockedMovementIntentBeforeBlend
+					|| !bHasRawMovementIntent
+					|| !Refs.Combat->IsSwordAttackActive()
+					|| !Refs.Combat->IsSwordAttackMovementLocked()
+					|| Refs.AnimInstance->GetSwordAnimationState()
+						!= ERequiemSwordAnimationState::Recovery
+					|| Refs.AnimInstance->GetLocomotionState()
+						!= ERequiemLocomotionState::Jog
+					|| Refs.Movement->GetCurrentAcceleration().Size2D() > 1.0f)
+				{
+					return AbortWithInputCleanup(
+						TEXT("Light recovery crossfade did not keep movement committed while Jog blended in."));
+				}
+				if (!bValidatedCommittedToggleBlock)
+				{
+					if (Refs.Combat->ToggleSwordCombat()
+						|| Refs.Combat->GetSwordToggleSerial() != ToggleSerialBefore
+						|| Refs.Combat->GetCombatState() != ERequiemCombatState::CombatSword)
+					{
+						return AbortWithInputCleanup(
+							TEXT("Sword style toggle interrupted the committed light recovery blend."));
+					}
+					bValidatedCommittedToggleBlock = true;
+				}
+				return false;
+			}
+
+			if (bSawBlend)
+			{
+				ObservedBlendSeconds = static_cast<float>(
+					FPlatformTime::Seconds() - BlendFirstObservedSeconds);
+				ObservedUnlockNormalized =
+					Refs.AnimInstance->GetSwordAnimationNormalizedTime();
+				if (ObservedBlendSeconds + 0.01f < MinimumRecoveryBlendTime
+					|| ObservedBlendSeconds > MaximumRecoveryBlendTime + 0.08f)
+				{
+					return AbortWithInputCleanup(FString::Printf(
+						TEXT("Light recovery blend duration was %.3fs; expected an observed short blend near 0.10-0.20s."),
+						ObservedBlendSeconds));
+				}
+				if (ObservedUnlockNormalized < 0.70f
+					|| ObservedUnlockNormalized > 0.82f)
+				{
+					return AbortWithInputCleanup(FString::Printf(
+						TEXT("Light movement unlocked at normalized %.3f instead of near 0.75."),
+						ObservedUnlockNormalized));
+				}
+				if (Refs.Combat->IsSwordAttackMovementLocked()
+					|| !Refs.Combat->IsSwordAttackActive()
+					|| Refs.AnimInstance->GetSwordAnimationState()
+						!= ERequiemSwordAnimationState::Recovery
+					|| Refs.AnimInstance->GetLocomotionState()
+						!= ERequiemLocomotionState::Jog)
+				{
+					return AbortWithInputCleanup(
+						TEXT("Light recovery did not release movement only after its crossfade completed."));
+				}
+				PostBlendLocation = Refs.Character->GetActorLocation();
+				Phase = 3;
+				return false;
+			}
+		}
+		else if (Phase == 3)
+		{
+			if (!SetContinuousAction(
+					MoveActionPath,
+					FInputActionValue(FVector2D(0.0f, 1.0f))))
+			{
+				return AbortWithInputCleanup(
+					TEXT("IA_Move continuous injection disappeared after light recovery."));
+			}
+			if (Refs.Combat->IsSwordAttackMovementLocked())
+			{
+				return AbortWithInputCleanup(
+					TEXT("Light recovery relocked movement after the blend."));
+			}
+
+			const float PlayerDrivenDistance = FVector::Dist2D(
+				PostBlendLocation,
+				Refs.Character->GetActorLocation());
+			if (Refs.AnimInstance->GetLocomotionState() == ERequiemLocomotionState::Jog
+				&& Refs.Movement->GetCurrentAcceleration().Size2D() > 1.0f
+				&& PlayerDrivenDistance >= 2.0f)
+			{
+				bSawJogMovementAfterBlend = true;
+				StopContinuousAction(MoveActionPath);
+				Refs.Movement->StopMovementImmediately();
+				Phase = 4;
+				return false;
+			}
+		}
+		else if (Phase == 4)
+		{
+			if (bSawJogMovementAfterBlend
+				&& bValidatedCommittedToggleBlock
+				&& !Refs.Character->HasCurrentMovementInput()
+				&& !Refs.Combat->IsSwordAttackActive()
+				&& !Refs.Combat->IsSwordAttackMovementLocked()
+				&& Refs.AnimInstance->GetSwordAnimationState()
+					== ERequiemSwordAnimationState::Idle)
+			{
+				ReleaseAllTestInput();
+				Test->AddInfo(FString::Printf(
+					TEXT("Unqueued light recovery unlocked at %.3f after a %.3fs blend, then returned gradually to Jog control."),
+					ObservedUnlockNormalized,
+					ObservedBlendSeconds));
+				return true;
+			}
+		}
+
+		return AbortTimedOutWithInputCleanup(
+			ElapsedSeconds,
+			FString::Printf(
+				TEXT("waiting for light recovery blend (phase=%d state=%s normalized=%.2f locked=%d blend=%d)"),
+				Phase,
+				*Refs.AnimInstance->GetSwordAnimationStateName().ToString(),
+				Refs.AnimInstance->GetSwordAnimationNormalizedTime(),
+				Refs.Combat->IsSwordAttackMovementLocked(),
+				Refs.AnimInstance->IsSwordLocomotionRecoveryBlendActive()));
+	}
+
+private:
+	bool AbortWithInputCleanup(const FString& Message)
+	{
+		ReleaseAllTestInput();
+		return AbortWithError(Message);
+	}
+
+	bool AbortTimedOutWithInputCleanup(
+		const double ElapsedSeconds,
+		const FString& Details)
+	{
+		const bool bTimedOut = AbortIfTimedOut(ElapsedSeconds, Details);
+		if (bTimedOut)
+		{
+			ReleaseAllTestInput();
+		}
+		return bTimedOut;
+	}
+
+	int32 Phase = 0;
+	int32 ToggleSerialBefore = 0;
+	bool bSawInitialAttack = false;
+	bool bSawLockedMovementIntentBeforeBlend = false;
+	bool bSawBlend = false;
+	bool bSawJogMovementAfterBlend = false;
+	bool bValidatedCommittedToggleBlock = false;
+	double BlendFirstObservedSeconds = 0.0;
+	float ObservedBlendSeconds = 0.0f;
+	float ObservedUnlockNormalized = 0.0f;
+	FVector PostBlendLocation = FVector::ZeroVector;
 };
 
 class FValidateLightComboCommand final : public FTimedCommand
@@ -596,6 +1262,10 @@ public:
 		if (PresentationState == ERequiemSwordAnimationState::Attack
 			|| PresentationState == ERequiemSwordAnimationState::Recovery)
 		{
+			if (!IsSwordInHand(Refs))
+			{
+				return AbortWithError(TEXT("Light combo lost Socket_Weapon_Hand_R attachment."));
+			}
 			const int32 ComboIndex = Refs.AnimInstance->GetActiveSwordComboAnimationIndex();
 			if (ComboIndex < 0 || ComboIndex > 4)
 			{
@@ -807,6 +1477,7 @@ public:
 	{
 		if (ShouldSkip())
 		{
+			ReleaseAllTestInput();
 			return true;
 		}
 
@@ -819,6 +1490,7 @@ public:
 
 		if (!bChargeStarted)
 		{
+			ReleaseAllTestInput();
 			Refs.Dummy->ResetForTesting();
 			Refs.Movement->SetMovementMode(MOVE_Walking);
 			Refs.Movement->StopMovementImmediately();
@@ -892,16 +1564,35 @@ public:
 			return false;
 		}
 
-		MaxHeavyPlanarDisplacement = FMath::Max(
-			MaxHeavyPlanarDisplacement,
-			FVector::Dist2D(HeavyStartLocation, Refs.Character->GetActorLocation()));
+		if (Refs.Combat->IsSwordAttackActive())
+		{
+			MaxHeavyPlanarDisplacement = FMath::Max(
+				MaxHeavyPlanarDisplacement,
+				FVector::Dist2D(
+					HeavyStartLocation,
+					Refs.Character->GetActorLocation()));
+		}
+
+		if (bMovementInputInjected && !bStoppedMovementInput
+			&& !SetContinuousAction(
+				MoveActionPath,
+				FInputActionValue(FVector2D(1.0f, 0.0f))))
+		{
+			return AbortHeavyWithError(
+				TEXT("IA_Move continuous injection disappeared during heavy recovery."));
+		}
 
 		if (RunState->bPresentationConfigured
 			&& Refs.AnimInstance->GetSwordAnimationState()
 				== ERequiemSwordAnimationState::HeavyAttack)
 		{
 			bSawHeavyPresentation = true;
-			if (!FMath::IsNearlyEqual(
+			if (!IsSwordInHand(Refs))
+			{
+				return AbortWithError(TEXT("Heavy attack lost Socket_Weapon_Hand_R attachment."));
+			}
+			if (!Refs.AnimInstance->IsSwordLocomotionRecoveryBlendActive()
+				&& !FMath::IsNearlyEqual(
 				Refs.AnimInstance->GetActivePresentationPlayRate(),
 				ExpectedHeavyPlayRate,
 				0.01f))
@@ -916,11 +1607,106 @@ public:
 			{
 				return true;
 			}
+
+			if (!bMovementInputInjected
+				&& Refs.AnimInstance->GetSwordAnimationNormalizedTime() >= 0.55f)
+			{
+				if (!SetContinuousAction(
+						MoveActionPath,
+						FInputActionValue(FVector2D(1.0f, 0.0f))))
+				{
+					return AbortHeavyWithError(
+						TEXT("Could not inject IA_Move during heavy recovery."));
+				}
+				bMovementInputInjected = true;
+				return false;
+			}
+
+			if (bMovementInputInjected
+				&& Refs.Character->HasCurrentMovementInput()
+				&& !Refs.Character->GetCurrentMovementInputDirection().IsNearlyZero())
+			{
+				if (Refs.AnimInstance->IsSwordLocomotionRecoveryBlendActive())
+				{
+					if (!bSawHeavyRecoveryBlend)
+					{
+						bSawHeavyRecoveryBlend = true;
+						HeavyBlendFirstObservedSeconds = FPlatformTime::Seconds();
+					}
+					if (!bSawLockedMovementIntentBeforeBlend
+						|| !Refs.Combat->IsSwordHeavyAttackCommitted()
+						|| !Refs.Combat->IsSwordAttackMovementLocked()
+						|| !Refs.Combat->IsSwordAttackActive()
+						|| Refs.AnimInstance->GetLocomotionState()
+							!= ERequiemLocomotionState::Jog
+						|| Refs.Movement->GetCurrentAcceleration().Size2D() > 1.0f)
+					{
+						return AbortHeavyWithError(
+							TEXT("Heavy recovery crossfade did not preserve its non-cancelable movement commitment."));
+					}
+				}
+				else
+				{
+					bSawLockedMovementIntentBeforeBlend = true;
+					if (!Refs.Combat->IsSwordHeavyAttackCommitted()
+						|| !Refs.Combat->IsSwordAttackMovementLocked()
+						|| Refs.Movement->GetCurrentAcceleration().Size2D() > 1.0f)
+					{
+						return AbortHeavyWithError(
+							TEXT("Movement input escaped before the heavy recovery blend began."));
+					}
+				}
+			}
+		}
+
+		const bool bHeavyBlendActive =
+			Refs.AnimInstance->IsSwordLocomotionRecoveryBlendActive();
+		if (bSawHeavyRecoveryBlend && !bHeavyBlendActive && !bHeavyBlendCompleted)
+		{
+			ObservedHeavyBlendSeconds = static_cast<float>(
+				FPlatformTime::Seconds() - HeavyBlendFirstObservedSeconds);
+			if (ObservedHeavyBlendSeconds + 0.01f < MinimumRecoveryBlendTime
+				|| ObservedHeavyBlendSeconds > MaximumRecoveryBlendTime + 0.08f)
+			{
+				return AbortHeavyWithError(FString::Printf(
+					TEXT("Heavy recovery blend duration was %.3fs; expected an observed short blend near 0.10-0.20s."),
+					ObservedHeavyBlendSeconds));
+			}
+			if (Refs.Combat->IsSwordAttackActive()
+				|| Refs.Combat->IsSwordAttackMovementLocked()
+				|| Refs.Combat->IsSwordHeavyAttackCommitted()
+				|| Refs.AnimInstance->GetLocomotionState()
+					!= ERequiemLocomotionState::Jog)
+			{
+				return AbortHeavyWithError(
+					TEXT("Heavy attack released its commitment before the recovery blend completed."));
+			}
+			HeavyBlendCompletionLocation = Refs.Character->GetActorLocation();
+			bHeavyBlendCompleted = true;
+		}
+
+		if (bHeavyBlendCompleted && !bStoppedMovementInput)
+		{
+			const float PlayerDrivenDistance = FVector::Dist2D(
+				HeavyBlendCompletionLocation,
+				Refs.Character->GetActorLocation());
+			if (Refs.AnimInstance->GetLocomotionState() == ERequiemLocomotionState::Jog
+				&& Refs.Movement->GetCurrentAcceleration().Size2D() > 1.0f
+				&& PlayerDrivenDistance >= 2.0f)
+			{
+				bSawJogMovementAfterBlend = true;
+				StopContinuousAction(MoveActionPath);
+				Refs.Movement->StopMovementImmediately();
+				bStoppedMovementInput = true;
+			}
 		}
 
 		const bool bFinished = RunState->bPresentationConfigured
 			&& bSawHeavyPresentation
 			&& bValidatedCommitLocks
+			&& bHeavyBlendCompleted
+			&& bSawJogMovementAfterBlend
+			&& bStoppedMovementInput
 			&& !Refs.Combat->IsSwordAttackActive()
 			&& Refs.AnimInstance->GetSwordAnimationState() == ERequiemSwordAnimationState::Idle
 			&& Refs.Combat->GetSwordHitConfirmSerial() == HitConfirmBefore + 1;
@@ -929,16 +1715,29 @@ public:
 			return ValidateHeavyResult(Refs);
 		}
 
-		return AbortIfTimedOut(
+		const bool bTimedOut = AbortIfTimedOut(
 			ElapsedSeconds,
 			FString::Printf(
-				TEXT("waiting for heavy completion (state=%s active=%d health=%.1f)"),
+				TEXT("waiting for heavy completion (state=%s active=%d blend=%d moved=%d health=%.1f)"),
 				*Refs.AnimInstance->GetSwordAnimationStateName().ToString(),
 				Refs.Combat->IsSwordAttackActive(),
+				bHeavyBlendActive,
+				bSawJogMovementAfterBlend,
 				Refs.Dummy->GetCurrentHealth()));
+		if (bTimedOut)
+		{
+			ReleaseAllTestInput();
+		}
+		return bTimedOut;
 	}
 
 private:
+	bool AbortHeavyWithError(const FString& Message)
+	{
+		ReleaseAllTestInput();
+		return AbortWithError(Message);
+	}
+
 	bool ValidateCommittedHeavy(const FRuntimeRefs& Refs, const bool bResolveManually)
 	{
 		Refs.Combat->SetSwordAttackInputWindowOpen(true);
@@ -992,10 +1791,12 @@ private:
 				MaxHeavyPlanarDisplacement));
 		}
 
+		ReleaseAllTestInput();
 		Refs.Dummy->ResetForTesting();
 		Test->AddInfo(FString::Printf(
-			TEXT("Heavy committed only on release, played at 0.5x, displaced %.1f uu through root motion, and dealt 60 damage."),
-			MaxHeavyPlanarDisplacement));
+			TEXT("Heavy committed only on release, played at 0.5x, displaced %.1f uu through root motion, held through a %.3fs blend, returned to Jog, and dealt 60 damage."),
+			MaxHeavyPlanarDisplacement,
+			ObservedHeavyBlendSeconds));
 		return true;
 	}
 
@@ -1010,7 +1811,16 @@ private:
 	bool bReleased = false;
 	bool bSawHeavyPresentation = false;
 	bool bValidatedCommitLocks = false;
+	bool bMovementInputInjected = false;
+	bool bSawLockedMovementIntentBeforeBlend = false;
+	bool bSawHeavyRecoveryBlend = false;
+	bool bHeavyBlendCompleted = false;
+	bool bSawJogMovementAfterBlend = false;
+	bool bStoppedMovementInput = false;
+	double HeavyBlendFirstObservedSeconds = 0.0;
+	float ObservedHeavyBlendSeconds = 0.0f;
 	FVector HeavyStartLocation = FVector::ZeroVector;
+	FVector HeavyBlendCompletionLocation = FVector::ZeroVector;
 	float MaxHeavyPlanarDisplacement = 0.0f;
 };
 
@@ -1083,6 +1893,7 @@ public:
 				|| !Refs.LockOn->IsLockOnActive()
 				|| Refs.LockOn->GetLockOnTarget() != Refs.Dummy
 				|| Refs.Combat->GetCombatState() != ERequiemCombatState::CombatSword
+				|| !IsSwordInHand(Refs)
 				|| Refs.Combat->BeginSwordCharge())
 			{
 				return AbortWithError(TEXT("Dodge did not preserve lock-on/style or failed to reject attack input."));
@@ -1128,7 +1939,7 @@ public:
 		const bool bSwordStored = RunState->bPresentationConfigured
 			? Refs.AnimInstance->GetSwordAnimationState()
 					== ERequiemSwordAnimationState::Inactive
-				&& !IsSwordVisible(Refs.SwordMesh)
+				&& IsSwordStoredOnBack(Refs)
 			: Refs.Combat->GetCombatState() == ERequiemCombatState::CombatUnarmed;
 		if (bSwordStored)
 		{
@@ -1151,6 +1962,16 @@ private:
 	int32 Phase = 0;
 	int32 DodgeSerialBefore = 0;
 	int32 LightSerialBefore = 0;
+};
+
+class FReleaseSwordTestInputCommand final : public IAutomationLatentCommand
+{
+public:
+	virtual bool Update() override
+	{
+		ReleaseAllTestInput();
+		return true;
+	}
 };
 
 class FWaitForPIEEndCommand final : public IAutomationLatentCommand
@@ -1204,10 +2025,13 @@ bool FRequiemSwordCombatPIETest::RunTest(const FString& Parameters)
 		LoadObject<UInputAction>(nullptr, ToggleCombatActionPath);
 	UInputAction* PrimaryAttackAction =
 		LoadObject<UInputAction>(nullptr, PrimaryAttackActionPath);
+	UInputAction* MoveAction =
+		LoadObject<UInputAction>(nullptr, MoveActionPath);
 	TestNotNull(TEXT("IMC_Exploration exists"), MappingContext);
 	TestNotNull(TEXT("IA_ToggleCombat exists"), ToggleCombatAction);
 	TestNotNull(TEXT("IA_PrimaryAttack exists"), PrimaryAttackAction);
-	if (!MappingContext || !ToggleCombatAction || !PrimaryAttackAction)
+	TestNotNull(TEXT("IA_Move exists"), MoveAction);
+	if (!MappingContext || !ToggleCombatAction || !PrimaryAttackAction || !MoveAction)
 	{
 		return false;
 	}
@@ -1219,12 +2043,19 @@ bool FRequiemSwordCombatPIETest::RunTest(const FString& Parameters)
 		TEXT("IA_PrimaryAttack is Boolean"),
 		PrimaryAttackAction->ValueType,
 		EInputActionValueType::Boolean);
+	TestEqual(
+		TEXT("IA_Move is Axis2D"),
+		MoveAction->ValueType,
+		EInputActionValueType::Axis2D);
 	TestTrue(
 		TEXT("IMC_Exploration maps Z to sword toggle"),
 		HasExactMapping(MappingContext, ToggleCombatAction, EKeys::Z));
 	TestTrue(
 		TEXT("IMC_Exploration maps LMB to sword press/release"),
 		HasExactMapping(MappingContext, PrimaryAttackAction, EKeys::LeftMouseButton));
+	TestTrue(
+		TEXT("IMC_Exploration maps W to movement used by recovery validation"),
+		HasExactMapping(MappingContext, MoveAction, EKeys::W));
 
 	UClass* CharacterClass = LoadClass<ARequiemCharacter>(nullptr, CharacterClassPath);
 	ARequiemCharacter* CharacterCDO = CharacterClass
@@ -1272,10 +2103,49 @@ bool FRequiemSwordCombatPIETest::RunTest(const FString& Parameters)
 			SwordMeshCDO->GetCollisionEnabled(),
 			ECollisionEnabled::NoCollision);
 		TestEqual(
-			TEXT("Sword visual stays attached to hand_r"),
+			TEXT("Sword visual starts attached to the back socket"),
 			SwordMeshCDO->GetAttachSocketName(),
-			FName(TEXT("hand_r")));
-		TestFalse(TEXT("Sword starts visually stored"), IsSwordVisible(SwordMeshCDO));
+			SwordBackSocketName);
+		TestTrue(TEXT("Stored sword starts visible"), IsSwordVisible(SwordMeshCDO));
+	}
+	if (CharacterCDO)
+	{
+		TestEqual(
+			TEXT("BP_CH_Player uses the authored hand socket"),
+			CharacterCDO->GetSwordHandSocketName(),
+			SwordHandSocketName);
+		TestEqual(
+			TEXT("BP_CH_Player uses the dedicated back socket"),
+			CharacterCDO->GetSwordBackSocketName(),
+			SwordBackSocketName);
+
+		USkeletalMesh* PlayerSkeletalMesh = CharacterCDO->GetMesh()
+			? CharacterCDO->GetMesh()->GetSkeletalMeshAsset()
+			: nullptr;
+		TestNotNull(TEXT("BP_CH_Player has a skeletal mesh for sword sockets"), PlayerSkeletalMesh);
+		if (PlayerSkeletalMesh)
+		{
+			const USkeletalMeshSocket* HandSocket =
+				PlayerSkeletalMesh->FindSocket(SwordHandSocketName);
+			const USkeletalMeshSocket* BackSocket =
+				PlayerSkeletalMesh->FindSocket(SwordBackSocketName);
+			TestNotNull(TEXT("Socket_Weapon_Hand_R exists"), HandSocket);
+			TestNotNull(TEXT("Socket_Weapon_Back exists"), BackSocket);
+			if (HandSocket)
+			{
+				TestEqual(
+					TEXT("Hand socket remains parented to hand_r"),
+					HandSocket->BoneName,
+					SwordHandBoneName);
+			}
+			if (BackSocket)
+			{
+				TestEqual(
+					TEXT("Back socket follows spine_03"),
+					BackSocket->BoneName,
+					SwordBackBoneName);
+			}
+		}
 	}
 
 	UClass* AnimInstanceClass =
@@ -1324,13 +2194,88 @@ bool FRequiemSwordCombatPIETest::RunTest(const FString& Parameters)
 					AnimInstanceCDO, AnimInstanceClass, TEXT("SwordInputWindowEndNormalized")),
 				ExpectedInputWindowEnd,
 				0.001f));
+		const float MovementUnlockNormalized = GetFloatPropertyValue(
+			AnimInstanceCDO,
+			AnimInstanceClass,
+			TEXT("SwordMovementUnlockNormalized"));
 		TestTrue(
-			TEXT("Sword movement unlock remains 0.60"),
+			TEXT("Sword movement unlock is 0.75"),
 			FMath::IsNearlyEqual(
-				GetFloatPropertyValue(
-					AnimInstanceCDO, AnimInstanceClass, TEXT("SwordMovementUnlockNormalized")),
+				MovementUnlockNormalized,
 				ExpectedMovementUnlock,
 				0.001f));
+		TestTrue(
+			TEXT("Sword movement unlock stays in the requested 70-75 percent range"),
+			MovementUnlockNormalized >= 0.70f
+				&& MovementUnlockNormalized <= 0.75f);
+		const float RecoveryBlendTime = GetFloatPropertyValue(
+			AnimInstanceCDO,
+			AnimInstanceClass,
+			TEXT("SwordRecoveryBlendTime"));
+		TestTrue(
+			TEXT("Sword recovery blend is 0.15s"),
+			FMath::IsNearlyEqual(
+				RecoveryBlendTime,
+				ExpectedRecoveryBlendTime,
+				0.001f));
+		TestTrue(
+			TEXT("Sword recovery blend stays in the requested 0.10-0.20s range"),
+			RecoveryBlendTime >= MinimumRecoveryBlendTime
+				&& RecoveryBlendTime <= MaximumRecoveryBlendTime);
+		TestTrue(
+			TEXT("Sword_Enter attaches to the hand at authored frame 21"),
+			FMath::IsNearlyEqual(
+				GetFloatPropertyValue(
+					AnimInstanceCDO,
+					AnimInstanceClass,
+					TEXT("SwordEnterHandAttachmentNormalized")),
+				ExpectedEnterHandAttachment,
+				0.0001f));
+		TestTrue(
+			TEXT("Sword_Exit attaches to the back at authored frame 15"),
+			FMath::IsNearlyEqual(
+				GetFloatPropertyValue(
+					AnimInstanceCDO,
+					AnimInstanceClass,
+					TEXT("SwordExitBackAttachmentNormalized")),
+				ExpectedExitBackAttachment,
+				0.0001f));
+
+		UAnimSequence* EnterAnimation = Cast<UAnimSequence>(GetObjectPropertyValue(
+			AnimInstanceCDO,
+			AnimInstanceClass,
+			TEXT("SwordEnterAnimation")));
+		UAnimSequence* ExitAnimation = Cast<UAnimSequence>(GetObjectPropertyValue(
+			AnimInstanceCDO,
+			AnimInstanceClass,
+			TEXT("SwordExitAnimation")));
+		TestNotNull(TEXT("Sword_Enter is assigned as an AnimSequence"), EnterAnimation);
+		TestNotNull(TEXT("Sword_Exit is assigned as an AnimSequence"), ExitAnimation);
+		for (const TPair<const TCHAR*, UAnimSequence*> Transition : {
+			TPair<const TCHAR*, UAnimSequence*>(TEXT("Sword_Enter"), EnterAnimation),
+			TPair<const TCHAR*, UAnimSequence*>(TEXT("Sword_Exit"), ExitAnimation)})
+		{
+			if (!Transition.Value)
+			{
+				continue;
+			}
+			TestTrue(
+				FString::Printf(TEXT("%s duration remains 1.30s"), Transition.Key),
+				FMath::IsNearlyEqual(
+					Transition.Value->GetPlayLength(),
+					ExpectedSwordTransitionDuration,
+					0.001f));
+			TestEqual(
+				FString::Printf(TEXT("%s keeps 40 sampled keys"), Transition.Key),
+				Transition.Value->GetNumberOfSampledKeys(),
+				ExpectedSwordTransitionSampledKeys);
+			TestTrue(
+				FString::Printf(TEXT("%s keeps a 30 fps sample rate"), Transition.Key),
+				FMath::IsNearlyEqual(
+					Transition.Value->GetSamplingFrameRate().AsDecimal(),
+					30.0,
+					0.001));
+		}
 
 		int32 AssignedAnimationCount = 0;
 		for (const TCHAR* PropertyName : SwordAnimationPropertyNames)
@@ -1382,9 +2327,12 @@ bool FRequiemSwordCombatPIETest::RunTest(const FString& Parameters)
 	ADD_LATENT_AUTOMATION_COMMAND(FStartPIECommand(false));
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitForPIEReadyCommand(this, RunState));
 	ADD_LATENT_AUTOMATION_COMMAND(FValidateEquipVisibilityCommand(this, RunState));
+	ADD_LATENT_AUTOMATION_COMMAND(FValidateExitDamageAttachmentCommand(this, RunState));
+	ADD_LATENT_AUTOMATION_COMMAND(FValidateLightRecoveryBlendCommand(this, RunState));
 	ADD_LATENT_AUTOMATION_COMMAND(FValidateLightComboCommand(this, RunState));
 	ADD_LATENT_AUTOMATION_COMMAND(FValidateHeavyReleaseCommand(this, RunState));
 	ADD_LATENT_AUTOMATION_COMMAND(FValidateLockOnDodgeReturnCommand(this, RunState));
+	ADD_LATENT_AUTOMATION_COMMAND(FReleaseSwordTestInputCommand());
 	ADD_LATENT_AUTOMATION_COMMAND(FEndPlayMapCommand());
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitForPIEEndCommand(this));
 	return true;

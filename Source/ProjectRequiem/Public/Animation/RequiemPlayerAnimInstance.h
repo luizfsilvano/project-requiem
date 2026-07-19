@@ -151,6 +151,13 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
 	float GetSwordAnimationNormalizedTime() const;
 
+	/** True while the outgoing full-body sword clip is crossing into directional locomotion. */
+	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
+	bool IsSwordLocomotionRecoveryBlendActive() const
+	{
+		return bSwordLocomotionRecoveryBlendActive;
+	}
+
 	UFUNCTION(BlueprintPure, Category = "Dodge")
 	bool IsDodgePresentationActive() const { return bDodgePresentationActive; }
 
@@ -385,8 +392,24 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Tuning", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float SwordQueuedRecoveryHandoffNormalized = 0.55f;
 
+	/**
+	 * Target phase at which CharacterMovement regains input. The locomotion crossfade
+	 * starts earlier by SwordRecoveryBlendTime and the attack remains committed through it.
+	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Tuning", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	float SwordMovementUnlockNormalized = 0.60f;
+	float SwordMovementUnlockNormalized = 0.75f;
+
+	/** Wall-clock crossfade from the recovery pose into directional Jog. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Tuning", meta = (ClampMin = "0.10", ClampMax = "0.20", UIMin = "0.10", UIMax = "0.20"))
+	float SwordRecoveryBlendTime = 0.15f;
+
+	/** Sword_Enter frame 21 of 39 intervals: keep the weapon on the back until the hand grips it. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Presentation", meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
+	float SwordEnterHandAttachmentNormalized = 0.5384615f;
+
+	/** Sword_Exit frame 15 of 39 intervals: release the weapon onto the back socket at contact. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Presentation", meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
+	float SwordExitBackAttachmentNormalized = 0.3846154f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Locomotion|Tuning", meta = (ClampMin = "0.0"))
 	float JogAuthoredSpeed = 500.0f;
@@ -490,6 +513,7 @@ private:
 	float GetCombatPlayRate(ERequiemCombatAnimationState State) const;
 	UAnimSequenceBase* GetComboAnimation(int32 ComboIndex) const;
 	void UpdateSwordPresentation();
+	void UpdateSwordAttachmentPresentation();
 	void StartSwordEnter();
 	void StartSwordIdle();
 	void StartSwordExit();
@@ -499,8 +523,12 @@ private:
 	bool TryStartQueuedSwordFollowUp(int32 ComboIndex);
 	void UpdateSwordInputWindow();
 	void UpdateSwordMovementRecovery();
+	void StartSwordLocomotionRecoveryBlend();
+	void UpdateSwordLocomotionRecoveryBlend();
+	void UpdateSwordRecoveryMovementDirection();
+	float GetSwordRecoveryBlendStartNormalized() const;
 	void HandleFinishedSwordOneShot();
-	void ResumeFromSwordPresentation(bool bHideSwordVisual = false);
+	void ResumeFromSwordPresentation(bool bStoreSwordOnBack = false);
 	void PlaySwordAnimation(
 		ERequiemSwordAnimationState NewState,
 		UAnimSequenceBase* NewAnimation,
@@ -556,11 +584,20 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimSequenceBase> ActiveLocomotionAnimation;
 
+	/** Authored sword clip retained while ActiveAnimation changes to Jog during recovery. */
+	UPROPERTY(Transient)
+	TObjectPtr<UAnimSequenceBase> ActiveSwordAnimation;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UAnimMontage> ActiveSwordMontage;
+
 	float StateElapsedSeconds = 0.0f;
 	float CombatAnimationElapsedSeconds = 0.0f;
 	float SwordAnimationElapsedSeconds = 0.0f;
 	float DamageAnimationElapsedSeconds = 0.0f;
 	float ActiveAnimationPlayRate = 1.0f;
+	float ActiveSwordAnimationPlayRate = 1.0f;
+	float SwordLocomotionRecoveryBlendStartSeconds = 0.0f;
 	float LookAroundCountdown = 0.0f;
 	bool bNeedsInitialState = true;
 	bool bEnterQueued = false;
@@ -571,6 +608,8 @@ private:
 	bool bSwordAssetsInvalid = false;
 	bool bDodgePresentationActive = false;
 	bool bDodgeLocomotionRecoveryPresentationActive = false;
+	bool bSwordLocomotionRecoveryPresentationActive = false;
+	bool bSwordLocomotionRecoveryBlendActive = false;
 	bool bDeathPoseHeld = false;
 	bool bDamageAssetsInvalid = false;
 	int32 LastObservedDamageRequestSerial = 0;

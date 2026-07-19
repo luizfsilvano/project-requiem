@@ -113,7 +113,7 @@ bool URequiemCombatComponent::ToggleSwordCombat()
 		return false;
 	}
 
-	if (IsSwordHeavyAttackCommitted())
+	if (IsSwordHeavyAttackCommitted() || IsSwordAttackMovementLocked())
 	{
 		return false;
 	}
@@ -707,6 +707,15 @@ void URequiemCombatComponent::ReleaseSwordAttackMovementLock()
 	}
 
 	bSwordAttackMovementLocked = false;
+}
+
+void URequiemCombatComponent::CompleteSwordAttackRecovery()
+{
+	// The locomotion montage is already fully blended in. Mark the commitment as
+	// released before clearing the sequence so EndSwordAttackSequence does not zero
+	// the CharacterMovement velocity and introduce a recovery hitch.
+	bSwordAttackMovementLocked = false;
+	EndSwordAttackSequence();
 }
 
 void URequiemCombatComponent::EndSwordAttackSequence()

@@ -54,6 +54,16 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
 	UStaticMeshComponent* GetSwordMesh() const { return SwordMesh; }
 
+	/** Presentation attachment only; combat traces remain owned by the combat component. */
+	UFUNCTION(BlueprintCallable, Category = "Combat|Sword")
+	void SetSwordEquippedPresentation(bool bEquipped);
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
+	FName GetSwordHandSocketName() const { return SwordHandSocketName; }
+
+	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
+	FName GetSwordBackSocketName() const { return SwordBackSocketName; }
+
 	UFUNCTION(BlueprintCallable, Category = "Combat|Sword")
 	void SetSwordVisualVisible(bool bVisible);
 
@@ -70,6 +80,13 @@ public:
 	bool HasCurrentMovementInput() const
 	{
 		return !CurrentMovementInputDirection.IsNearlyZero();
+	}
+
+	/** Camera-relative input direction retained even while gameplay movement is locked. */
+	UFUNCTION(BlueprintPure, Category = "Movement")
+	FVector GetCurrentMovementInputDirection() const
+	{
+		return CurrentMovementInputDirection;
 	}
 
 	/** Temporary console hook: RequiemTestDamage Head 20 false. */
@@ -123,9 +140,17 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|Lock On")
 	TObjectPtr<UDecalComponent> LockOnGroundIndicator;
 
-	/** Presentation-only sword attached to the player hand; gameplay never traces from this mesh. */
+	/** Presentation-only sword; gameplay never traces from this mesh. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Combat|Sword")
 	TObjectPtr<UStaticMeshComponent> SwordMesh;
+
+	/** Authored socket configured on the player skeleton; its hand transform is intentionally asset-owned. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Presentation")
+	FName SwordHandSocketName = TEXT("Socket_Weapon_Hand_R");
+
+	/** Mesh-only socket on spine_03 used while the sword is stored. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Presentation")
+	FName SwordBackSocketName = TEXT("Socket_Weapon_Back");
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
 	TObjectPtr<UInputAction> MoveAction;
@@ -168,6 +193,7 @@ private:
 	void ReleasePrimaryAttack();
 	void ToggleLockOn();
 	bool AreDamageActionsLocked() const;
+	void AttachSwordToPresentationSocket(FName SocketName);
 
 	FVector CurrentMovementInputDirection = FVector::ZeroVector;
 };

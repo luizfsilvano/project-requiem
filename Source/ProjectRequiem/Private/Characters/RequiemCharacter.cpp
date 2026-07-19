@@ -9,6 +9,7 @@
 #include "Components/RequiemDodgeComponent.h"
 #include "Components/RequiemHealthComponent.h"
 #include "Components/RequiemLockOnComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/DamageEvents.h"
 #include "EnhancedInputComponent.h"
@@ -19,6 +20,7 @@
 #include "GameFramework/SpringArmComponent.h"
 #include "InputActionValue.h"
 #include "Math/RotationMatrix.h"
+#include "ProjectRequiem.h"
 
 namespace
 {
@@ -74,12 +76,12 @@ ARequiemCharacter::ARequiemCharacter()
 	HealthComponent = CreateDefaultSubobject<URequiemHealthComponent>(TEXT("HealthComponent"));
 	LockOnComponent = CreateDefaultSubobject<URequiemLockOnComponent>(TEXT("LockOnComponent"));
 	SwordMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("SwordMesh"));
-	SwordMesh->SetupAttachment(GetMesh(), TEXT("hand_r"));
+	SwordMesh->SetupAttachment(GetMesh(), SwordBackSocketName);
 	SwordMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	SwordMesh->SetGenerateOverlapEvents(false);
 	SwordMesh->SetCanEverAffectNavigation(false);
-	SwordMesh->SetHiddenInGame(true, true);
-	SwordMesh->SetVisibility(false, true);
+	SwordMesh->SetHiddenInGame(false, true);
+	SwordMesh->SetVisibility(true, true);
 
 	CameraBoom = CreateDefaultSubobject<USpringArmComponent>(TEXT("CameraBoom"));
 	CameraBoom->SetupAttachment(RootComponent);
@@ -240,14 +242,14 @@ ERequiemDamageOutcome ARequiemCharacter::ApplyRequiemDamage(
 bool ARequiemCharacter::CanCrouch() const
 {
 	return !AreDamageActionsLocked()
-		&& (!CombatComponent || !CombatComponent->IsSwordHeavyAttackCommitted())
+		&& (!CombatComponent || !CombatComponent->IsSwordAttackMovementLocked())
 		&& Super::CanCrouch();
 }
 
 bool ARequiemCharacter::CanJumpInternal_Implementation() const
 {
 	return !AreDamageActionsLocked()
-		&& (!CombatComponent || !CombatComponent->IsSwordHeavyAttackCommitted())
+		&& (!CombatComponent || !CombatComponent->IsSwordAttackMovementLocked())
 		&& Super::CanJumpInternal_Implementation();
 }
 
@@ -265,6 +267,44 @@ void ARequiemCharacter::SetSwordVisualVisible(const bool bVisible)
 
 	SwordMesh->SetHiddenInGame(!bVisible, true);
 	SwordMesh->SetVisibility(bVisible, true);
+}
+
+void ARequiemCharacter::SetSwordEquippedPresentation(const bool bEquipped)
+{
+	AttachSwordToPresentationSocket(
+		bEquipped ? SwordHandSocketName : SwordBackSocketName);
+	SetSwordVisualVisible(true);
+}
+
+void ARequiemCharacter::AttachSwordToPresentationSocket(const FName SocketName)
+{
+	USkeletalMeshComponent* CharacterMesh = GetMesh();
+	if (!SwordMesh || !CharacterMesh || SocketName.IsNone())
+	{
+		return;
+	}
+
+	if (SwordMesh->GetAttachParent() == CharacterMesh
+		&& SwordMesh->GetAttachSocketName() == SocketName)
+	{
+		return;
+	}
+
+	if (!CharacterMesh->DoesSocketExist(SocketName))
+	{
+		UE_LOG(
+			LogProjectRequiem,
+			Error,
+			TEXT("Sword presentation socket %s is missing from %s"),
+			*SocketName.ToString(),
+			*GetNameSafe(CharacterMesh->GetSkeletalMeshAsset()));
+		return;
+	}
+
+	SwordMesh->AttachToComponent(
+		CharacterMesh,
+		FAttachmentTransformRules::SnapToTargetNotIncludingScale,
+		SocketName);
 }
 
 void ARequiemCharacter::OnStartCrouch(const float HalfHeightAdjust, const float ScaledHalfHeightAdjust)
@@ -331,7 +371,7 @@ void ARequiemCharacter::Look(const FInputActionValue& Value)
 void ARequiemCharacter::StartJump()
 {
 	if (!AreDamageActionsLocked()
-		&& (!CombatComponent || !CombatComponent->IsSwordHeavyAttackCommitted())
+		&& (!CombatComponent || !CombatComponent->IsSwordAttackMovementLocked())
 		&& (!DodgeComponent || !DodgeComponent->AreDodgeRestrictedActionsLocked()))
 	{
 		Jump();
@@ -346,7 +386,7 @@ void ARequiemCharacter::StopJump()
 void ARequiemCharacter::StartCrouch()
 {
 	if (!AreDamageActionsLocked()
-		&& (!CombatComponent || !CombatComponent->IsSwordHeavyAttackCommitted())
+		&& (!CombatComponent || !CombatComponent->IsSwordAttackMovementLocked())
 		&& (!DodgeComponent || !DodgeComponent->AreDodgeRestrictedActionsLocked()))
 	{
 		Crouch();
