@@ -403,3 +403,47 @@ O primeiro passe deve limitar-se à fundação técnica:
 - validar compilação, PIE e packaging.
 
 Não implementar ainda nascimento, criação de personagem, diálogos, interação, guilda, combate, inventário, quests ou escolha de classe.
+
+## Nova direção de desenvolvimento
+
+O projeto entra temporariamente em uma fase de cobertura ampla do MVP. O objetivo passa a ser fazer todas as partes principais existirem de forma funcional, mesmo que alguns elementos ainda usem placeholders, ajustes visuais incompletos ou comportamento provisório.
+
+O polimento detalhado — como posicionamento fino de armas, ajustes de animação, transições perfeitas, efeitos finais e refinamento visual — será concentrado em uma etapa posterior. Não devemos interromper o avanço do escopo para corrigir cada detalhe isoladamente enquanto o fluxo completo do MVP ainda não existe.
+
+Essa mudança não autoriza arquitetura descartável. Sistemas novos ainda devem ter responsabilidades claras, commits separados e validação básica de compilação e execução. A diferença é que a qualidade inicial esperada é funcionalidade comprovada, não acabamento final.
+
+## Preparação para multiplayer
+
+Antes de criar muitos sistemas persistentes, o projeto deve passar por um passe de preparação para multiplayer. Esse passe não implementará multiplayer completo, servidores ou sessões online. Ele deve apenas evitar que os próximos sistemas sejam construídos como se fossem exclusivamente locais.
+
+Princípios registrados:
+
+- separar estado local de estado replicável;
+- não colocar regras importantes somente no `PlayerController`;
+- manter `GameMode` como autoridade das regras do servidor;
+- usar `PlayerState` para dados que pertencem ao jogador e precisam ser replicáveis;
+- não usar `GameInstance` como autoridade de progressão ou estado compartilhado do mundo;
+- manter UI e apresentação separadas da autoridade de gameplay;
+- estruturar ações de combate, dano e interação para futuramente passarem por validação do servidor;
+- evitar referências locais como fonte única de verdade para dados persistentes;
+- criar contratos de dano, interação e combate com futura replicação em mente;
+- não implementar multiplayer completo antes de existir uma necessidade concreta de validação online.
+
+## Ordem revisada de trabalho
+
+```text
+Preparação para multiplayer
+→ exploração básica
+→ interação e NPCs
+→ diálogos
+→ guilda
+→ criação do personagem
+→ prólogo
+→ teste de proficiência
+→ arco
+→ magia
+→ escolha da classe
+→ polimento geral
+```
+
+Cada etapa deve ser implementada em lotes funcionais e independentes. O Codex pode avançar vários lotes de uma vez quando o escopo estiver claro, mas deve manter checkpoints, commits Conventional Commits, compilação e validações básicas entre os blocos.
