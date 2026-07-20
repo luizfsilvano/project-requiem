@@ -19,7 +19,12 @@ public class ProjectRequiem : ModuleRules
 
 		if (Target.bBuildEditor)
 		{
-			PrivateDependencyModuleNames.Add("UnrealEd");
+			PrivateDependencyModuleNames.AddRange(new string[]
+			{
+				"AnimGraph",
+				"BlueprintGraph",
+				"UnrealEd"
+			});
 		}
 	}
 }

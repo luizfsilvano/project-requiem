@@ -12,6 +12,8 @@
 #include "ProjectRequiem.h"
 
 const FName URequiemPlayerAnimInstance::LocomotionSlotName(TEXT("DefaultSlot"));
+const FName URequiemPlayerAnimInstance::SwordUpperBodyRecoverySlotName(
+	TEXT("SwordRecoveryUpperBody"));
 
 namespace
 {
@@ -124,6 +126,7 @@ void URequiemPlayerAnimInstance::NativeInitializeAnimation()
 	ActiveLocomotionAnimation = nullptr;
 	ActiveSwordAnimation = nullptr;
 	ActiveSwordMontage = nullptr;
+	ActiveSwordUpperBodyMontage = nullptr;
 	StateElapsedSeconds = 0.0f;
 	CombatAnimationElapsedSeconds = 0.0f;
 	SwordAnimationElapsedSeconds = 0.0f;
@@ -142,6 +145,7 @@ void URequiemPlayerAnimInstance::NativeInitializeAnimation()
 	bDodgeLocomotionRecoveryPresentationActive = false;
 	bSwordLocomotionRecoveryPresentationActive = false;
 	bSwordLocomotionRecoveryBlendActive = false;
+	bSwordUpperBodyRecoveryActive = false;
 	bDeathPoseHeld = false;
 	bDamageAssetsInvalid = false;
 	LastObservedDamageRequestSerial =
@@ -302,6 +306,13 @@ FName URequiemPlayerAnimInstance::GetSwordAnimationStateName() const
 	return SwordAnimationStateToName(SwordAnimationState);
 }
 
+bool URequiemPlayerAnimInstance::IsSwordUpperBodyRecoveryActive() const
+{
+	return bSwordUpperBodyRecoveryActive
+		&& ActiveSwordUpperBodyMontage
+		&& Montage_IsActive(ActiveSwordUpperBodyMontage);
+}
+
 void URequiemPlayerAnimInstance::CacheCharacterReferences()
 {
 	OwningCharacter = Cast<ARequiemCharacter>(TryGetPawnOwner());
@@ -322,6 +333,7 @@ void URequiemPlayerAnimInstance::HandleDamageReset()
 	LastObservedResetSerial = HealthComponent->GetResetSerial();
 	LastObservedDamageRequestSerial = HealthComponent->GetDamageRequestSerial();
 	LastObservedDeathSerial = HealthComponent->GetDeathSerial();
+	StopSwordUpperBodyRecovery(0.0f);
 	if (ActiveLocomotionMontage)
 	{
 		Montage_Stop(0.0f, ActiveLocomotionMontage);
@@ -490,6 +502,9 @@ void URequiemPlayerAnimInstance::PlayDamageAnimation(
 	UAnimSequenceBase* NewAnimation,
 	const bool bUsesRootMotion)
 {
+	// Damage/death must own the complete body. Do not leave a recovery montage
+	// running above spine_01 after gameplay cancels the sword action.
+	StopSwordUpperBodyRecovery(0.03f);
 	if (CombatComponent)
 	{
 		CombatComponent->CancelActiveAttackForExternalReaction();
@@ -2133,7 +2148,7 @@ void URequiemPlayerAnimInstance::UpdateSwordMovementRecovery()
 float URequiemPlayerAnimInstance::GetSwordRecoveryBlendStartNormalized() const
 {
 	const float UnlockNormalized = FMath::Clamp(
-		SwordMovementUnlockNormalized,
+		GetSwordRecoveryUnlockNormalized(),
 		0.0f,
 		1.0f);
 	if (!ActiveSwordAnimation)
@@ -2154,6 +2169,31 @@ float URequiemPlayerAnimInstance::GetSwordRecoveryBlendStartNormalized() const
 		UnlockNormalized - BlendTime / EffectiveDuration,
 		0.0f,
 		UnlockNormalized);
+}
+
+float URequiemPlayerAnimInstance::GetSwordRecoveryUnlockNormalized() const
+{
+	return ShouldUseSwordUpperBodyRecovery()
+		? SwordLayeredRecoveryUnlockNormalized
+		: SwordMovementUnlockNormalized;
+}
+
+bool URequiemPlayerAnimInstance::ShouldUseSwordUpperBodyRecovery() const
+{
+	return SwordAnimationState == ERequiemSwordAnimationState::Recovery
+		&& (ActiveSwordComboAnimationIndex == 1
+			|| ActiveSwordComboAnimationIndex == 3);
+}
+
+void URequiemPlayerAnimInstance::StopSwordUpperBodyRecovery(const float BlendOutTime)
+{
+	if (ActiveSwordUpperBodyMontage
+		&& Montage_IsActive(ActiveSwordUpperBodyMontage))
+	{
+		Montage_Stop(FMath::Max(0.0f, BlendOutTime), ActiveSwordUpperBodyMontage);
+	}
+	ActiveSwordUpperBodyMontage = nullptr;
+	bSwordUpperBodyRecoveryActive = false;
 }
 
 void URequiemPlayerAnimInstance::UpdateSwordRecoveryMovementDirection()
@@ -2187,10 +2227,40 @@ void URequiemPlayerAnimInstance::StartSwordLocomotionRecoveryBlend()
 		return;
 	}
 
+	const float BlendTime = FMath::Clamp(SwordRecoveryBlendTime, 0.10f, 0.20f);
+	const bool bUseUpperBodyRecovery = ShouldUseSwordUpperBodyRecovery();
+	if (bUseUpperBodyRecovery)
+	{
+		const float RecoveryStartTime = ActiveSwordAnimation
+			? FMath::Clamp(
+				GetSwordAnimationNormalizedTime() * ActiveSwordAnimation->GetPlayLength(),
+				0.0f,
+				ActiveSwordAnimation->GetPlayLength())
+			: 0.0f;
+		ActiveSwordUpperBodyMontage = PlaySlotAnimationAsDynamicMontage(
+			ActiveSwordAnimation,
+			SwordUpperBodyRecoverySlotName,
+			0.0f,
+			BlendTime,
+			ActiveSwordAnimationPlayRate,
+			1,
+			0.0f,
+			RecoveryStartTime);
+		if (!ActiveSwordUpperBodyMontage)
+		{
+			UE_LOG(
+				LogProjectRequiem,
+				Error,
+				TEXT("Failed to continue sword recovery on upper-body slot %s"),
+				*SwordUpperBodyRecoverySlotName.ToString());
+			return;
+		}
+		bSwordUpperBodyRecoveryActive = true;
+	}
+
 	bSwordLocomotionRecoveryPresentationActive = true;
 	bSwordLocomotionRecoveryBlendActive = true;
 	SwordLocomotionRecoveryBlendStartSeconds = SwordAnimationElapsedSeconds;
-	const float BlendTime = FMath::Clamp(SwordRecoveryBlendTime, 0.10f, 0.20f);
 	if (SwordAnimationState == ERequiemSwordAnimationState::HeavyAttack)
 	{
 		// Montage_Stop immediately clears UE's single RootMotionMontageInstance even
@@ -2260,8 +2330,9 @@ void URequiemPlayerAnimInstance::UpdateSwordLocomotionRecoveryBlend()
 		bSwordLocomotionRecoveryBlendActive = false;
 		if (SwordAnimationState == ERequiemSwordAnimationState::Recovery)
 		{
-			// Preserve the late 0.75-0.85 combo window after locomotion owns the
-			// full-body slot. A late follow-up relocks movement and starts B/C.
+			// Preserve the late combo window after locomotion owns the legs. The
+			// upper-body recovery keeps playing, and a follow-up relocks movement
+			// before its next full-body B/C clip starts.
 			CombatComponent->ReleaseSwordAttackMovementLock();
 			return;
 		}
@@ -2282,6 +2353,7 @@ void URequiemPlayerAnimInstance::UpdateSwordLocomotionRecoveryBlend()
 	if (SwordAnimationState == ERequiemSwordAnimationState::Recovery
 		&& ShouldAdvanceSwordOneShot())
 	{
+		StopSwordUpperBodyRecovery(SwordRecoveryBlendTime);
 		CombatComponent->EndSwordAttackSequence();
 		bSwordLocomotionRecoveryPresentationActive = false;
 		SwordAnimationState = ERequiemSwordAnimationState::Inactive;
@@ -2384,6 +2456,7 @@ void URequiemPlayerAnimInstance::ResumeFromSwordPresentation(const bool bStoreSw
 	{
 		Montage_Stop(0.05f, ActiveLocomotionMontage);
 	}
+	StopSwordUpperBodyRecovery(0.05f);
 
 	SetRootMotionMode(ERootMotionMode::IgnoreRootMotion);
 	SwordAnimationState = ERequiemSwordAnimationState::Inactive;
@@ -2427,6 +2500,7 @@ void URequiemPlayerAnimInstance::PlaySwordAnimation(
 	const int32 ComboIndex,
 	const bool bUsesRootMotion)
 {
+	StopSwordUpperBodyRecovery(0.03f);
 	bSwordLocomotionRecoveryPresentationActive = false;
 	bSwordLocomotionRecoveryBlendActive = false;
 	SwordLocomotionRecoveryBlendStartSeconds = 0.0f;

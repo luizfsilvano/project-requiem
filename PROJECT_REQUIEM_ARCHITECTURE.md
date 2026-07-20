@@ -333,24 +333,31 @@ Em `CombatSword`, pressionar LMB inicia uma carga e soltar resolve o ataque. Aba
 `0.65s` começa o combo leve `Sword_Regular_A → Sword_Regular_A_Rec → Sword_Regular_B →
 Sword_Regular_B_Rec → Sword_Regular_C`; cada janela `0.30–0.85` aceita no máximo um
 follow-up. A e B entregam automaticamente às recuperações em `0.90`, e uma recuperação
-com follow-up entrega ao próximo golpe em `0.55`. Todos os clipes permanecem full-body;
+com follow-up entrega ao próximo golpe em `0.55`. Os ataques permanecem full-body;
 golpes e recuperações continuam em `1.0x`, sem acelerar os assets, e o avanço de
 `350 uu/s` continua sendo aplicado pelo `CharacterMovement`. Cada golpe faz uma única
 consulta em `0.40`, com dano `35`, alcance `180`, raio `55` e altura `70`.
 
 O movimento fica comprometido durante o início e o impacto. A e B preservam esse lock ao
 entregar a `Sword_Regular_A_Rec` e `Sword_Regular_B_Rec`. Havendo intenção de locomoção
-durante uma recuperação, ou durante o recovery terminal de C, a apresentação inicia um
-blend curto para o `Jog` direcional. `SwordRecoveryBlendTime` usa `0.15s` por padrão e
-permanece ajustável, com faixa recomendada de `0.10–0.20s`. O início não é um ponto
-normalizado fixo: ele é calculado a partir da duração do clipe e de seu play rate para o
-blend terminar em `0.75`; somente então o lock físico é liberado e o controle do
-`CharacterMovement` retorna. Nas recuperações intermediárias, o relógio autoral e a janela
-continuam independentes do slot visual, preservando inclusive o follow-up tardio entre
-`0.75–0.85`; um follow-up aceito volta ao próximo ataque full-body. C encerra a sequência
-somente depois da conclusão do blend. Sem intenção de movimento, o one-shot conclui
-normalmente, sem cancelamento abrupto. A troca de estilo também é rejeitada enquanto o
-lock dessa fase comprometida estiver ativo.
+durante A_Rec ou B_Rec sem follow-up já confirmado, a apresentação divide o corpo: as
+pernas cruzam para o `Jog` direcional e a recuperação continua no tronco a partir do mesmo
+frame. `SwordRecoveryBlendTime` usa `0.15s` por padrão e permanece ajustável, com faixa
+recomendada de `0.10–0.20s`. O início é calculado pela duração e pelo play rate para o
+blend das pernas terminar, e o controle do `CharacterMovement` retornar, em `0.50`
+normalizado da recuperação. O relógio autoral e a janela continuam independentes dessa
+troca visual, preservando o follow-up tardio; um follow-up aceito volta ao próximo ataque
+full-body. Sem intenção de movimento, ou quando o follow-up já foi confirmado antes desse
+ponto, a recuperação continua full-body.
+
+O `ABP_PR_PlayerLocomotion` salva a saída de `DefaultSlot` em `PR_LocomotionBase` e a
+reutiliza como base e como fonte do slot `SwordRecoveryUpperBody`. Um
+`Layered Blend Per Bone` aplica esse slot desde `spine_01`, com `BlendDepth 2` e rotação
+em mesh space. `SwordRecoveryUpperBody` pertence ao grupo independente
+`SwordRecoveryGroup`, permitindo que o montage superior e a locomoção de `DefaultSlot`
+coexistam. O recovery terminal de C continua full-body e libera em `0.75`; sem intenção
+de movimento, qualquer one-shot conclui normalmente, sem cancelamento abrupto. A troca
+de estilo também é rejeitada enquanto o lock dessa fase comprometida estiver ativo.
 
 Com hold de pelo menos `0.65s`, LMB dispara `Sword_Attack_RM` de `UAL1_RM` em `0.5x`.
 Esse ataque pesado é comprometido, usa `RootMotionFromMontagesOnly`, consulta o hit em

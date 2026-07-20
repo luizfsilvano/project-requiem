@@ -158,6 +158,10 @@ public:
 		return bSwordLocomotionRecoveryBlendActive;
 	}
 
+	/** True while A_Rec/B_Rec remain visible above spine_01 over locomotion-driven legs. */
+	UFUNCTION(BlueprintPure, Category = "Combat|Sword")
+	bool IsSwordUpperBodyRecoveryActive() const;
+
 	UFUNCTION(BlueprintPure, Category = "Dodge")
 	bool IsDodgePresentationActive() const { return bDodgePresentationActive; }
 
@@ -399,6 +403,14 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Tuning", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float SwordMovementUnlockNormalized = 0.75f;
 
+	/**
+	 * A_Rec/B_Rec hand their legs to locomotion at this authored phase while the
+	 * recovery continues above spine_01. Terminal C and heavy keep the full-body
+	 * SwordMovementUnlockNormalized policy.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Tuning", meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
+	float SwordLayeredRecoveryUnlockNormalized = 0.50f;
+
 	/** Wall-clock crossfade from the recovery pose into directional Jog. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat|Sword|Tuning", meta = (ClampMin = "0.10", ClampMax = "0.20", UIMin = "0.10", UIMax = "0.20"))
 	float SwordRecoveryBlendTime = 0.15f;
@@ -527,6 +539,9 @@ private:
 	void UpdateSwordLocomotionRecoveryBlend();
 	void UpdateSwordRecoveryMovementDirection();
 	float GetSwordRecoveryBlendStartNormalized() const;
+	float GetSwordRecoveryUnlockNormalized() const;
+	bool ShouldUseSwordUpperBodyRecovery() const;
+	void StopSwordUpperBodyRecovery(float BlendOutTime);
 	void HandleFinishedSwordOneShot();
 	void ResumeFromSwordPresentation(bool bStoreSwordOnBack = false);
 	void PlaySwordAnimation(
@@ -591,6 +606,10 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UAnimMontage> ActiveSwordMontage;
 
+	/** Concurrent montage in its own slot group; the ABP masks it from spine_01 upward. */
+	UPROPERTY(Transient)
+	TObjectPtr<UAnimMontage> ActiveSwordUpperBodyMontage;
+
 	float StateElapsedSeconds = 0.0f;
 	float CombatAnimationElapsedSeconds = 0.0f;
 	float SwordAnimationElapsedSeconds = 0.0f;
@@ -610,6 +629,7 @@ private:
 	bool bDodgeLocomotionRecoveryPresentationActive = false;
 	bool bSwordLocomotionRecoveryPresentationActive = false;
 	bool bSwordLocomotionRecoveryBlendActive = false;
+	bool bSwordUpperBodyRecoveryActive = false;
 	bool bDeathPoseHeld = false;
 	bool bDamageAssetsInvalid = false;
 	int32 LastObservedDamageRequestSerial = 0;
@@ -617,4 +637,5 @@ private:
 	int32 LastObservedResetSerial = 0;
 
 	static const FName LocomotionSlotName;
+	static const FName SwordUpperBodyRecoverySlotName;
 };

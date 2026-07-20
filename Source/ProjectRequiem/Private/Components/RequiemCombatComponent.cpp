@@ -26,7 +26,7 @@ void SetPlanarVelocity(
 	MovementComponent->Velocity.Y = NewPlanarVelocity.Y;
 }
 
-bool HasClearDamagePath(
+bool HasClearCombatDamagePath(
 	UWorld* World,
 	const FVector& TraceStart,
 	const FVector& TraceEnd,
@@ -827,7 +827,7 @@ void URequiemCombatComponent::ResolveUnarmedAttackHit()
 		{
 			continue;
 		}
-		if (!HasClearDamagePath(
+		if (!HasClearCombatDamagePath(
 			World,
 			TraceStart,
 			HitResult.ImpactPoint,
@@ -908,7 +908,7 @@ void URequiemCombatComponent::ResolveSwordAttackHit()
 		{
 			continue;
 		}
-		if (!HasClearDamagePath(
+		if (!HasClearCombatDamagePath(
 			World,
 			TraceStart,
 			HitResult.ImpactPoint,

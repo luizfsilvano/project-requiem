@@ -2,8 +2,10 @@
 
 #if WITH_EDITOR && WITH_DEV_AUTOMATION_TESTS
 
+#include "Animation/AnimBlueprint.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/RequiemPlayerAnimInstance.h"
+#include "Animation/Skeleton.h"
 #include "Characters/RequiemCharacter.h"
 #include "Combat/RequiemCombatDummy.h"
 #include "Components/RequiemCombatComponent.h"
@@ -55,6 +57,9 @@ constexpr TCHAR CharacterClassPath[] =
 constexpr TCHAR AnimInstanceClassPath[] =
 	TEXT("/Game/ProjectRequiem/Characters/Player/Animations/Locomotion/"
 		 "ABP_PR_PlayerLocomotion.ABP_PR_PlayerLocomotion_C");
+constexpr TCHAR AnimBlueprintPath[] =
+	TEXT("/Game/ProjectRequiem/Characters/Player/Animations/Locomotion/"
+		 "ABP_PR_PlayerLocomotion.ABP_PR_PlayerLocomotion");
 constexpr TCHAR DummyClassPath[] =
 	TEXT("/Game/ProjectRequiem/Combat/Blueprints/Targets/"
 		 "BP_PR_CombatDummy.BP_PR_CombatDummy_C");
@@ -72,6 +77,7 @@ constexpr float ExpectedHeavyPlayRate = 0.5f;
 constexpr float ExpectedInputWindowStart = 0.30f;
 constexpr float ExpectedInputWindowEnd = 0.85f;
 constexpr float ExpectedMovementUnlock = 0.75f;
+constexpr float ExpectedLayeredRecoveryUnlock = 0.50f;
 constexpr float ExpectedRecoveryBlendTime = 0.15f;
 constexpr float MinimumRecoveryBlendTime = 0.10f;
 constexpr float MaximumRecoveryBlendTime = 0.20f;
@@ -1028,6 +1034,8 @@ public:
 
 			if (bBlendActive)
 			{
+				bSawUpperBodyRecovery |=
+					Refs.AnimInstance->IsSwordUpperBodyRecoveryActive();
 				if (!bSawBlend)
 				{
 					bSawBlend = true;
@@ -1041,6 +1049,7 @@ public:
 						!= ERequiemSwordAnimationState::Recovery
 					|| Refs.AnimInstance->GetLocomotionState()
 						!= ERequiemLocomotionState::Jog
+					|| !Refs.AnimInstance->IsSwordUpperBodyRecoveryActive()
 					|| Refs.Movement->GetCurrentAcceleration().Size2D() > 1.0f)
 				{
 					return AbortWithInputCleanup(
@@ -1073,11 +1082,11 @@ public:
 						TEXT("Light recovery blend duration was %.3fs; expected an observed short blend near 0.10-0.20s."),
 						ObservedBlendSeconds));
 				}
-				if (ObservedUnlockNormalized < 0.70f
-					|| ObservedUnlockNormalized > 0.82f)
+				if (ObservedUnlockNormalized < 0.44f
+					|| ObservedUnlockNormalized > 0.58f)
 				{
 					return AbortWithInputCleanup(FString::Printf(
-						TEXT("Light movement unlocked at normalized %.3f instead of near 0.75."),
+						TEXT("Layered light recovery unlocked at normalized %.3f instead of near 0.50."),
 						ObservedUnlockNormalized));
 				}
 				if (Refs.Combat->IsSwordAttackMovementLocked()
@@ -1085,7 +1094,8 @@ public:
 					|| Refs.AnimInstance->GetSwordAnimationState()
 						!= ERequiemSwordAnimationState::Recovery
 					|| Refs.AnimInstance->GetLocomotionState()
-						!= ERequiemLocomotionState::Jog)
+						!= ERequiemLocomotionState::Jog
+					|| !Refs.AnimInstance->IsSwordUpperBodyRecoveryActive())
 				{
 					return AbortWithInputCleanup(
 						TEXT("Light recovery did not release movement only after its crossfade completed."));
@@ -1127,16 +1137,18 @@ public:
 		else if (Phase == 4)
 		{
 			if (bSawJogMovementAfterBlend
+				&& bSawUpperBodyRecovery
 				&& bValidatedCommittedToggleBlock
 				&& !Refs.Character->HasCurrentMovementInput()
 				&& !Refs.Combat->IsSwordAttackActive()
 				&& !Refs.Combat->IsSwordAttackMovementLocked()
+				&& !Refs.AnimInstance->IsSwordUpperBodyRecoveryActive()
 				&& Refs.AnimInstance->GetSwordAnimationState()
 					== ERequiemSwordAnimationState::Idle)
 			{
 				ReleaseAllTestInput();
 				Test->AddInfo(FString::Printf(
-					TEXT("Unqueued light recovery unlocked at %.3f after a %.3fs blend, then returned gradually to Jog control."),
+					TEXT("Unqueued light recovery layered above Jog and unlocked at %.3f after a %.3fs blend."),
 					ObservedUnlockNormalized,
 					ObservedBlendSeconds));
 				return true;
@@ -1178,6 +1190,7 @@ private:
 	bool bSawInitialAttack = false;
 	bool bSawLockedMovementIntentBeforeBlend = false;
 	bool bSawBlend = false;
+	bool bSawUpperBodyRecovery = false;
 	bool bSawJogMovementAfterBlend = false;
 	bool bValidatedCommittedToggleBlock = false;
 	double BlendFirstObservedSeconds = 0.0;
@@ -2156,6 +2169,21 @@ bool FRequiemSwordCombatPIETest::RunTest(const FString& Parameters)
 	TestNotNull(TEXT("ABP_PR_PlayerLocomotion generated class exists"), AnimInstanceClass);
 	TestNotNull(TEXT("ABP_PR_PlayerLocomotion CDO exists"), AnimInstanceCDO);
 
+	const UAnimBlueprint* AnimBlueprint =
+		LoadObject<UAnimBlueprint>(nullptr, AnimBlueprintPath);
+	const USkeleton* PlayerSkeleton = AnimBlueprint
+		? AnimBlueprint->TargetSkeleton
+		: nullptr;
+	TestNotNull(TEXT("ABP_PR_PlayerLocomotion asset exists"), AnimBlueprint);
+	TestNotNull(TEXT("ABP_PR_PlayerLocomotion target skeleton exists"), PlayerSkeleton);
+	if (PlayerSkeleton)
+	{
+		TestNotEqual(
+			TEXT("Upper-body recovery uses a slot group independent from DefaultSlot"),
+			PlayerSkeleton->GetSlotGroupName(TEXT("SwordRecoveryUpperBody")),
+			PlayerSkeleton->GetSlotGroupName(TEXT("DefaultSlot")));
+	}
+
 	bool bPresentationConfigured = false;
 	if (AnimInstanceCDO && AnimInstanceClass)
 	{
@@ -2208,6 +2236,16 @@ bool FRequiemSwordCombatPIETest::RunTest(const FString& Parameters)
 			TEXT("Sword movement unlock stays in the requested 70-75 percent range"),
 			MovementUnlockNormalized >= 0.70f
 				&& MovementUnlockNormalized <= 0.75f);
+		const float LayeredRecoveryUnlockNormalized = GetFloatPropertyValue(
+			AnimInstanceCDO,
+			AnimInstanceClass,
+			TEXT("SwordLayeredRecoveryUnlockNormalized"));
+		TestTrue(
+			TEXT("Sword A_Rec/B_Rec layered movement unlock is 0.50"),
+			FMath::IsNearlyEqual(
+				LayeredRecoveryUnlockNormalized,
+				ExpectedLayeredRecoveryUnlock,
+				0.001f));
 		const float RecoveryBlendTime = GetFloatPropertyValue(
 			AnimInstanceCDO,
 			AnimInstanceClass,
